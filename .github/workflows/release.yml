@@ -1,0 +1,42 @@
+# Builds every platform and publishes a GitHub release when a v* tag is pushed.
+# The release notes are the message of the annotated tag.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # actions/checkout can replace an annotated tag with a lightweight one,
+      # which would lose the notes, so fetch the tag object again.
+      - name: Fetch tag
+        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # -short skips the tests that start a browser or Hancom Office.
+      - name: Test
+        run: go test -short ./...
+
+      - name: Build
+        run: make checksums VERSION="${GITHUB_REF_NAME}"
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > notes.md
+          if [ ! -s notes.md ]; then echo "tag ${GITHUB_REF_NAME} has no message" >&2; exit 1; fi
+          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file notes.md dist/why-hwp-* dist/SHA256SUMS

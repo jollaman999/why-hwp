@@ -99,6 +99,8 @@ make test       # go test ./...
 
 The version printed by `why-hwp version` comes from `git describe --tags --always --dirty`. Override it with `make VERSION=v1.0.0`.
 
+Pushing an annotated `v*` tag runs `.github/workflows/release.yml`, which tests, builds all six platforms and publishes a GitHub release with the binaries, `SHA256SUMS` and the tag message as the notes.
+
 ## License
 
 [Apache License 2.0](LICENSE)

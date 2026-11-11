@@ -99,6 +99,8 @@ make test       # go test ./...
 
 `why-hwp version` 이 출력하는 버전은 `git describe --tags --always --dirty` 에서 옵니다. `make VERSION=v1.0.0` 으로 바꿀 수 있습니다.
 
+주석 달린 `v*` 태그를 push 하면 `.github/workflows/release.yml` 이 테스트하고 6개 플랫폼을 빌드한 뒤, 바이너리와 `SHA256SUMS` 를 붙이고 태그 메시지를 노트로 쓴 GitHub 릴리즈를 만듭니다.
+
 ## 라이선스
 
 [Apache License 2.0](LICENSE)
