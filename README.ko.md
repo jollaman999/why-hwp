@@ -32,6 +32,19 @@ why-hwp 는 Go 로 작성해 플랫폼마다 실행 파일 하나로 빌드합�
 | Linux | amd64, arm64 |
 | macOS | amd64, arm64 |
 
+## 빌드
+
+Go 1.24 이상과 GNU make 가 필요합니다. Windows 에서는 Git Bash 에서 make 를 실행합니다.
+
+```sh
+make            # 현재 OS 용으로 bin/ 에 빌드
+make dist       # 6개 플랫폼을 dist/why-hwp-<os>-<arch>[.exe] 로 빌드
+make checksums  # dist/ 를 빌드하고 dist/SHA256SUMS 생성
+make test       # go test ./...
+```
+
+`why-hwp version` 이 출력하는 버전은 `git describe --tags --always --dirty` 에서 옵니다. `make VERSION=v1.0.0` 으로 바꿀 수 있습니다.
+
 ## 라이선스
 
 [Apache License 2.0](LICENSE)

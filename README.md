@@ -32,6 +32,19 @@ why-hwp is written in Go and built into one executable per platform, so the same
 | Linux | amd64, arm64 |
 | macOS | amd64, arm64 |
 
+## Build
+
+Requires Go 1.24 or later and GNU make. On Windows, run make from Git Bash.
+
+```sh
+make            # build for the current OS into bin/
+make dist       # build all six platforms into dist/why-hwp-<os>-<arch>[.exe]
+make checksums  # build dist/ and write dist/SHA256SUMS
+make test       # go test ./...
+```
+
+The version printed by `why-hwp version` comes from `git describe --tags --always --dirty`. Override it with `make VERSION=v1.0.0`.
+
 ## License
 
 [Apache License 2.0](LICENSE)
