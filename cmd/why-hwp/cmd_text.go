@@ -2,15 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 
-	"github.com/jollaman999/why-hwp/internal/docx"
-	"github.com/jollaman999/why-hwp/internal/hwp"
-	"github.com/jollaman999/why-hwp/internal/hwpx"
+	"github.com/jollaman999/why-hwp/internal/load"
 	"github.com/jollaman999/why-hwp/internal/model"
 )
 
@@ -81,19 +79,10 @@ func parseFileArgs(fs *flag.FlagSet, args []string, format *string) (string, int
 // loadDocument picks a reader by file extension. On failure it reports to
 // stderr and returns a nil document with the exit code.
 func loadDocument(cmd, name string, stderr io.Writer) (*model.Document, int) {
-	var (
-		doc *model.Document
-		err error
-	)
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".hwpx":
-		doc, err = hwpx.Read(name)
-	case ".docx":
-		doc, err = docx.Read(name)
-	case ".hwp":
-		doc, err = hwp.Read(name)
-	default:
-		fmt.Fprintf(stderr, "why-hwp %s: unsupported file type %q (want .hwpx, .hwp or .docx)\n", cmd, filepath.Ext(name))
+	doc, err := load.Document(name)
+	var unsupported *load.UnsupportedError
+	if errors.As(err, &unsupported) {
+		fmt.Fprintf(stderr, "why-hwp %s: unsupported file type %q (want .hwpx, .hwp or .docx)\n", cmd, unsupported.Ext)
 		return nil, 2
 	}
 	if err != nil {

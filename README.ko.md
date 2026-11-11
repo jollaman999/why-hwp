@@ -52,6 +52,14 @@ why-hwp info [-format plain|json] <파일>
 
 `text`·`info` 는 `.hwp`(HWP 5.0 바이너리)도 읽고, 같은 문서의 `.hwpx` 와 같은 위치 표기를 냅니다. 암호·DRM·배포용 문서는 복호하지 않고 에러(종료 코드 1)로 끝냅니다.
 
+### verify
+
+```sh
+why-hwp verify [-orig 원본] [-allow locs.txt] [-banned words.txt] [-ignore-case] [-format plain|json] <파일>
+```
+
+문서를 넘기기 전에 확인합니다. `.hwpx`, `.hwp`, `.docx`, `.md`, `.txt` 를 읽고, md 와 txt 는 줄 단위로 `l1`, `l2`, ... 위치를 붙입니다. `-orig` 를 주면 바뀐 블록, 추가된 블록("added 2 after original s0/p7" 처럼), 삭제된 블록을 보여 줍니다. 원본의 메모, 표, 그림, 변경 추적이 사라졌거나 표가 작아졌으면 위반입니다. `-allow`(한 줄에 위치 하나, `s0/p4/t0/*` 는 접두사 일치)를 주면 목록 밖의 변경은 위반입니다. 금지어(`-banned`, 한 줄에 하나, `#` 주석, `re:` 는 정규식)와 em dash 는 위반이고, en dash 와 원본에 없던 숫자는 경고입니다. 위반이 있으면 종료 코드 1, 없으면 0, 사용법 오류나 파일을 못 읽으면 2 입니다. 변경 추적이 있는 hwpx·hwp 는 삭제 표시된 글도 본문으로 읽히므로 지운 글과 넣은 글을 구분하지 못합니다.
+
 ### convert
 
 ```sh

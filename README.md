@@ -52,6 +52,14 @@ Shows sections, paragraphs, tables and their size, owner marks such as `(A)` or 
 
 `text` and `info` also read `.hwp` (HWP 5.0 binary) files and give the same locations as the `.hwpx` copy of the same document. Password-protected, DRM and distribution documents are refused with an error (exit code 1); they are not decrypted.
 
+### verify
+
+```sh
+why-hwp verify [-orig orig] [-allow locs.txt] [-banned words.txt] [-ignore-case] [-format plain|json] <file>
+```
+
+Checks a document before you hand it over. It reads `.hwpx`, `.hwp`, `.docx`, `.md` and `.txt`; md and txt are read line by line with locations `l1`, `l2`, .... With `-orig` it lists blocks changed, added (for example "added 2 after original s0/p7") and removed, and fails when a memo, table, picture or tracked change of the original is lost or a table shrank. With `-allow` (one location per line, `s0/p4/t0/*` matches a prefix) a change outside the list fails. Banned words (`-banned`, one per line, `#` comments, `re:` for a regular expression) and em dashes fail; en dashes and numbers the original does not have are warnings. Exit status is 1 when there are violations, 0 otherwise, and 2 for a usage error or an unreadable file. In tracked-change documents, text marked as deleted is still read as text in hwpx and hwp, so verify cannot tell deleted text from inserted text there.
+
 ### convert
 
 ```sh

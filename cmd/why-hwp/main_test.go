@@ -55,7 +55,7 @@ func TestHelp(t *testing.T) {
 }
 
 func TestNotImplemented(t *testing.T) {
-	for _, name := range []string{"apply", "verify"} {
+	for _, name := range []string{"apply"} {
 		var out, errOut bytes.Buffer
 		if code := run([]string{name}, &out, &errOut); code != 2 {
 			t.Errorf("%s: exit code = %d, want 2", name, code)
