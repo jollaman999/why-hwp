@@ -8,7 +8,7 @@ A single-binary command-line tool for working with Hangul word processor documen
 
 ## Why HWP
 
-The name started as a question: *why does it have to be HWP?* The answer is simple. In Korea, a great many documents, from public-sector reports to everyday forms, are written and shared as HWP. So instead of asking the question again, why-hwp lets you handle HWP from scripts on any system.
+The name is a sigh. Anyone who has had to script a Hangul document has said it at least once: *why... HWP?* Nobody gets to choose. Reports, forms and submissions arrive as HWP and have to go back as HWP. So why-hwp stops asking and just deals with it, on any OS, from a script.
 
 Editing HWP documents from scripts usually needs one of these:
 
