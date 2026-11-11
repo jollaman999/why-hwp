@@ -1,0 +1,32 @@
+[package]
+name = "why-hwp-engine"
+version = "0.1.0"
+edition = "2021"
+description = "rhwp and resvg as one WASI command for why-hwp"
+license = "Apache-2.0"
+publish = false
+
+# Built on its own. rhwp-src is a dependency with workspaces of its own.
+[workspace]
+exclude = ["rhwp-src"]
+
+[[bin]]
+name = "why-hwp-engine"
+path = "src/main.rs"
+
+[dependencies]
+# Patched rhwp at a pinned commit, prepared by build.sh. The default features
+# pull in PDF import and browser bindings, which the engine does not use.
+rhwp = { path = "rhwp-src", default-features = false }
+# Same resvg as rhwp so the two share one copy. No system fonts, no memmap:
+# svg2png uses only the fonts it is given.
+resvg = { version = "0.47", default-features = false, features = ["text"] }
+serde_json = "1"
+sha2 = "0.11"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
