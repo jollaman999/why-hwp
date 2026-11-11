@@ -162,16 +162,17 @@ type runner interface {
 const maxPlanRounds = 8
 
 // ensureFonts asks the engine which fonts guestIn needs and installs the
-// missing ones into fontsDir, repeating until the plan is empty. In offline
-// mode nothing is downloaded and the first plan's URLs are returned instead.
-func ensureFonts(ctx context.Context, e runner, c *http.Client, inDir, guestIn, dlDir, fontsDir string, offline bool) (missingFonts, error) {
+// missing ones into fontsDir, repeating until the plan is empty. Fonts found
+// in hostFonts are not asked for. In offline mode nothing is downloaded and
+// the first plan's URLs are returned instead.
+func ensureFonts(ctx context.Context, e runner, c *http.Client, inDir, guestIn, dlDir, fontsDir string, hostFonts []mount, offline bool) (missingFonts, error) {
 	installed := map[string]bool{}
 	n := 0
 	for round := 0; round < maxPlanRounds; round++ {
-		out, err := e.run(ctx, []string{"font-plan", "--in", guestIn}, []mount{
+		out, err := e.run(ctx, []string{"font-plan", "--in", guestIn}, append([]mount{
 			{host: inDir, guest: "/in", readOnly: true},
 			{host: fontsDir, guest: "/fonts", readOnly: true},
-		})
+		}, hostFonts...))
 		if err != nil {
 			return nil, err
 		}

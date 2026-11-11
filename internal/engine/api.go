@@ -27,7 +27,9 @@ var convertFormats = map[string]bool{"hwp": true, "hwpx": true, "pdf": true, "tx
 // Convert converts the document at in to format to (hwp, hwpx, pdf or txt)
 // and writes it to out, replacing any existing file. Fonts the document
 // needs are downloaded into the font cache first unless WHY_HWP_OFFLINE=1,
-// in which case the missing fonts are reported through Warn.
+// in which case the missing fonts are reported through Warn. Fonts installed
+// on this computer (see EnvFontDirs and EnvSystemFonts) are used as they are
+// and not downloaded.
 func Convert(ctx context.Context, in, out, to string) error {
 	if !convertFormats[to] {
 		return fmt.Errorf("engine: unsupported output format %q", to)
@@ -51,10 +53,11 @@ func Convert(ctx context.Context, in, out, to string) error {
 		return err
 	}
 	guestIn := "/in/" + inName
+	hostFonts := hostFontMounts(hostFontDirs())
 
 	fontMu.Lock()
 	miss, err := ensureFonts(ctx, e, httpClient, filepath.Join(work, "in"), guestIn,
-		filepath.Join(work, "dl"), fontsDir, os.Getenv(EnvOffline) == "1")
+		filepath.Join(work, "dl"), fontsDir, hostFonts, os.Getenv(EnvOffline) == "1")
 	fontMu.Unlock()
 	if err != nil {
 		return err
@@ -66,11 +69,11 @@ func Convert(ctx context.Context, in, out, to string) error {
 
 	outName := "output." + to
 	fontMu.RLock()
-	_, err = e.run(ctx, []string{"convert", "--to", to, "--in", guestIn, "--out", "/out/" + outName}, []mount{
+	_, err = e.run(ctx, []string{"convert", "--to", to, "--in", guestIn, "--out", "/out/" + outName}, append([]mount{
 		{host: filepath.Join(work, "in"), guest: "/in", readOnly: true},
 		{host: filepath.Join(work, "out"), guest: "/out"},
 		{host: fontsDir, guest: "/fonts", readOnly: true},
-	})
+	}, hostFonts...))
 	fontMu.RUnlock()
 	if err != nil {
 		return err

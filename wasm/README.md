@@ -26,12 +26,18 @@ like rhwp's `~/.cache/rhwp`; webfonts go in `/fonts/webfonts`) and `/dl`
 (downloaded fonts). It sets `HOME=/home`, `RHWP_WEBFONT_OFFLINE=1` and
 `WHY_HWP_TZ_OFFSET_MIN` (local UTC offset in minutes, 540 for Korea).
 
+For `convert` and `font-plan` the host also mounts the computer's font folders
+read-only as `/hostfonts-0`, `/hostfonts-1`, ... and lists them in
+`RHWP_FONT_PATH`. fontdb's `load_system_fonts` finds nothing under WASI, so
+this is how installed fonts reach rhwp; `font-plan` leaves out fonts found
+there.
+
 Exit codes: 0 success, 1 failure (one line on stderr), 2 usage.
 
 | Command | Does |
 |---------|------|
-| `convert --to hwp\|hwpx\|pdf\|txt --in <file> --out <file>` | Converts. PDF fonts come only from `/fonts` |
-| `font-plan --in <file>` | Prints the fonts the document needs that `/fonts` lacks: `[{"url":..., "sha256":... or null}]` |
+| `convert --to hwp\|hwpx\|pdf\|txt --in <file> --out <file>` | Converts. PDF fonts come from `/fonts` and the `RHWP_FONT_PATH` folders |
+| `font-plan --in <file>` | Prints the fonts the document needs that neither `/fonts` nor the `RHWP_FONT_PATH` folders have: `[{"url":..., "sha256":... or null}]` |
 | `font-install --url <url> --file <file>` | Checks a downloaded font against rhwp's font ledger and stores it in `/fonts` |
 | `svg2png --in <svg> --out <png> --width <px> --height <px> [--font <file> ...]` | Draws the SVG on white at that size, with only the given fonts |
 | `version` | `why-hwp-engine <version> rhwp <commit> resvg <version>` |

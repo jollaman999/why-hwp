@@ -235,6 +235,8 @@ func TestConvertPDFDownloadsFonts(t *testing.T) {
 	Warn = func(msg string) { warns = append(warns, msg) }
 	t.Cleanup(func() { Warn = old })
 	t.Setenv(EnvOffline, "")
+	t.Setenv(EnvSystemFonts, "0")
+	t.Setenv(EnvFontDirs, "")
 
 	pdf := filepath.Join(t.TempDir(), "a.pdf")
 	start := time.Now()

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -143,11 +144,13 @@ type fakePlanner struct {
 	installs  []string
 	dlDir     string
 	files     map[string]string
+	planMount [][]mount
 }
 
-func (f *fakePlanner) run(_ context.Context, args []string, _ []mount) ([]byte, error) {
+func (f *fakePlanner) run(_ context.Context, args []string, mounts []mount) ([]byte, error) {
 	switch args[0] {
 	case "font-plan":
+		f.planMount = append(f.planMount, mounts)
 		urls := f.plan(f.round, f.installed)
 		f.round++
 		var parts []string
@@ -180,7 +183,7 @@ func TestEnsureFontsRounds(t *testing.T) {
 
 	run := func(offline bool, plan func(int, map[string]bool) []string) (*fakePlanner, missingFonts, error) {
 		f := &fakePlanner{plan: plan, installed: map[string]bool{}, dlDir: t.TempDir(), files: map[string]string{}}
-		miss, err := ensureFonts(context.Background(), f, httpClient, t.TempDir(), "/in/x.hwp", f.dlDir, t.TempDir(), offline)
+		miss, err := ensureFonts(context.Background(), f, httpClient, t.TempDir(), "/in/x.hwp", f.dlDir, t.TempDir(), nil, offline)
 		return f, miss, err
 	}
 
@@ -228,5 +231,21 @@ func TestEnsureFontsRounds(t *testing.T) {
 	f, miss, err = run(false, func(int, map[string]bool) []string { return nil })
 	if err != nil || miss != nil || f.round != 1 {
 		t.Errorf("nothing missing: %d rounds, miss %v, err %v", f.round, miss, err)
+	}
+}
+
+func TestEnsureFontsPlansWithHostFonts(t *testing.T) {
+	host := hostFontMounts([]string{"/a", "/b"})
+	f := &fakePlanner{plan: func(int, map[string]bool) []string { return nil }, installed: map[string]bool{}, dlDir: t.TempDir(), files: map[string]string{}}
+	if _, err := ensureFonts(context.Background(), f, httpClient, "/in-host", "/in/x.hwp", f.dlDir, "/fonts-host", host, false); err != nil {
+		t.Fatal(err)
+	}
+	want := []mount{
+		{host: "/in-host", guest: "/in", readOnly: true},
+		{host: "/fonts-host", guest: "/fonts", readOnly: true},
+		host[0], host[1],
+	}
+	if len(f.planMount) != 1 || !reflect.DeepEqual(f.planMount[0], want) {
+		t.Errorf("font-plan mounts = %+v, want %+v", f.planMount, want)
 	}
 }

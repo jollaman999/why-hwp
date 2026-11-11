@@ -146,10 +146,12 @@ func newEngine(ctx context.Context, wasm []byte, cacheDir string) (*engine, erro
 	return &engine{rt: rt, mod: mod}, nil
 }
 
-// mount maps a host directory to a guest path.
+// mount maps a host directory to a guest path. Mounts with fontPath set are
+// passed to rhwp as font directories.
 type mount struct {
 	host, guest string
 	readOnly    bool
+	fontPath    bool
 }
 
 // run executes the module with args (the subcommand and its arguments) and
@@ -157,7 +159,11 @@ type mount struct {
 // stderr line; a done ctx stops the module and returns ctx.Err().
 func (e *engine) run(ctx context.Context, args []string, mounts []mount) ([]byte, error) {
 	fs := wazero.NewFSConfig()
+	var fontPath []string
 	for _, m := range mounts {
+		if m.fontPath {
+			fontPath = append(fontPath, m.guest)
+		}
 		if m.readOnly {
 			fs = fs.WithReadOnlyDirMount(m.host, m.guest)
 		} else {
@@ -178,6 +184,10 @@ func (e *engine) run(ctx context.Context, args []string, mounts []mount) ([]byte
 		WithSysNanotime().
 		WithSysNanosleep().
 		WithRandSource(rand.Reader)
+
+	if len(fontPath) > 0 {
+		cfg = cfg.WithEnv(hostFontEnv, strings.Join(fontPath, ":"))
+	}
 
 	mod, err := e.rt.InstantiateModule(ctx, e.mod, cfg)
 	if mod != nil {
