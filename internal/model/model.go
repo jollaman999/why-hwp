@@ -28,6 +28,14 @@
 // Rows and columns are grid addresses: a cell that spans columns keeps
 // the address of its top-left grid slot. In docx a body-level table takes
 // a paragraph number of its own (s0/p5/t0/...), and every block is in s0.
+//
+// # Tracked changes
+//
+// Readers that tell tracked insertions and deletions apart (hwpx, docx)
+// keep them in Spans, Break and Whole, and Text holds the block with every
+// change accepted. Document.InView turns that into the text of one View.
+// Locations follow the paragraphs as stored, so a location means the same
+// paragraph in every view.
 package model
 
 import (
@@ -48,6 +56,13 @@ type Block struct {
 	Loc  string `json:"loc"`
 	Kind Kind   `json:"kind"`
 	Text string `json:"text"`
+
+	// Tracked changes, set only on blocks that have any. Spans is the
+	// block's text split by change; in a cell the paragraph breaks are
+	// "\n" spans that carry the change of that break.
+	Spans Spans  `json:"-"`
+	Break Change `json:"-"` // KindPara: change that covers the paragraph break
+	Whole Change `json:"-"` // KindPara: change that covers all of the paragraph, break included
 }
 
 // Document is what a reader returns.
@@ -55,6 +70,7 @@ type Document struct {
 	Format  string  // "hwpx", "docx" or "hwp"
 	Blocks  []Block // reading order
 	Summary Summary
+	Tracked bool // the reader tells tracked insertions and deletions apart
 }
 
 // Summary describes document structure for the info command. Fields that
@@ -73,6 +89,7 @@ type Summary struct {
 	Pictures     []Picture   `json:"pictures"`
 	BinData      []BinItem   `json:"binData"`
 	OwnerMarks   []OwnerMark `json:"ownerMarks"`
+	View         View        `json:"view,omitempty"` // view the text is in; empty when the reader has no views
 }
 
 // Table is one table, nested ones included.

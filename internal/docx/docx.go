@@ -1,11 +1,16 @@
 // Package docx reads Word (OOXML) documents into the model package's block
 // list and structure summary.
 //
-// Only w:t text is collected. Two things trip up naive extractors and are
+// Only w:t and w:delText text is collected. Two things trip up naive extractors and are
 // handled here: drawing anchors carry numbers in wp:posOffset that are not
 // text, and mc:AlternateContent repeats the same content once per
 // mc:Choice and again in mc:Fallback. The first mc:Choice is read and the
-// rest are skipped. Deleted text (w:delText) is not part of the text.
+// rest are skipped.
+//
+// Tracked changes are read into the model's spans: text in w:ins and
+// w:moveTo is inserted, text in w:del and w:moveFrom (w:delText) is
+// deleted, and w:ins or w:del in a paragraph's w:pPr/w:rPr marks its
+// paragraph mark. Block.Text is the accepted text, without deleted text.
 package docx
 
 import (
@@ -87,6 +92,7 @@ func Parse(zr *zip.Reader) (*model.Document, error) {
 		}
 	}
 	sum.OwnerMarks = model.FindOwnerMarks(doc.Blocks)
+	doc.Tracked = true
 	return doc, nil
 }
 
@@ -175,14 +181,21 @@ type walker struct {
 	doc        *model.Document
 	commentLoc map[string]string // comment id -> loc of its anchor
 	boxEnded   bool              // a text-box paragraph was just appended
+
+	ins, del int          // open w:ins (w:moveTo) and w:del (w:moveFrom) elements
+	rPr      int          // open w:rPr elements
+	mark     model.Change // change of the current paragraph's mark (w:pPr/w:rPr/w:ins or w:del)
+	cover    model.Change // changes that cover all content seen in the current paragraph
 }
 
-// next returns the next token and counts tracked insertions and deletions.
+// next returns the next token, counts tracked insertions and deletions and
+// follows which of them the position is in.
 func (w *walker) next() (xml.Token, error) {
 	tok, err := w.dec.Token()
 	if err != nil {
 		return nil, err
 	}
+	w.track(tok)
 	if se, ok := tok.(xml.StartElement); ok && se.Name.Space == nsW {
 		switch se.Name.Local {
 		case "ins", "del":
@@ -192,6 +205,88 @@ func (w *walker) next() (xml.Token, error) {
 		}
 	}
 	return tok, nil
+}
+
+// track updates the open change ranges for tok. A w:ins or w:del inside
+// w:rPr (only paragraph mark properties have them) marks the paragraph
+// mark instead.
+func (w *walker) track(tok xml.Token) {
+	var name xml.Name
+	start := false
+	switch t := tok.(type) {
+	case xml.StartElement:
+		name, start = t.Name, true
+	case xml.EndElement:
+		name = t.Name
+	default:
+		return
+	}
+	if name.Space != nsW {
+		return
+	}
+	step := -1
+	if start {
+		step = 1
+	}
+	var open *int
+	var c model.Change
+	switch name.Local {
+	case "rPr":
+		w.rPr += step
+		return
+	case "ins", "moveTo":
+		open, c = &w.ins, model.Inserted
+	case "del", "moveFrom":
+		open, c = &w.del, model.Deleted
+	default:
+		return
+	}
+	if w.rPr > 0 {
+		if start {
+			w.mark |= c
+		}
+		return
+	}
+	*open = max(*open+step, 0)
+}
+
+// change returns the change in effect at the current position.
+func (w *walker) change() model.Change {
+	var c model.Change
+	if w.ins > 0 {
+		c |= model.Inserted
+	}
+	if w.del > 0 {
+		c |= model.Deleted
+	}
+	return c
+}
+
+// piece notes one piece of paragraph content and returns its change.
+func (w *walker) piece() model.Change {
+	c := w.change()
+	w.cover &= c
+	return c
+}
+
+// paraText is the text of one w:p.
+type paraText struct {
+	spans model.Spans
+	brk   model.Change // change of the paragraph mark
+	whole model.Change // change that covers the whole paragraph, mark included
+}
+
+// paragraph reads one w:p.
+func (w *walker) paragraph(loc string) (paraText, error) {
+	saveMark, saveCover := w.mark, w.cover
+	w.mark, w.cover = 0, model.Inserted|model.Deleted
+	defer func() { w.mark, w.cover = saveMark, saveCover }()
+	var sp model.Spans
+	w.boxEnded = false
+	if err := w.content(&sp, loc); err != nil {
+		return paraText{}, err
+	}
+	return paraText{spans: sp, brk: w.mark, whole: w.cover & w.mark}, nil
 }
 
 func (w *walker) readBody(f *zip.File) error {
@@ -221,12 +316,15 @@ func (w *walker) readBody(f *zip.File) error {
 		case "p":
 			loc := fmt.Sprintf("s0/p%d", p)
 			p++
-			var sb strings.Builder
-			w.boxEnded = false
-			if err := w.content(&sb, loc); err != nil {
+			pt, err := w.paragraph(loc)
+			if err != nil {
 				return err
 			}
-			w.doc.Blocks = append(w.doc.Blocks, model.Block{Loc: loc, Kind: model.KindPara, Text: sb.String()})
+			b := model.Block{Loc: loc, Kind: model.KindPara, Text: pt.spans.Text(model.ViewAccepted), Break: pt.brk, Whole: pt.whole}
+			if pt.spans.Changed() {
+				b.Spans = pt.spans
+			}
+			w.doc.Blocks = append(w.doc.Blocks, b)
 		case "tbl":
 			loc := fmt.Sprintf("s0/p%d/t0", p)
 			p++
@@ -238,9 +336,9 @@ func (w *walker) readBody(f *zip.File) error {
 }
 
 // content appends the text inside the current element (a paragraph, a
-// mc:Choice, a text box) to sb and returns after its end tag. Paragraphs
+// mc:Choice, a text box) to sp and returns after its end tag. Paragraphs
 // nested in it (text boxes) are appended as new lines.
-func (w *walker) content(sb *strings.Builder, loc string) error {
+func (w *walker) content(sp *model.Spans, loc string) error {
 	depth := 0
 	for {
 		tok, err := w.next()
@@ -251,17 +349,18 @@ func (w *walker) content(sb *strings.Builder, loc string) error {
 		case xml.StartElement:
 			if t.Name.Space == nsW {
 				switch t.Name.Local {
-				case "t":
+				case "t", "delText":
 					var tb strings.Builder
 					if err := w.text(&tb); err != nil {
 						return err
 					}
 					if tb.Len() > 0 {
+						c := w.piece()
 						if w.boxEnded {
-							sb.WriteByte('\n')
+							sp.Add("\n", c)
 							w.boxEnded = false
 						}
-						sb.WriteString(tb.String())
+						sp.Add(tb.String(), c)
 					}
 					continue
 				case "tabs":
@@ -271,24 +370,30 @@ func (w *walker) content(sb *strings.Builder, loc string) error {
 					}
 					continue
 				case "tab":
-					sb.WriteByte('\t')
+					sp.Add("\t", w.piece())
 				case "br", "cr":
-					sb.WriteByte('\n')
+					sp.Add("\n", w.piece())
 				case "noBreakHyphen":
-					sb.WriteByte('-')
+					sp.Add("-", w.piece())
+				case "drawing", "pict", "object":
+					w.piece()
 				case "commentReference":
 					w.commentLoc[attr(t, "id")] = loc
 				case "p":
-					var inner strings.Builder
+					c := w.change()
+					var inner model.Spans
 					w.boxEnded = false
-					if err := w.content(&inner, loc); err != nil {
+					mark := w.mark
+					err := w.content(&inner, loc)
+					w.mark = mark
+					if err != nil {
 						return err
 					}
 					if inner.Len() > 0 {
-						if sb.Len() > 0 {
-							sb.WriteByte('\n')
+						if sp.Len() > 0 {
+							sp.Add("\n", c)
 						}
-						sb.WriteString(inner.String())
+						sp.Append(inner)
 						w.boxEnded = true
 					}
 					continue
@@ -301,7 +406,7 @@ func (w *walker) content(sb *strings.Builder, loc string) error {
 			}
 			switch t.Name.Local {
 			case "AlternateContent":
-				if err := w.alternate(sb, loc); err != nil {
+				if err := w.alternate(sp, loc); err != nil {
 					return err
 				}
 				continue
@@ -320,7 +425,7 @@ func (w *walker) content(sb *strings.Builder, loc string) error {
 
 // alternate reads the first mc:Choice of an mc:AlternateContent and skips
 // the other choices and the fallback, which repeat the same content.
-func (w *walker) alternate(sb *strings.Builder, loc string) error {
+func (w *walker) alternate(sp *model.Spans, loc string) error {
 	done := false
 	for {
 		tok, err := w.dec.Token()
@@ -331,7 +436,7 @@ func (w *walker) alternate(sb *strings.Builder, loc string) error {
 		case xml.StartElement:
 			if t.Name.Local == "Choice" && !done {
 				done = true
-				if err := w.content(sb, loc); err != nil {
+				if err := w.content(sp, loc); err != nil {
 					return err
 				}
 				continue
@@ -419,7 +524,7 @@ func (w *walker) cell(tblLoc string, row, col int) (int, error) {
 	bi := len(w.doc.Blocks)
 	w.doc.Blocks = append(w.doc.Blocks, model.Block{Loc: loc, Kind: model.KindCell})
 	span := 1
-	var texts []string
+	var texts []paraText
 	p := 0
 	depth := 0
 	for {
@@ -436,13 +541,12 @@ func (w *walker) cell(tblLoc string, row, col int) (int, error) {
 						span = v
 					}
 				case "p":
-					var sb strings.Builder
-					w.boxEnded = false
-					if err := w.content(&sb, fmt.Sprintf("%s/p%d", loc, p)); err != nil {
+					pt, err := w.paragraph(fmt.Sprintf("%s/p%d", loc, p))
+					if err != nil {
 						return 0, err
 					}
 					p++
-					texts = append(texts, sb.String())
+					texts = append(texts, pt)
 					continue
 				case "tbl":
 					if err := w.table(fmt.Sprintf("%s/p%d/t0", loc, p)); err != nil {
@@ -455,7 +559,17 @@ func (w *walker) cell(tblLoc string, row, col int) (int, error) {
 			depth++
 		case xml.EndElement:
 			if depth == 0 {
-				w.doc.Blocks[bi].Text = strings.Join(texts, "\n")
+				var sp model.Spans
+				for i, pt := range texts {
+					if i > 0 {
+						sp.Add("\n", texts[i-1].brk)
+					}
+					sp.Append(pt.spans)
+				}
+				w.doc.Blocks[bi].Text = sp.Text(model.ViewAccepted)
+				if sp.Changed() {
+					w.doc.Blocks[bi].Spans = sp
+				}
 				return span, nil
 			}
 			depth--
@@ -483,11 +597,11 @@ func (w *walker) readComments(f *zip.File) error {
 		if !ok || se.Name.Space != nsW || se.Name.Local != "comment" {
 			continue
 		}
-		var sb strings.Builder
-		if err := cw.content(&sb, ""); err != nil {
+		var sp model.Spans
+		if err := cw.content(&sp, ""); err != nil {
 			return err
 		}
-		w.doc.Summary.Memos = append(w.doc.Summary.Memos, model.Memo{Loc: w.commentLoc[attr(se, "id")], Text: sb.String()})
+		w.doc.Summary.Memos = append(w.doc.Summary.Memos, model.Memo{Loc: w.commentLoc[attr(se, "id")], Text: sp.Text(model.ViewAccepted)})
 	}
 }
 

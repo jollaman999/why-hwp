@@ -37,18 +37,20 @@ why-hwp is written in Go and built into one executable per platform, so the same
 ### text
 
 ```sh
-why-hwp text [-format plain|json] <file>
+why-hwp text [-format plain|json] [-view accepted|original|markup] <file>
 ```
 
 Prints the text of an `.hwpx`, `.hwp` or `.docx` file, one block per line as `<loc><TAB><text>`. A loc points back into the document: `s0/p12` is paragraph 12 of section 0, `s0/p3/t0/r1/c2` is row 1, column 2 of the first table in paragraph 3. Memo bodies, headers, footers and footnotes are left out.
 
+In a document with tracked changes, `-view` picks what you see: `accepted` (default) is the text with every change accepted, which is what Hancom Office saves as TXT apart from line breaks and spacing; `original` is the text with every change rejected; `markup` shows both, inserted text as `[+text+]` and deleted text as `[-text-]` (a changed paragraph break shows as `\n` inside the marks). Locations do not change with the view: they number the paragraphs as stored, deleted and inserted ones included, so they are the locations `apply` takes. A paragraph that only exists in the other view has no line, and a paragraph whose break the view removes is shown joined with the next one. Views work for `.hwpx` and `.docx` (`w:ins`, `w:del`, `w:moveFrom`, `w:moveTo`); `.hwp` files have no views.
+
 ### info
 
 ```sh
-why-hwp info [-format plain|json] <file>
+why-hwp info [-format plain|json] [-view accepted|original|markup] <file>
 ```
 
-Shows sections, paragraphs, tables and their size, owner marks such as `(A)` or `(A/B)` with where they occur, memos, tracked changes, styles and pictures.
+Shows sections, paragraphs, tables and their size, owner marks such as `(A)` or `(A/B)` with where they occur, memos, tracked changes, styles and pictures. Owner marks are counted in the text of `-view` (default `accepted`); with tracked changes the view is shown under the count.
 
 `text` and `info` also read `.hwp` (HWP 5.0 binary) files and give the same locations as the `.hwpx` copy of the same document. Password-protected, DRM and distribution documents are refused with an error (exit code 1); they are not decrypted.
 
@@ -63,10 +65,10 @@ Writes a copy of an HWPX document with the edits in the spec recorded as tracked
 ### verify
 
 ```sh
-why-hwp verify [-orig orig] [-allow locs.txt] [-banned words.txt] [-ignore-case] [-format plain|json] <file>
+why-hwp verify [-orig orig] [-allow locs.txt] [-banned words.txt] [-ignore-case] [-view accepted|original|markup] [-format plain|json] <file>
 ```
 
-Checks a document before you hand it over. It reads `.hwpx`, `.hwp`, `.docx`, `.md` and `.txt`; md and txt are read line by line with locations `l1`, `l2`, .... With `-orig` it lists blocks changed, added (for example "added 2 after original s0/p7") and removed, and fails when a memo, table, picture or tracked change of the original is lost or a table shrank. With `-allow` (one location per line, `s0/p4/t0/*` matches a prefix) a change outside the list fails. Banned words (`-banned`, one per line, `#` comments, `re:` for a regular expression) and em dashes fail; en dashes and numbers the original does not have are warnings. Exit status is 1 when there are violations, 0 otherwise, and 2 for a usage error or an unreadable file. In tracked-change documents, text marked as deleted is still read as text in hwpx and hwp, so verify cannot tell deleted text from inserted text there.
+Checks a document before you hand it over. It reads `.hwpx`, `.hwp`, `.docx`, `.md` and `.txt`; md and txt are read line by line with locations `l1`, `l2`, .... With `-orig` it lists blocks changed, added (for example "added 2 after original s0/p7") and removed, and fails when a memo, table, picture or tracked change of the original is lost or a table shrank. With `-allow` (one location per line, `s0/p4/t0/*` matches a prefix) a change outside the list fails. Banned words (`-banned`, one per line, `#` comments, `re:` for a regular expression) and em dashes fail; en dashes and numbers the original does not have are warnings. Exit status is 1 when there are violations, 0 otherwise, and 2 for a usage error or an unreadable file. Both documents are read in `-view` (default `accepted`, see `text`), so in a tracked-change hwpx or docx deleted text is left out and inserted text is compared as the new text; the notes say which view was used. hwp files have no views, so in a tracked-change hwp verify cannot tell deleted text from inserted text.
 
 ### convert
 

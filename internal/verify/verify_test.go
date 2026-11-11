@@ -374,3 +374,26 @@ func TestAllowMatch(t *testing.T) {
 		}
 	}
 }
+
+func TestTrackNotes(t *testing.T) {
+	doc := func(format string, view model.View) *model.Document {
+		return &model.Document{Format: format, Summary: model.Summary{TrackChanges: 1, View: view}}
+	}
+	for _, tc := range []struct {
+		orig, cur *model.Document
+		want      []string
+	}{
+		{nil, doc("hwpx", model.ViewAccepted), []string{"hwpx has tracked changes: read in the accepted view (inserted text kept, deleted text left out)"}},
+		{doc("docx", model.ViewOriginal), doc("hwpx", model.ViewOriginal), []string{
+			"docx has tracked changes: read in the original view (deleted text kept, inserted text left out)",
+			"hwpx has tracked changes: read in the original view (deleted text kept, inserted text left out)",
+		}},
+		{nil, doc("hwpx", model.ViewMarkup), []string{"hwpx has tracked changes: read in the markup view (inserted text as [+...+], deleted text as [-...-])"}},
+		{nil, doc("hwp", ""), []string{"hwp has tracked changes: views are not supported for hwp, so tracked insertions and deletions are not told apart"}},
+	} {
+		r := Check(tc.orig, tc.cur, Options{})
+		if strings.Join(r.Notes, "\n") != strings.Join(tc.want, "\n") {
+			t.Errorf("notes %q, want %q", r.Notes, tc.want)
+		}
+	}
+}

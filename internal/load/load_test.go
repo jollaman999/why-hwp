@@ -24,7 +24,7 @@ func TestParseText(t *testing.T) {
 		}
 		for i, w := range tc.want {
 			want := model.Block{Loc: "l" + string(rune('1'+i)), Kind: model.KindPara, Text: w}
-			if doc.Blocks[i] != want {
+			if b := doc.Blocks[i]; b.Loc != want.Loc || b.Kind != want.Kind || b.Text != want.Text {
 				t.Errorf("%q: block %d = %+v, want %+v", tc.in, i, doc.Blocks[i], want)
 			}
 		}

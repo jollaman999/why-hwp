@@ -70,6 +70,7 @@ func Parse(zr *zip.Reader) (*model.Document, error) {
 		}
 	}
 	sum.OwnerMarks = model.FindOwnerMarks(doc.Blocks)
+	doc.Tracked = true
 	return doc, nil
 }
 
@@ -224,111 +225,218 @@ func readSection(f *zip.File, sec int, doc *model.Document) error {
 			return err
 		}
 		se, ok := tok.(xml.StartElement)
-		if !ok || se.Name.Local != "p" {
+		if !ok {
+			continue
+		}
+		if w.marker(se) {
+			if err := dec.Skip(); err != nil {
+				return err
+			}
+			continue
+		}
+		if se.Name.Local != "p" {
 			continue
 		}
 		loc := fmt.Sprintf("s%d/p%d", sec, p)
 		p++
 		i := len(doc.Blocks)
 		doc.Blocks = append(doc.Blocks, model.Block{Loc: loc, Kind: model.KindPara})
-		text, err := w.para(loc)
+		pt, err := w.para(loc)
 		if err != nil {
 			return err
 		}
-		doc.Blocks[i].Text = text
+		b := &doc.Blocks[i]
+		b.Text = pt.spans.Text(model.ViewAccepted)
+		if pt.spans.Changed() {
+			b.Spans = pt.spans
+		}
+		b.Break, b.Whole = pt.brk, pt.whole
 	}
 }
 
 // walker turns section XML into blocks. Each method is called right after
 // the start tag of its element and returns after consuming the matching
 // end tag.
+//
+// Tracked changes are marked by empty hp:insertBegin / hp:insertEnd and
+// hp:deleteBegin / hp:deleteEnd elements, which may span hp:t, run and
+// paragraph boundaries. An end marker with paraend="1" takes the break of
+// the paragraph it is in into the change.
 type walker struct {
 	dec   *xml.Decoder
 	doc   *model.Document
 	cells int // counter for unique placeholder locations
+
+	ins, del int          // open insertion and deletion ranges
+	brk      model.Change // changes that took the current paragraph's break
+	cover    model.Change // changes that cover all content seen in the current paragraph
+}
+
+// paraText is the text of one hp:p.
+type paraText struct {
+	spans model.Spans
+	brk   model.Change // change that covers the paragraph break
+	whole model.Change // change that covers the whole paragraph, break included
+}
+
+// change returns the change in effect at the current position.
+func (w *walker) change() model.Change {
+	var c model.Change
+	if w.ins > 0 {
+		c |= model.Inserted
+	}
+	if w.del > 0 {
+		c |= model.Deleted
+	}
+	return c
+}
+
+// marker reports whether se is a change-tracking marker and, if so,
+// opens or closes its range.
+func (w *walker) marker(se xml.StartElement) bool {
+	var open *int
+	var c model.Change
+	switch se.Name.Local {
+	case "insertBegin":
+		w.ins++
+		return true
+	case "deleteBegin":
+		w.del++
+		return true
+	case "insertEnd":
+		open, c = &w.ins, model.Inserted
+	case "deleteEnd":
+		open, c = &w.del, model.Deleted
+	default:
+		return false
+	}
+	if *open > 0 {
+		*open--
+	}
+	if attr(se, "paraend") == "1" {
+		w.brk |= c
+	}
+	return true
+}
+
+// content notes one piece of paragraph content (a character or an
+// object) and returns its change.
+func (w *walker) content() model.Change {
+	c := w.change()
+	w.cover &= c
+	return c
 }
 
 // para reads one hp:p and returns its own text. Tables found in it are
 // added to the document as cell blocks under loc/tN.
-func (w *walker) para(loc string) (string, error) {
-	var sb strings.Builder
+func (w *walker) para(loc string) (paraText, error) {
+	saveBrk, saveCover := w.brk, w.cover
+	w.brk, w.cover = 0, model.Inserted|model.Deleted
+	defer func() { w.brk, w.cover = saveBrk, saveCover }()
+
+	var sp model.Spans
 	tables := 0
 	depth := 0
 	afterBox := false
+	var boxEnd model.Change
 	for {
 		tok, err := w.dec.Token()
 		if err != nil {
-			return "", unexpected(err)
+			return paraText{}, unexpected(err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			if w.marker(t) {
+				if err := w.dec.Skip(); err != nil {
+					return paraText{}, err
+				}
+				continue
+			}
+			if depth == 1 && isObject(t.Name.Local) {
+				w.content()
+			}
 			switch t.Name.Local {
 			case "t":
-				var tb strings.Builder
+				var tb model.Spans
 				if err := w.text(&tb); err != nil {
-					return "", err
+					return paraText{}, err
 				}
 				if tb.Len() > 0 {
 					if afterBox {
-						sb.WriteByte('\n')
+						sp.Add("\n", boxEnd)
 						afterBox = false
 					}
-					sb.WriteString(tb.String())
+					sp.Append(tb)
 				}
 				continue
 			case "tbl":
 				if err := w.table(fmt.Sprintf("%s/t%d", loc, tables), t); err != nil {
-					return "", err
+					return paraText{}, err
 				}
 				tables++
 				continue
 			case "fieldBegin":
 				if attr(t, "type") == "MEMO" {
+					cover := w.cover
 					text, err := w.flatten()
+					w.cover = cover
 					if err != nil {
-						return "", err
+						return paraText{}, err
 					}
-					w.doc.Summary.Memos = append(w.doc.Summary.Memos, model.Memo{Loc: loc, Text: text})
+					w.doc.Summary.Memos = append(w.doc.Summary.Memos, model.Memo{Loc: loc, Text: text.Text(model.ViewAccepted)})
 					continue
 				}
 			case "pic":
 				if err := w.pic(loc); err != nil {
-					return "", err
+					return paraText{}, err
 				}
 				continue
 			case "drawText":
+				c := w.change()
 				text, err := w.flatten()
 				if err != nil {
-					return "", err
+					return paraText{}, err
 				}
-				if text != "" {
-					if sb.Len() > 0 {
-						sb.WriteByte('\n')
+				if text.Len() > 0 {
+					if sp.Len() > 0 {
+						sp.Add("\n", c)
 					}
-					sb.WriteString(text)
+					sp.Append(text)
 					afterBox = true
+					boxEnd = w.change()
 				}
 				continue
 			case "subList":
 				// Header, footer, footnote, endnote, hidden comment and
 				// caption bodies are not part of the paragraph text.
 				if err := w.dec.Skip(); err != nil {
-					return "", err
+					return paraText{}, err
 				}
 				continue
 			}
 			depth++
 		case xml.EndElement:
 			if depth == 0 {
-				return sb.String(), nil
+				brk := w.brk | w.change()
+				return paraText{spans: sp, brk: brk, whole: w.cover & brk}, nil
 			}
 			depth--
 		}
 	}
 }
 
+// isObject reports whether a run child is content (text, a table, a
+// picture, a shape) rather than a control or settings element.
+func isObject(local string) bool {
+	switch local {
+	case "t", "ctrl", "secPr":
+		return false
+	}
+	return true
+}
+
 // text appends the content of one hp:t.
-func (w *walker) text(sb *strings.Builder) error {
+func (w *walker) text(sp *model.Spans) error {
 	for {
 		tok, err := w.dec.Token()
 		if err != nil {
@@ -336,17 +444,21 @@ func (w *walker) text(sb *strings.Builder) error {
 		}
 		switch t := tok.(type) {
 		case xml.CharData:
-			sb.Write(t)
+			if len(t) > 0 {
+				sp.Add(string(t), w.content())
+			}
 		case xml.StartElement:
-			switch t.Name.Local {
-			case "tab":
-				sb.WriteByte('\t')
-			case "lineBreak":
-				sb.WriteByte('\n')
-			case "nbSpace", "fwSpace":
-				sb.WriteByte(' ')
-			case "hyphen":
-				sb.WriteByte('-')
+			if !w.marker(t) {
+				switch t.Name.Local {
+				case "tab":
+					sp.Add("\t", w.content())
+				case "lineBreak":
+					sp.Add("\n", w.content())
+				case "nbSpace", "fwSpace":
+					sp.Add(" ", w.content())
+				case "hyphen":
+					sp.Add("-", w.content())
+				}
 			}
 			if err := w.dec.Skip(); err != nil {
 				return err
@@ -359,27 +471,44 @@ func (w *walker) text(sb *strings.Builder) error {
 
 // flatten returns the text of every hp:t inside the current element, one
 // line per paragraph, ignoring tables and nested lists.
-func (w *walker) flatten() (string, error) {
-	var lines []string
-	var sb strings.Builder
+func (w *walker) flatten() (model.Spans, error) {
+	saveBrk := w.brk
+	defer func() { w.brk = saveBrk }()
+	var out, line model.Spans
+	lines := 0
+	addLine := func(brk model.Change) {
+		if lines > 0 {
+			out.Add("\n", brk)
+		}
+		out.Append(line)
+		line = nil
+		lines++
+	}
+	var brk model.Change
 	depth := 0
 	inPara := 0
 	for {
 		tok, err := w.dec.Token()
 		if err != nil {
-			return "", unexpected(err)
+			return nil, unexpected(err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			if w.marker(t) {
+				if err := w.dec.Skip(); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			switch t.Name.Local {
 			case "t":
-				if err := w.text(&sb); err != nil {
-					return "", err
+				if err := w.text(&line); err != nil {
+					return nil, err
 				}
 				continue
 			case "tbl":
 				if err := w.dec.Skip(); err != nil {
-					return "", err
+					return nil, err
 				}
 				continue
 			case "p":
@@ -388,16 +517,17 @@ func (w *walker) flatten() (string, error) {
 			depth++
 		case xml.EndElement:
 			if depth == 0 {
-				if sb.Len() > 0 {
-					lines = append(lines, sb.String())
+				if line.Len() > 0 {
+					addLine(brk)
 				}
-				return strings.Join(lines, "\n"), nil
+				return out, nil
 			}
 			depth--
 			if t.Name.Local == "p" && inPara > 0 {
 				inPara--
-				lines = append(lines, sb.String())
-				sb.Reset()
+				addLine(brk)
+				brk = w.brk | w.change()
+				w.brk = 0
 			}
 		}
 	}
@@ -472,7 +602,7 @@ func (w *walker) cell(tblLoc string, row, col int) error {
 	ti, mi, pi := len(doc.Summary.Tables), len(doc.Summary.Memos), len(doc.Summary.Pictures)
 	doc.Blocks = append(doc.Blocks, model.Block{Kind: model.KindCell})
 
-	var texts []string
+	var texts []paraText
 	paras := 0
 	depth := 0
 	for {
@@ -482,6 +612,12 @@ func (w *walker) cell(tblLoc string, row, col int) error {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			if w.marker(t) {
+				if err := w.dec.Skip(); err != nil {
+					return err
+				}
+				continue
+			}
 			switch t.Name.Local {
 			case "p":
 				text, err := w.para(fmt.Sprintf("%s/p%d", ph, paras))
@@ -524,7 +660,17 @@ func (w *walker) cell(tblLoc string, row, col int) error {
 				fix(&doc.Summary.Pictures[i].Loc)
 			}
 			doc.Blocks[bi].Loc = loc
-			doc.Blocks[bi].Text = strings.Join(texts, "\n")
+			var sp model.Spans
+			for i, pt := range texts {
+				if i > 0 {
+					sp.Add("\n", texts[i-1].brk)
+				}
+				sp.Append(pt.spans)
+			}
+			doc.Blocks[bi].Text = sp.Text(model.ViewAccepted)
+			if sp.Changed() {
+				doc.Blocks[bi].Spans = sp
+			}
 			return nil
 		}
 	}

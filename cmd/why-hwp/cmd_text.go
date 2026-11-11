@@ -23,19 +23,25 @@ func runText(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("text", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	format := fs.String("format", "plain", "output format: plain or json")
+	view := viewFlag(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: why-hwp text [-format plain|json] <file.hwpx|file.hwp|file.docx>")
+		fmt.Fprintln(stderr, "Usage: why-hwp text [-format plain|json] [-view accepted|original|markup] <file.hwpx|file.hwp|file.docx>")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Plain output is one block per line: <loc><TAB><text>, with tab and")
 		fmt.Fprintln(stderr, "line break inside the text written as \\t and \\n.")
 		fmt.Fprintln(stderr)
+		fmt.Fprintln(stderr, "Tracked changes follow -view: accepted keeps inserted text and leaves")
+		fmt.Fprintln(stderr, "out deleted text, original does the reverse, markup shows both as")
+		fmt.Fprintln(stderr, "[+inserted+] and [-deleted-]. Locations are the same in every view; a")
+		fmt.Fprintln(stderr, "paragraph the view does not have has no line. .hwp files have no views.")
+		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
 	}
-	name, code := parseFileArgs(fs, args, format)
+	name, code := parseFileArgs(fs, args, format, view)
 	if name == "" {
 		return code
 	}
-	doc, code := loadDocument("text", name, stderr)
+	doc, code := loadDocument("text", name, model.View(*view), stderr)
 	if doc == nil {
 		return code
 	}
@@ -56,9 +62,9 @@ func runText(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// parseFileArgs parses flags and the single file argument shared by text
-// and info. It returns an empty name and the exit code when parsing fails.
-func parseFileArgs(fs *flag.FlagSet, args []string, format *string) (string, int) {
+// parseFileArgs parses flags and the single file argument shared by text,
+// info and verify. It returns an empty name and the exit code when parsing fails.
+func parseFileArgs(fs *flag.FlagSet, args []string, format, view *string) (string, int) {
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return "", 0
@@ -69,6 +75,10 @@ func parseFileArgs(fs *flag.FlagSet, args []string, format *string) (string, int
 		fmt.Fprintf(fs.Output(), "why-hwp %s: unknown -format %q (want plain or json)\n", fs.Name(), *format)
 		return "", 2
 	}
+	if _, err := model.ParseView(*view); err != nil {
+		fmt.Fprintf(fs.Output(), "why-hwp %s: %v\n", fs.Name(), err)
+		return "", 2
+	}
 	if fs.NArg() != 1 {
 		fs.Usage()
 		return "", 2
@@ -76,9 +86,15 @@ func parseFileArgs(fs *flag.FlagSet, args []string, format *string) (string, int
 	return fs.Arg(0), 0
 }
 
-// loadDocument picks a reader by file extension. On failure it reports to
-// stderr and returns a nil document with the exit code.
-func loadDocument(cmd, name string, stderr io.Writer) (*model.Document, int) {
+// viewFlag adds the -view flag shared by text, info and verify.
+func viewFlag(fs *flag.FlagSet) *string {
+	return fs.String("view", string(model.ViewAccepted), "how tracked changes are shown: accepted, original or markup")
+}
+
+// loadDocument picks a reader by file extension and shows the document in
+// view. On failure it reports to stderr and returns a nil document with
+// the exit code.
+func loadDocument(cmd, name string, view model.View, stderr io.Writer) (*model.Document, int) {
 	doc, err := load.Document(name)
 	var unsupported *load.UnsupportedError
 	if errors.As(err, &unsupported) {
@@ -89,7 +105,7 @@ func loadDocument(cmd, name string, stderr io.Writer) (*model.Document, int) {
 		fmt.Fprintf(stderr, "why-hwp %s: %v\n", cmd, err)
 		return nil, 1
 	}
-	return doc, 0
+	return doc.InView(view), 0
 }
 
 func writeJSON(stdout, stderr io.Writer, v any) int {

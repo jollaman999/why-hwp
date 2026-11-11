@@ -51,7 +51,7 @@ func TestTextJSON(t *testing.T) {
 	if got.Format != "hwpx" || len(got.Blocks) != 19 {
 		t.Fatalf("format %q, %d blocks; want hwpx, 19", got.Format, len(got.Blocks))
 	}
-	if b := got.Blocks[5]; b != (model.Block{Loc: "s0/p4/t0/r0/c0", Kind: model.KindCell, Text: "항목"}) {
+	if b := got.Blocks[5]; b.Loc != "s0/p4/t0/r0/c0" || b.Kind != model.KindCell || b.Text != "항목" {
 		t.Errorf("block 5 = %+v", b)
 	}
 }
@@ -97,6 +97,7 @@ func TestTextRejects(t *testing.T) {
 	}{
 		{[]string{"text", "x.pdf"}, "unsupported file type"},
 		{[]string{"text", "-format", "xml", sampleHWPX}, "unknown -format"},
+		{[]string{"text", "-view", "final", sampleHWPX}, "unknown view"},
 		{[]string{"text"}, "Usage: why-hwp text"},
 	} {
 		var out, errOut bytes.Buffer
@@ -192,5 +193,59 @@ func TestTextBadHWP(t *testing.T) {
 		if !strings.Contains(errOut.String(), tc.msg) {
 			t.Errorf("%s: stderr = %q, want %q", tc.file, errOut.String(), tc.msg)
 		}
+	}
+}
+
+// textColumn runs text with args and returns the text of each line, without
+// the location.
+func textColumn(t *testing.T, args ...string) []string {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	if code := run(append([]string{"text"}, args...), &out, &errOut); code != 0 {
+		t.Fatalf("text %v: exit code = %d (stderr %q)", args, code, errOut.String())
+	}
+	var col []string
+	for _, line := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
+		_, text, _ := strings.Cut(line, "\t")
+		col = append(col, text)
+	}
+	return col
+}
+
+// The accepted view of a tracked apply equals the untracked result, and
+// the original view equals the input. Locations differ: the tracked file
+// keeps deleted paragraphs and numbers paragraphs as stored.
+func TestTextViewsOfApply(t *testing.T) {
+	dir := t.TempDir()
+	tracked, plain := filepath.Join(dir, "t.hwpx"), filepath.Join(dir, "n.hwpx")
+	spec := "../../testdata/apply/spec.json"
+	for _, args := range [][]string{
+		{"apply", "-spec", spec, "-o", tracked, "-author", "Tester", sampleHWPX},
+		{"apply", "-spec", spec, "-o", plain, "-no-track", sampleHWPX},
+	} {
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != 0 {
+			t.Fatalf("%v: exit code = %d (stderr %q)", args, code, errOut.String())
+		}
+	}
+	if got, want := textColumn(t, tracked), textColumn(t, plain); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("accepted view:\n got %q\nwant %q", got, want)
+	}
+	if got, want := textColumn(t, "-view", "original", tracked), textColumn(t, sampleHWPX); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("original view:\n got %q\nwant %q", got, want)
+	}
+	markup := strings.Join(textColumn(t, "-view", "markup", tracked), "\n")
+	for _, want := range []string{"문서 구조를 [-프로그램이-][+도구가+] 읽을 수 있다 (가).", "[-(A)-][+(B)+]", `[+1.1 목적\n+]`} {
+		if !strings.Contains(markup, want) {
+			t.Errorf("markup lacks %q:\n%s", want, markup)
+		}
+	}
+
+	var out, errOut bytes.Buffer
+	if code := run([]string{"info", tracked}, &out, &errOut); code != 0 {
+		t.Fatalf("info: exit code = %d (stderr %q)", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "track changes  2\n  view\taccepted\n") || strings.Contains(out.String(), "(A)\t") {
+		t.Errorf("info:\n%s", out.String())
 	}
 }

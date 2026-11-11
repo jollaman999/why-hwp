@@ -234,3 +234,83 @@ func TestTruncatedSection(t *testing.T) {
 		t.Fatal("want error for truncated section")
 	}
 }
+
+// TestTrackedChanges reads markers written the way apply writes them: a
+// replacement, a new paragraph, a deleted paragraph, a deleted cell
+// paragraph, and a paragraph added after the last one, which marks the
+// break of the paragraph before it as inserted.
+func TestTrackedChanges(t *testing.T) {
+	ins := func(id, text, paraEnd string) string {
+		return `<hp:insertBegin Id="` + id + `" TcId="1"/>` + text + `<hp:insertEnd Id="` + id + `" TcId="1" paraend="` + paraEnd + `"/>`
+	}
+	del := func(id, text, paraEnd string) string {
+		return `<hp:deleteBegin Id="` + id + `" TcId="2"/>` + text + `<hp:deleteEnd Id="` + id + `" TcId="2" paraend="` + paraEnd + `"/>`
+	}
+	sec := `<hs:sec ` + ns + `>` +
+		p(ht("제목")) +
+		p(ht(del("1", "옛 글 (A)", "0")+ins("2", "새 글 (B)", "0"))) +
+		p(ht(ins("3", "넣은 문단", "1"))) +
+		p(ht(`<hp:deleteBegin Id="4" TcId="2"/>`)+ht("지운 문단")+ht(`<hp:deleteEnd Id="4" TcId="2" paraend="1"/>`)) +
+		p(`<hp:tbl rowCnt="1" colCnt="1"><hp:tr>`+tc(0, 0, p(ht("가"))+p(ht(del("5", "나", "1")))+p(ht("다")))+`</hp:tr></hp:tbl>`) +
+		p(`<hp:pic><hp:img binaryItemIDRef="i1"/></hp:pic>`+ht(ins("6", "", "1"))) +
+		p(ht(ins("7", "끝 글", "0"))) +
+		`</hs:sec>`
+	zr := buildHWPX(t, map[string]string{"Contents/section0.xml": sec}, []string{"Contents/section0.xml"})
+	doc, err := Parse(zr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		view model.View
+		want []string
+	}{
+		{model.ViewAccepted, []string{
+			"s0/p0 제목",
+			"s0/p1 새 글 (B)",
+			"s0/p2 넣은 문단",
+			"s0/p4 ",
+			"s0/p4/t0/r0/c0 가\n다",
+			"s0/p5 ",
+			"s0/p6 끝 글",
+		}},
+		{model.ViewOriginal, []string{
+			"s0/p0 제목",
+			"s0/p1 옛 글 (A)",
+			"s0/p3 지운 문단",
+			"s0/p4 ",
+			"s0/p4/t0/r0/c0 가\n나\n다",
+			"s0/p5 ",
+		}},
+		{model.ViewMarkup, []string{
+			"s0/p0 제목",
+			"s0/p1 [-옛 글 (A)-][+새 글 (B)+]",
+			"s0/p2 [+넣은 문단\n+]",
+			"s0/p3 [-지운 문단\n-]",
+			"s0/p4 ",
+			"s0/p4/t0/r0/c0 가\n[-나\n-]다",
+			"s0/p5 [+\n+]",
+			"s0/p6 [+끝 글+]",
+		}},
+	} {
+		var got []string
+		for _, b := range doc.InView(tc.view).Blocks {
+			got = append(got, b.Loc+" "+b.Text)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s:\n got %q\nwant %q", tc.view, got, tc.want)
+		}
+	}
+	// Without a view the blocks hold each paragraph's accepted text.
+	if b := doc.Blocks[1]; b.Text != "새 글 (B)" || b.Break != 0 {
+		t.Errorf("raw s0/p1 = %+v", b)
+	}
+	if b := doc.Blocks[3]; b.Text != "" || b.Break != model.Deleted || b.Whole != model.Deleted {
+		t.Errorf("raw s0/p3 = %+v", b)
+	}
+	if b := doc.Blocks[6]; b.Break != model.Inserted || b.Whole != 0 {
+		t.Errorf("raw s0/p5 = %+v", b)
+	}
+	if len(doc.Summary.Pictures) != 1 || doc.Summary.Pictures[0].Loc != "s0/p5" {
+		t.Errorf("pictures = %+v", doc.Summary.Pictures)
+	}
+}

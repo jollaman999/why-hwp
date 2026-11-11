@@ -71,6 +71,16 @@ func texts(t *testing.T, data []byte) map[string]string {
 	return m
 }
 
+// viewTexts returns the text of each block in view v.
+func viewTexts(t *testing.T, data []byte, v model.View) map[string]string {
+	t.Helper()
+	m := map[string]string{}
+	for _, b := range parse(t, data).InView(v).Blocks {
+		m[b.Loc] = b.Text
+	}
+	return m
+}
+
 func part(t *testing.T, data []byte, name string) string {
 	t.Helper()
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -193,9 +203,11 @@ func TestSetText(t *testing.T) {
 	old := "이 문서는 why-hwp 시험용으로 만든 가짜 문서다. 실제 내용은 없다."
 
 	res := applyOps(t, src, true, Op{Op: "set_text", Loc: "s0/p2", Text: str("새 글")})
-	got := texts(t, res.Data)
-	if got["s0/p2"] != old+"새 글" {
-		t.Errorf("tracked s0/p2 = %q", got["s0/p2"])
+	if got := viewTexts(t, res.Data, model.ViewAccepted)["s0/p2"]; got != "새 글" {
+		t.Errorf("tracked s0/p2 accepted = %q", got)
+	}
+	if got := viewTexts(t, res.Data, model.ViewOriginal)["s0/p2"]; got != old {
+		t.Errorf("tracked s0/p2 original = %q", got)
 	}
 	x := paraXML(t, res.Data, "s0/p2")
 	want := `<hp:t><hp:deleteBegin Id="2" TcId="2"/>` + old + `<hp:deleteEnd Id="2" TcId="2" paraend="0"/><hp:insertBegin Id="1" TcId="1"/>새 글<hp:insertEnd Id="1" TcId="1" paraend="0"/></hp:t>`
@@ -243,8 +255,11 @@ func TestSetTextKeepsMemo(t *testing.T) {
 func TestReplace(t *testing.T) {
 	src := readSample(t)
 	res := applyOps(t, src, true, Op{Op: "replace", Loc: "s0/p7", Find: "프로그램이", With: str("도구가")})
-	if got := texts(t, res.Data)["s0/p7"]; got != "문서 구조를 프로그램이도구가 읽을 수 있다 (가)." {
-		t.Errorf("tracked = %q", got)
+	if got := viewTexts(t, res.Data, model.ViewAccepted)["s0/p7"]; got != "문서 구조를 도구가 읽을 수 있다 (가)." {
+		t.Errorf("tracked accepted = %q", got)
+	}
+	if got := viewTexts(t, res.Data, model.ViewMarkup)["s0/p7"]; got != "문서 구조를 [-프로그램이-][+도구가+] 읽을 수 있다 (가)." {
+		t.Errorf("tracked markup = %q", got)
 	}
 	res = applyOps(t, src, false, Op{Op: "replace", Loc: "s0/p7", Find: "프로그램이", With: str("도구가")})
 	if got := texts(t, res.Data)["s0/p7"]; got != "문서 구조를 도구가 읽을 수 있다 (가)." {
@@ -518,9 +533,13 @@ func TestLocsAreOriginal(t *testing.T) {
 		Op{Op: "set_text", Loc: "s0/p1", Text: str("개요")},
 		Op{Op: "delete", Loc: "s0/p2"},
 	)
-	got := texts(t, res.Data)
-	if got["s0/p3"] != "1. 개요개요" || !strings.HasPrefix(got["s0/p4"], "이 문서는") {
-		t.Errorf("p3 %q p4 %q", got["s0/p3"], got["s0/p4"])
+	got := viewTexts(t, res.Data, model.ViewOriginal)
+	if got["s0/p3"] != "1. 개요" || !strings.HasPrefix(got["s0/p4"], "이 문서는") {
+		t.Errorf("original p3 %q p4 %q", got["s0/p3"], got["s0/p4"])
+	}
+	got = viewTexts(t, res.Data, model.ViewAccepted)
+	if _, ok := got["s0/p4"]; got["s0/p1"] != "a" || got["s0/p3"] != "개요" || ok {
+		t.Errorf("accepted p1 %q p3 %q p4 %q (present %v)", got["s0/p1"], got["s0/p3"], got["s0/p4"], ok)
 	}
 }
 

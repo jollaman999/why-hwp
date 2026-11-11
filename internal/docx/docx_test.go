@@ -187,3 +187,60 @@ func TestMissingMainPart(t *testing.T) {
 		t.Fatal("want error when word/document.xml is missing")
 	}
 }
+
+func TestTrackedChanges(t *testing.T) {
+	const a = ` w:author="x"`
+	body := para(run("제목")+`<w:r><w:rPr><w:b/></w:rPr><w:t>굵게</w:t></w:r>`) +
+		para(`<w:del w:id="1"`+a+`><w:r><w:delText>옛 글</w:delText></w:r></w:del><w:ins w:id="2"`+a+`>`+run("새 글")+`</w:ins>`) +
+		para(`<w:pPr><w:rPr><w:ins w:id="3"`+a+`/></w:rPr></w:pPr><w:ins w:id="4"`+a+`>`+run("넣은 문단")+`</w:ins>`) +
+		para(`<w:pPr><w:rPr><w:del w:id="5"`+a+`/></w:rPr></w:pPr><w:del w:id="6"`+a+`><w:r><w:delText>지운 문단</w:delText></w:r></w:del>`) +
+		para(run("앞")+`<w:moveFrom w:id="7"`+a+`><w:r><w:delText>옮긴 글</w:delText></w:r></w:moveFrom>`) +
+		`<w:tbl><w:tblGrid><w:gridCol/></w:tblGrid><w:tr>` +
+		cellXML(1, para(`<w:pPr><w:rPr><w:del w:id="8"`+a+`/></w:rPr></w:pPr>`+run("가"))+para(run("나"))) +
+		`</w:tr></w:tbl>` +
+		para(run("끝"))
+	doc, err := Parse(buildDocx(t, map[string]string{
+		"word/document.xml": `<w:document ` + docNS + `><w:body>` + body + `</w:body></w:document>`,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		view model.View
+		want []string
+	}{
+		{model.ViewAccepted, []string{
+			"s0/p0 제목굵게",
+			"s0/p1 새 글",
+			"s0/p2 넣은 문단",
+			"s0/p4 앞",
+			"s0/p5/t0/r0/c0 가나",
+			"s0/p6 끝",
+		}},
+		{model.ViewOriginal, []string{
+			"s0/p0 제목굵게",
+			"s0/p1 옛 글",
+			"s0/p3 지운 문단",
+			"s0/p4 앞옮긴 글",
+			"s0/p5/t0/r0/c0 가\n나",
+			"s0/p6 끝",
+		}},
+		{model.ViewMarkup, []string{
+			"s0/p0 제목굵게",
+			"s0/p1 [-옛 글-][+새 글+]",
+			"s0/p2 [+넣은 문단\n+]",
+			"s0/p3 [-지운 문단\n-]",
+			"s0/p4 앞[-옮긴 글-]",
+			"s0/p5/t0/r0/c0 가[-\n-]나",
+			"s0/p6 끝",
+		}},
+	} {
+		var got []string
+		for _, b := range doc.InView(tc.view).Blocks {
+			got = append(got, b.Loc+" "+b.Text)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s:\n got %q\nwant %q", tc.view, got, tc.want)
+		}
+	}
+}

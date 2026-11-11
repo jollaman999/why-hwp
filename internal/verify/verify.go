@@ -374,8 +374,8 @@ func (r *Report) numbers(orig, cur *model.Document) {
 	}
 }
 
-// trackNotes states what the reader can and cannot tell apart in tracked
-// changes, when a document has any.
+// trackNotes states which view tracked changes were read in, when a
+// document has any.
 func (r *Report) trackNotes(orig, cur *model.Document) {
 	seen := map[string]bool{}
 	for _, d := range []*model.Document{orig, cur} {
@@ -383,11 +383,15 @@ func (r *Report) trackNotes(orig, cur *model.Document) {
 			continue
 		}
 		seen[d.Format] = true
-		switch d.Format {
-		case "docx":
-			r.Notes = append(r.Notes, "docx has tracked changes: deleted text (w:delText) is left out and inserted text is read as ordinary text")
+		switch d.Summary.View {
+		case model.ViewAccepted:
+			r.Notes = append(r.Notes, d.Format+" has tracked changes: read in the accepted view (inserted text kept, deleted text left out)")
+		case model.ViewOriginal:
+			r.Notes = append(r.Notes, d.Format+" has tracked changes: read in the original view (deleted text kept, inserted text left out)")
+		case model.ViewMarkup:
+			r.Notes = append(r.Notes, d.Format+" has tracked changes: read in the markup view (inserted text as [+...+], deleted text as [-...-])")
 		default:
-			r.Notes = append(r.Notes, d.Format+" has tracked changes: text marked as deleted and text marked as inserted are both read as ordinary text, so changes inside tracked regions cannot be told apart")
+			r.Notes = append(r.Notes, d.Format+" has tracked changes: views are not supported for "+d.Format+", so tracked insertions and deletions are not told apart")
 		}
 	}
 }

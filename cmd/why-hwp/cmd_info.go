@@ -17,19 +17,21 @@ func runInfo(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("info", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	format := fs.String("format", "plain", "output format: plain or json")
+	view := viewFlag(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: why-hwp info [-format plain|json] <file.hwpx|file.hwp|file.docx>")
+		fmt.Fprintln(stderr, "Usage: why-hwp info [-format plain|json] [-view accepted|original|markup] <file.hwpx|file.hwp|file.docx>")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Shows sections, paragraphs, tables, owner marks such as (A) or (A/B),")
-		fmt.Fprintln(stderr, "memos, tracked changes, styles and pictures.")
+		fmt.Fprintln(stderr, "memos, tracked changes, styles and pictures. Owner marks are counted in")
+		fmt.Fprintln(stderr, "the text of -view (see why-hwp text -h); .hwp files have no views.")
 		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
 	}
-	name, code := parseFileArgs(fs, args, format)
+	name, code := parseFileArgs(fs, args, format, view)
 	if name == "" {
 		return code
 	}
-	doc, code := loadDocument("info", name, stderr)
+	doc, code := loadDocument("info", name, model.View(*view), stderr)
 	if doc == nil {
 		return code
 	}
@@ -55,6 +57,13 @@ func runInfo(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  %s\t%s\n", m.Loc, lineEscaper.Replace(m.Text))
 	}
 	fmt.Fprintf(stdout, "track changes  %d\n", s.TrackChanges)
+	if s.TrackChanges > 0 {
+		if s.View != "" {
+			fmt.Fprintf(stdout, "  view\t%s\n", s.View)
+		} else {
+			fmt.Fprintf(stdout, "  view\tnone: %s tracked insertions and deletions are not told apart\n", s.Format)
+		}
+	}
 	if s.Format == "hwpx" || s.Format == "hwp" {
 		fmt.Fprintf(stdout, "para shapes    %d\n", s.ParaShapes)
 		fmt.Fprintf(stdout, "char shapes    %d\n", s.CharShapes)

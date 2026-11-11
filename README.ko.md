@@ -37,18 +37,20 @@ why-hwp 는 Go 로 작성해 플랫폼마다 실행 파일 하나로 빌드합�
 ### text
 
 ```sh
-why-hwp text [-format plain|json] <파일>
+why-hwp text [-format plain|json] [-view accepted|original|markup] <파일>
 ```
 
 `.hwpx`·`.hwp`·`.docx` 의 글을 한 줄에 한 덩어리씩 `<위치><TAB><글>` 로 출력합니다. 위치로 문서 안의 자리를 다시 찾을 수 있습니다. `s0/p12` 는 0번 구역의 12번 문단이고, `s0/p3/t0/r1/c2` 는 3번 문단에 있는 첫 표의 1행 2열입니다. 메모 내용, 머리말·꼬리말, 각주는 넣지 않습니다.
 
+변경 추적이 있는 문서는 `-view` 로 보는 모습을 고릅니다. `accepted`(기본)는 변경을 모두 수락한 글로, 줄바꿈과 공백을 빼면 한글이 TXT 로 저장하는 글과 같습니다. `original` 은 변경을 모두 거절한 글이고, `markup` 은 둘 다 보여 주며 넣은 글을 `[+글+]`, 지운 글을 `[-글-]` 로 표시합니다(문단 나눔이 바뀌었으면 표시 안에 `\n` 으로 나옵니다). 위치는 보기에 따라 바뀌지 않습니다. 지운 문단과 넣은 문단을 포함해 저장된 문단 순서대로 번호를 매기므로 `apply` 가 받는 위치와 같습니다. 다른 보기에만 있는 문단은 줄이 없고, 보기에서 문단 나눔이 없어진 문단은 다음 문단과 합쳐서 보여 줍니다. 보기는 `.hwpx` 와 `.docx`(`w:ins`, `w:del`, `w:moveFrom`, `w:moveTo`)에서 되고, `.hwp` 는 보기를 지원하지 않습니다.
+
 ### info
 
 ```sh
-why-hwp info [-format plain|json] <파일>
+why-hwp info [-format plain|json] [-view accepted|original|markup] <파일>
 ```
 
-구역·문단 수, 표와 그 크기, `(A)`·`(A/B)` 같은 담당 표기와 나온 위치, 메모, 변경 추적, 스타일, 그림을 보여줍니다.
+구역·문단 수, 표와 그 크기, `(A)`·`(A/B)` 같은 담당 표기와 나온 위치, 메모, 변경 추적, 스타일, 그림을 보여줍니다. 담당 표기는 `-view`(기본 `accepted`)의 글에서 셉니다. 변경 추적이 있으면 그 수 아래에 보기를 적습니다.
 
 `text`·`info` 는 `.hwp`(HWP 5.0 바이너리)도 읽고, 같은 문서의 `.hwpx` 와 같은 위치 표기를 냅니다. 암호·DRM·배포용 문서는 복호하지 않고 에러(종료 코드 1)로 끝냅니다.
 
@@ -63,10 +65,10 @@ why-hwp apply -spec edits.json -o out.hwpx -author 이름 [-date RFC3339] [-no-t
 ### verify
 
 ```sh
-why-hwp verify [-orig 원본] [-allow locs.txt] [-banned words.txt] [-ignore-case] [-format plain|json] <파일>
+why-hwp verify [-orig 원본] [-allow locs.txt] [-banned words.txt] [-ignore-case] [-view accepted|original|markup] [-format plain|json] <파일>
 ```
 
-문서를 넘기기 전에 확인합니다. `.hwpx`, `.hwp`, `.docx`, `.md`, `.txt` 를 읽고, md 와 txt 는 줄 단위로 `l1`, `l2`, ... 위치를 붙입니다. `-orig` 를 주면 바뀐 블록, 추가된 블록("added 2 after original s0/p7" 처럼), 삭제된 블록을 보여 줍니다. 원본의 메모, 표, 그림, 변경 추적이 사라졌거나 표가 작아졌으면 위반입니다. `-allow`(한 줄에 위치 하나, `s0/p4/t0/*` 는 접두사 일치)를 주면 목록 밖의 변경은 위반입니다. 금지어(`-banned`, 한 줄에 하나, `#` 주석, `re:` 는 정규식)와 em dash 는 위반이고, en dash 와 원본에 없던 숫자는 경고입니다. 위반이 있으면 종료 코드 1, 없으면 0, 사용법 오류나 파일을 못 읽으면 2 입니다. 변경 추적이 있는 hwpx·hwp 는 삭제 표시된 글도 본문으로 읽히므로 지운 글과 넣은 글을 구분하지 못합니다.
+문서를 넘기기 전에 확인합니다. `.hwpx`, `.hwp`, `.docx`, `.md`, `.txt` 를 읽고, md 와 txt 는 줄 단위로 `l1`, `l2`, ... 위치를 붙입니다. `-orig` 를 주면 바뀐 블록, 추가된 블록("added 2 after original s0/p7" 처럼), 삭제된 블록을 보여 줍니다. 원본의 메모, 표, 그림, 변경 추적이 사라졌거나 표가 작아졌으면 위반입니다. `-allow`(한 줄에 위치 하나, `s0/p4/t0/*` 는 접두사 일치)를 주면 목록 밖의 변경은 위반입니다. 금지어(`-banned`, 한 줄에 하나, `#` 주석, `re:` 는 정규식)와 em dash 는 위반이고, en dash 와 원본에 없던 숫자는 경고입니다. 위반이 있으면 종료 코드 1, 없으면 0, 사용법 오류나 파일을 못 읽으면 2 입니다. 두 문서 모두 `-view`(기본 `accepted`, `text` 참고)로 읽으므로, 변경 추적이 있는 hwpx·docx 는 지운 글을 빼고 넣은 글을 새 글로 비교합니다. 어느 보기로 읽었는지는 notes 에 나옵니다. hwp 는 보기를 지원하지 않아, 변경 추적이 있는 hwp 에서는 지운 글과 넣은 글을 구분하지 못합니다.
 
 ### convert
 
