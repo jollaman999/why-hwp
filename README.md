@@ -32,6 +32,16 @@ why-hwp is written in Go and built into one executable per platform, so the same
 | Linux | amd64, arm64 |
 | macOS | amd64, arm64 |
 
+## Commands
+
+### svg2png
+
+```sh
+why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-o out.png] <in.svg>
+```
+
+Renders an SVG to a PNG sized for the space it will fill in the document (600 dpi by default; the height follows the SVG aspect ratio). It drives a headless Chrome, Edge, Chromium or Firefox, so fonts, including web fonts embedded in the SVG as data URIs, come out exactly as in a browser. Pick a browser with `-browser` or `WHY_HWP_BROWSER`; `-trim` cuts white margins. Without a width, the SVG's own size (96 px per inch) is used. Output is limited to 20000 px per side and 120 million pixels.
+
 ## Build
 
 Requires Go 1.24 or later and GNU make. On Windows, run make from Git Bash.

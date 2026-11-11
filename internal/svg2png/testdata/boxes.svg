@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="160mm" height="90mm" viewBox="0 0 160 90">
+  <rect x="0" y="0" width="160" height="90" fill="#ffffff"/>
+  <rect x="10" y="10" width="40" height="30" fill="#ff0000"/>
+  <rect x="110" y="50" width="40" height="30" fill="#0000ff"/>
+  <rect x="0" y="85" width="160" height="5" fill="#00ff00"/>
+  <rect x="155" y="0" width="5" height="85" fill="#ff00ff"/>
+  <text x="60" y="30" font-family="Malgun Gothic, Noto Sans CJK KR, NanumGothic, sans-serif" font-size="12" fill="#000000">한글 그림</text>
+  <text x="10" y="70" font-family="Malgun Gothic, Noto Sans CJK KR, NanumGothic, sans-serif" font-size="8" fill="#000000">가나다라 ABC 123</text>
+</svg>
