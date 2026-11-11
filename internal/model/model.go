@@ -66,9 +66,9 @@ type Summary struct {
 	Paragraphs   int         `json:"paragraphs"` // top-level paragraphs only
 	Tables       []Table     `json:"tables"`
 	Memos        []Memo      `json:"memos"`
-	TrackChanges int         `json:"trackChanges"` // hwpx: hh:trackChange entries, docx: w:ins + w:del
-	ParaShapes   int         `json:"paraShapes"`   // hwpx: hh:paraPr entries
-	CharShapes   int         `json:"charShapes"`   // hwpx: hh:charPr entries
+	TrackChanges int         `json:"trackChanges"` // hwpx: hh:trackChange entries, hwp: max(ID_MAPPINGS[16], TRACK_CHANGE records), docx: w:ins + w:del
+	ParaShapes   int         `json:"paraShapes"`   // hwpx: hh:paraPr entries, hwp: PARA_SHAPE records
+	CharShapes   int         `json:"charShapes"`   // hwpx: hh:charPr entries, hwp: CHAR_SHAPE records
 	Styles       []Style     `json:"styles"`
 	Pictures     []Picture   `json:"pictures"`
 	BinData      []BinItem   `json:"binData"`
@@ -82,7 +82,7 @@ type Table struct {
 	Cols int    `json:"cols"`
 }
 
-// Memo is a memo (hwpx) or comment (docx). Loc is the paragraph or cell
+// Memo is a memo (hwpx, hwp) or comment (docx). Loc is the paragraph or cell
 // that holds the memo anchor; for docx it is empty.
 type Memo struct {
 	Loc  string `json:"loc"`
@@ -97,14 +97,14 @@ type Style struct {
 	EngName string `json:"engName,omitempty"`
 }
 
-// Picture is one embedded picture. Ref is the binary item id (hwpx) or
+// Picture is one embedded picture. Ref is the binary item id (hwpx), BIN_DATA number counted from 1 (hwp) or
 // relationship id (docx) that points into BinData.
 type Picture struct {
 	Loc string `json:"loc"`
 	Ref string `json:"ref"`
 }
 
-// BinItem is one embedded binary part (BinData/ in hwpx, word/media/ in docx).
+// BinItem is one embedded binary part (BinData/ in hwpx and hwp, word/media/ in docx).
 type BinItem struct {
 	ID        string `json:"id"`
 	Path      string `json:"path"`

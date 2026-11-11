@@ -18,7 +18,7 @@ func runInfo(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	format := fs.String("format", "plain", "output format: plain or json")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: why-hwp info [-format plain|json] <file.hwpx|file.docx>")
+		fmt.Fprintln(stderr, "Usage: why-hwp info [-format plain|json] <file.hwpx|file.hwp|file.docx>")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Shows sections, paragraphs, tables, owner marks such as (A) or (A/B),")
 		fmt.Fprintln(stderr, "memos, tracked changes, styles and pictures.")
@@ -55,7 +55,7 @@ func runInfo(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  %s\t%s\n", m.Loc, lineEscaper.Replace(m.Text))
 	}
 	fmt.Fprintf(stdout, "track changes  %d\n", s.TrackChanges)
-	if s.Format == "hwpx" {
+	if s.Format == "hwpx" || s.Format == "hwp" {
 		fmt.Fprintf(stdout, "para shapes    %d\n", s.ParaShapes)
 		fmt.Fprintf(stdout, "char shapes    %d\n", s.CharShapes)
 	}

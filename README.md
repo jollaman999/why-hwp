@@ -40,7 +40,7 @@ why-hwp is written in Go and built into one executable per platform, so the same
 why-hwp text [-format plain|json] <file>
 ```
 
-Prints the text of an `.hwpx` or `.docx` file, one block per line as `<loc><TAB><text>`. A loc points back into the document: `s0/p12` is paragraph 12 of section 0, `s0/p3/t0/r1/c2` is row 1, column 2 of the first table in paragraph 3. Memo bodies, headers, footers and footnotes are left out.
+Prints the text of an `.hwpx`, `.hwp` or `.docx` file, one block per line as `<loc><TAB><text>`. A loc points back into the document: `s0/p12` is paragraph 12 of section 0, `s0/p3/t0/r1/c2` is row 1, column 2 of the first table in paragraph 3. Memo bodies, headers, footers and footnotes are left out.
 
 ### info
 
@@ -50,7 +50,7 @@ why-hwp info [-format plain|json] <file>
 
 Shows sections, paragraphs, tables and their size, owner marks such as `(A)` or `(A/B)` with where they occur, memos, tracked changes, styles and pictures.
 
-`.hwp` files are not supported by `text` and `info` yet.
+`text` and `info` also read `.hwp` (HWP 5.0 binary) files and give the same locations as the `.hwpx` copy of the same document. Password-protected, DRM and distribution documents are refused with an error (exit code 1); they are not decrypted.
 
 ### convert
 

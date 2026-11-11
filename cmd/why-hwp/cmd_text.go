@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jollaman999/why-hwp/internal/docx"
+	"github.com/jollaman999/why-hwp/internal/hwp"
 	"github.com/jollaman999/why-hwp/internal/hwpx"
 	"github.com/jollaman999/why-hwp/internal/model"
 )
@@ -25,7 +26,7 @@ func runText(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	format := fs.String("format", "plain", "output format: plain or json")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: why-hwp text [-format plain|json] <file.hwpx|file.docx>")
+		fmt.Fprintln(stderr, "Usage: why-hwp text [-format plain|json] <file.hwpx|file.hwp|file.docx>")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Plain output is one block per line: <loc><TAB><text>, with tab and")
 		fmt.Fprintln(stderr, "line break inside the text written as \\t and \\n.")
@@ -90,10 +91,9 @@ func loadDocument(cmd, name string, stderr io.Writer) (*model.Document, int) {
 	case ".docx":
 		doc, err = docx.Read(name)
 	case ".hwp":
-		fmt.Fprintf(stderr, "why-hwp %s: hwp support not yet\n", cmd)
-		return nil, 2
+		doc, err = hwp.Read(name)
 	default:
-		fmt.Fprintf(stderr, "why-hwp %s: unsupported file type %q (want .hwpx or .docx)\n", cmd, filepath.Ext(name))
+		fmt.Fprintf(stderr, "why-hwp %s: unsupported file type %q (want .hwpx, .hwp or .docx)\n", cmd, filepath.Ext(name))
 		return nil, 2
 	}
 	if err != nil {
