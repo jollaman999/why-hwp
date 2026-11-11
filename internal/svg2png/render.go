@@ -11,26 +11,18 @@ import (
 	"image/draw"
 	"image/png"
 	"math"
-	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
-	"time"
+
+	"github.com/jollaman999/why-hwp/internal/engine"
 )
 
 // Options describes one render.
 type Options struct {
-	Browser Browser
-	SVG     []byte  // SVG document
-	Width   int     // output width in device pixels
-	Height  int     // output height in device pixels
-	DPI     float64 // written to the PNG pHYs chunk
-	Trim    bool    // cut white or transparent margins after rendering
-	Timeout time.Duration
-	// TempDir is the parent of the per-render work directory; empty means
-	// os.TempDir().
-	TempDir string
+	SVG    []byte   // SVG document
+	Fonts  [][]byte // the only fonts the renderer may use (see ScanFonts)
+	Width  int      // output width in device pixels
+	Height int      // output height in device pixels
+	DPI    float64  // written to the PNG pHYs chunk
+	Trim   bool     // cut white or transparent margins after rendering
 }
 
 // Result is a rendered image.
@@ -38,83 +30,27 @@ type Result struct {
 	PNG    []byte
 	Width  int
 	Height int
-	// Raw is the size of the browser screenshot before cropping.
-	RawWidth, RawHeight int
 }
 
-// Render draws the SVG with the browser and returns the PNG. The browser runs
-// with a throwaway profile directory, and the work directory is removed
-// before Render returns.
-func Render(ctx context.Context, o Options) (res Result, err error) {
+// Render draws the SVG with the embedded engine (resvg) on a white page of
+// exactly Width x Height pixels and returns the PNG.
+func Render(ctx context.Context, o Options) (Result, error) {
 	if o.Width < 1 || o.Height < 1 {
 		return Result{}, errors.New("output size must be positive")
 	}
-	if o.Timeout <= 0 {
-		o.Timeout = 60 * time.Second
-	}
-	dir, err := os.MkdirTemp(o.TempDir, "why-hwp-svg2png-")
+	raw, err := engine.SVG2PNG(ctx, o.SVG, o.Fonts, o.Width, o.Height)
 	if err != nil {
 		return Result{}, err
-	}
-	defer func() {
-		if rerr := os.RemoveAll(dir); rerr != nil && err == nil {
-			err = fmt.Errorf("remove work directory: %w", rerr)
-		}
-	}()
-
-	if err := os.WriteFile(filepath.Join(dir, "input.svg"), o.SVG, 0o600); err != nil {
-		return Result{}, err
-	}
-	// One CSS pixel is one device pixel, so the page, the window and the
-	// screenshot all have the exact integer target size.
-	page := filepath.Join(dir, "page.html")
-	if err := os.WriteFile(page, []byte(pageHTML(o.Width, o.Height)), 0o600); err != nil {
-		return Result{}, err
-	}
-	if o.Browser.Kind == Firefox {
-		// Firefox needs an existing profile directory. Pin the pixel ratio so
-		// the OS display scaling does not enlarge the screenshot.
-		prof := filepath.Join(dir, "profile")
-		if err := os.Mkdir(prof, 0o700); err != nil {
-			return Result{}, err
-		}
-		prefs := "user_pref(\"layout.css.devPixelsPerPx\", \"1.0\");\n"
-		if err := os.WriteFile(filepath.Join(prof, "user.js"), []byte(prefs), 0o600); err != nil {
-			return Result{}, err
-		}
-	}
-	shot := filepath.Join(dir, "shot.png")
-	args := browserArgs(o.Browser.Kind, dir, page, shot, o.Width, o.Height)
-
-	cctx, cancel := context.WithTimeout(ctx, o.Timeout)
-	defer cancel()
-	cmd := exec.CommandContext(cctx, o.Browser.Path, args...)
-	cmd.WaitDelay = 5 * time.Second
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	runErr := cmd.Run()
-	if cctx.Err() == context.DeadlineExceeded {
-		return Result{}, fmt.Errorf("%s did not finish within %s", o.Browser.Name, o.Timeout)
-	}
-	raw, rerr := os.ReadFile(shot)
-	if rerr != nil {
-		msg := tail(out.String(), 2000)
-		if runErr != nil {
-			return Result{}, fmt.Errorf("%s failed: %v\n%s", o.Browser.Name, runErr, msg)
-		}
-		return Result{}, fmt.Errorf("%s wrote no screenshot\n%s", o.Browser.Name, msg)
 	}
 	img, err := png.Decode(bytes.NewReader(raw))
 	if err != nil {
-		return Result{}, fmt.Errorf("decode screenshot: %w", err)
+		return Result{}, fmt.Errorf("decode engine output: %w", err)
 	}
 	b := img.Bounds()
-	res.RawWidth, res.RawHeight = b.Dx(), b.Dy()
-	if b.Dx() < o.Width-1 || b.Dy() < o.Height-1 {
-		return Result{}, fmt.Errorf("screenshot is %dx%d, want %dx%d", b.Dx(), b.Dy(), o.Width, o.Height)
+	if b.Dx() != o.Width || b.Dy() != o.Height {
+		return Result{}, fmt.Errorf("engine drew %dx%d, want %dx%d", b.Dx(), b.Dy(), o.Width, o.Height)
 	}
-	crop := image.Rect(b.Min.X, b.Min.Y, b.Min.X+min(o.Width, b.Dx()), b.Min.Y+min(o.Height, b.Dy()))
+	crop := b
 	if o.Trim {
 		crop = trimRect(img, crop)
 	}
@@ -128,54 +64,7 @@ func Render(ctx context.Context, o Options) (res Result, err error) {
 	if o.DPI > 0 {
 		data = withPHYs(data, o.DPI)
 	}
-	res.PNG = data
-	res.Width, res.Height = crop.Dx(), crop.Dy()
-	return res, nil
-}
-
-func pageHTML(w, h int) string {
-	return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-html,body{margin:0;padding:0;overflow:hidden;background:#fff}
-img{display:block;width:` + strconv.Itoa(w) + `px;height:` + strconv.Itoa(h) + `px}
-</style></head><body><img src="input.svg" alt=""></body></html>
-`
-}
-
-func browserArgs(k Kind, dir, page, shot string, w, h int) []string {
-	pageURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(page)}).String()
-	if filepath.VolumeName(page) != "" {
-		pageURL = (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(page)}).String()
-	}
-	size := strconv.Itoa(w) + "," + strconv.Itoa(h)
-	if k == Firefox {
-		return []string{
-			"--headless",
-			"--no-remote",
-			"--profile", filepath.Join(dir, "profile"),
-			"--window-size=" + size,
-			"--screenshot", shot,
-			pageURL,
-		}
-	}
-	args := []string{
-		"--headless=new",
-		"--disable-gpu",
-		"--hide-scrollbars",
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--disable-extensions",
-		"--disable-sync",
-		"--mute-audio",
-		"--user-data-dir=" + filepath.Join(dir, "profile"),
-		"--force-device-scale-factor=1",
-		"--window-size=" + size,
-		"--screenshot=" + shot,
-	}
-	if os.Geteuid() == 0 {
-		args = append(args, "--no-sandbox")
-	}
-	return append(args, pageURL)
+	return Result{PNG: data, Width: crop.Dx(), Height: crop.Dy()}, nil
 }
 
 // trimRect shrinks r to exclude rows and columns at the edges that are all
@@ -241,11 +130,4 @@ func withPHYs(p []byte, dpi float64) []byte {
 	out = append(out, p[:ihdrEnd]...)
 	out = append(out, chunk...)
 	return append(out, p[ihdrEnd:]...)
-}
-
-func tail(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return "..." + s[len(s)-n:]
 }

@@ -8,45 +8,36 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
+
+	"github.com/jollaman999/why-hwp/internal/sfnt"
+	"github.com/jollaman999/why-hwp/internal/svgtool"
 )
 
-// availableBrowsers returns every default candidate found on this machine,
-// one per browser name, or only $WHY_HWP_BROWSER when it is set.
-func availableBrowsers(t *testing.T) []Browser {
+const (
+	fixtureFont = "../../testdata/fonts/sans-subset.ttf"
+	fixtureSVG  = "../../testdata/svg/good.svg"
+)
+
+func render(t *testing.T, o Options) image.Image {
 	t.Helper()
-	f := DefaultFinder(runtime.GOOS)
-	if os.Getenv(EnvBrowser) != "" {
-		b, err := f.Find("")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return []Browser{b}
+	res, err := Render(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
 	}
-	seen := map[string]bool{}
-	var out []Browser
-	for _, c := range Candidates(runtime.GOOS, os.Getenv) {
-		if seen[c.Name] {
-			continue
-		}
-		p, ok := f.locate(c.Path)
-		if !ok {
-			continue
-		}
-		seen[c.Name] = true
-		out = append(out, Browser{Name: c.Name, Path: p, Kind: KindOf(p)})
+	if res.Width != o.Width || res.Height != o.Height {
+		t.Fatalf("output %dx%d, want %dx%d", res.Width, res.Height, o.Width, o.Height)
 	}
-	return out
+	img, err := png.Decode(bytes.NewReader(res.PNG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
 }
 
 func TestRenderBoxes(t *testing.T) {
 	if testing.Short() {
-		t.Skip("browser render skipped in -short mode")
-	}
-	browsers := availableBrowsers(t)
-	if len(browsers) == 0 {
-		t.Skip("no browser installed")
+		t.Skip("engine render skipped in -short mode")
 	}
 	svg, err := os.ReadFile(filepath.Join("testdata", "boxes.svg"))
 	if err != nil {
@@ -56,28 +47,14 @@ func TestRenderBoxes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, b := range browsers {
-		for _, mm := range []float64{40, 160} {
-			w, h, err := TargetSize(sw, sh, mm, 0, 600)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Run(fmt.Sprintf("%s/%gmm", b.Name, mm), func(t *testing.T) {
-				res, err := Render(context.Background(), Options{Browser: b, SVG: svg, Width: w, Height: h, DPI: 600, TempDir: t.TempDir()})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Logf("%s: screenshot %dx%d, output %dx%d", b.Path, res.RawWidth, res.RawHeight, res.Width, res.Height)
-				if res.Width != w || res.Height != h {
-					t.Fatalf("output %dx%d, want %dx%d", res.Width, res.Height, w, h)
-				}
-				img, err := png.Decode(bytes.NewReader(res.PNG))
-				if err != nil {
-					t.Fatal(err)
-				}
-				checkBoxes(t, img, w, h)
-			})
+	for _, mm := range []float64{40, 160} {
+		w, h, err := TargetSize(sw, sh, mm, 0, 600)
+		if err != nil {
+			t.Fatal(err)
 		}
+		t.Run(fmt.Sprintf("%gmm", mm), func(t *testing.T) {
+			checkBoxes(t, render(t, Options{SVG: svg, Width: w, Height: h, DPI: 600}), w, h)
+		})
 	}
 }
 
@@ -106,19 +83,90 @@ func checkBoxes(t *testing.T, img image.Image, w, h int) {
 	assertColorTol(t, img, "last row", w/2, h-1, 0, 0xff, 0, 0x80)
 	assertColorTol(t, img, "last column", w-1, h/4, 0xff, 0, 0xff, 0x80)
 
-	// The Korean caption sits at x 60..110 with its baseline at y 30.
-	dark, total := 0, 0
-	for y := int(19 * sy); y < int(32*sy); y++ {
-		for x := int(60 * sx); x < int(110*sx); x++ {
+	// The SVG embeds no font, so its Korean caption (x 60..110, baseline
+	// y 30) must not be drawn with a system font.
+	if n := darkPixels(img, int(60*sx), int(19*sy), int(110*sx), int(32*sy)); n != 0 {
+		t.Errorf("caption area has %d dark pixels; a system font was used", n)
+	}
+}
+
+// darkPixels counts pixels in [x0,x1)x[y0,y1) with every channel below 0x40.
+func darkPixels(img image.Image, x0, y0, x1, y1 int) int {
+	n := 0
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
 			r, g, b, _ := img.At(x, y).RGBA()
-			total++
 			if r < 0x4000 && g < 0x4000 && b < 0x4000 {
-				dark++
+				n++
 			}
 		}
 	}
-	if frac := float64(dark) / float64(total); frac < 0.03 || frac > 0.6 {
-		t.Errorf("caption area is %.1f%% dark, want glyph strokes", frac*100)
+	return n
+}
+
+// embedFixtureFont does what why-hwp svgfont does, with the fixture font
+// for both weights.
+func embedFixtureFont(t *testing.T, svg []byte) []byte {
+	t.Helper()
+	data, err := os.ReadFile(fixtureFont)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := sfnt.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sets, err := svgtool.Collect(svg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var faces []svgtool.Face
+	for _, w := range []svgtool.Weight{svgtool.Regular, svgtool.Bold} {
+		if len(sets[w]) == 0 {
+			continue
+		}
+		face, _, err := svgtool.SubsetFace(f, w, svgtool.DefaultFamily, sets[w])
+		if err != nil {
+			t.Fatal(err)
+		}
+		faces = append(faces, face)
+	}
+	out, err := svgtool.Embed(svg, svgtool.DefaultFamily, faces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestRenderEmbeddedFont draws testdata/svg/good.svg (viewBox 0 0 520 220)
+// with and without its embedded font: the "Input file" label inside the
+// first box must be drawn only when the font is passed.
+func TestRenderEmbeddedFont(t *testing.T) {
+	if testing.Short() {
+		t.Skip("engine render skipped in -short mode")
+	}
+	plain, err := os.ReadFile(fixtureSVG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svg := embedFixtureFont(t, plain)
+	scan, err := ScanFonts(svg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scan.Fonts) != 2 || len(scan.Skipped) != 0 {
+		t.Fatalf("ScanFonts found %d fonts, skipped %q; want 2 and none", len(scan.Fonts), scan.Skipped)
+	}
+	const w, h = 1040, 440
+	label := func(img image.Image) int { return darkPixels(img, 2*25, 2*45, 2*155, 2*85) }
+	with := label(render(t, Options{SVG: svg, Fonts: scan.Fonts, Width: w, Height: h}))
+	without := label(render(t, Options{SVG: svg, Width: w, Height: h}))
+	t.Logf("label dark pixels: %d with the font, %d without", with, without)
+	if with < 200 {
+		t.Errorf("label has %d dark pixels with the embedded font; want glyph strokes", with)
+	}
+	if without != 0 {
+		t.Errorf("label has %d dark pixels without fonts; want none", without)
 	}
 }
 

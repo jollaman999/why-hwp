@@ -83,10 +83,10 @@ Converts a document with the installed Hancom Office (Windows only; on other sys
 ### svg2png
 
 ```sh
-why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-o out.png] <in.svg>
+why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-trim] [-timeout 2m] [-o out.png] <in.svg>
 ```
 
-Renders an SVG to a PNG sized for the space it will fill in the document (600 dpi by default; the height follows the SVG aspect ratio). It drives a headless Chrome, Edge, Chromium or Firefox, so fonts, including web fonts embedded in the SVG as data URIs, come out exactly as in a browser. Pick a browser with `-browser` or `WHY_HWP_BROWSER`; `-trim` cuts white margins. Without a width, the SVG's own size (96 px per inch) is used. Output is limited to 20000 px per side and 120 million pixels.
+Renders an SVG to a PNG sized for the space it will fill in the document (600 dpi by default; the height follows the SVG aspect ratio). Rendering is done by resvg built into why-hwp, so no browser or other program is needed and the PNG is the same on every machine. Text is drawn only with the fonts embedded in the SVG: the TrueType or OpenType files in `data:` URIs of `@font-face` rules in `<style>`, which `svgfont` writes. Fonts installed on the system are not used, so run `svgfont` first; an SVG with `<text>` but no embedded font is rendered without its text and a warning is printed to stderr. Embedded fonts that cannot be decoded, or that are not TrueType or OpenType (such as WOFF), are skipped with a warning. `-trim` cuts white margins. Without a width, the SVG's own size (96 px per inch) is used. Output is limited to 20000 px per side and 120 million pixels. The first run compiles the engine, which takes several seconds, and keeps the result in the user cache folder (`why-hwp/wazero`), so later runs start quickly. `-timeout` (default 2m) limits the whole render, including that first compile.
 
 ### svgfont
 

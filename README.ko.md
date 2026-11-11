@@ -83,10 +83,10 @@ why-hwp convert [-to hwp|hwpx|pdf|txt] [-o 출력] [-timeout 120s] [-force] <입
 ### svg2png
 
 ```sh
-why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-o out.png] <in.svg>
+why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-trim] [-timeout 2m] [-o out.png] <in.svg>
 ```
 
-SVG 를 문서에 들어갈 너비에 맞춘 PNG 로 만듭니다(기본 600 dpi, 높이는 SVG 비율대로). headless Chrome·Edge·Chromium·Firefox 로 렌더링하므로, SVG 에 data URI 로 넣은 웹폰트를 포함해 글꼴이 브라우저에서 보이는 그대로 나옵니다. 브라우저는 `-browser` 나 `WHY_HWP_BROWSER` 로 고르고, `-trim` 은 흰 여백을 잘라냅니다. 너비를 주지 않으면 SVG 고유 크기(1인치 = 96px)를 씁니다. 출력은 한 변 20000px, 전체 1억 2천만 픽셀까지입니다.
+SVG 를 문서에 들어갈 너비에 맞춘 PNG 로 만듭니다(기본 600 dpi, 높이는 SVG 비율대로). why-hwp 안에 든 resvg 로 그리므로 브라우저나 다른 프로그램이 필요 없고, 어느 PC 에서나 같은 PNG 가 나옵니다. 글자는 SVG 에 넣은 글꼴로만 그립니다. `<style>` 의 `@font-face` 에 `data:` URI 로 든 TrueType·OpenType 파일이 그것이고, `svgfont` 가 이렇게 넣습니다. 시스템에 설치된 글꼴은 쓰지 않으니 `svgfont` 를 먼저 돌립니다. `<text>` 가 있는데 넣은 글꼴이 없으면 글자 없이 그리고 stderr 에 경고를 냅니다. 풀 수 없거나 TrueType·OpenType 이 아닌(WOFF 등) 글꼴은 경고를 내고 건너뜁니다. `-trim` 은 흰 여백을 잘라냅니다. 너비를 주지 않으면 SVG 고유 크기(1인치 = 96px)를 씁니다. 출력은 한 변 20000px, 전체 1억 2천만 픽셀까지입니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. `-timeout`(기본 2m)은 이 첫 컴파일을 포함한 렌더 전체의 시간 상한입니다.
 
 ### svgfont
 

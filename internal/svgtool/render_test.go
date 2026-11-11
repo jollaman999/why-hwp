@@ -6,18 +6,20 @@ import (
 	"image"
 	"image/png"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jollaman999/why-hwp/internal/svg2png"
 )
 
-func renderGray(t *testing.T, b svg2png.Browser, svg string) *image.Gray {
+func renderGray(t *testing.T, svg string) *image.Gray {
 	t.Helper()
+	scan, err := svg2png.ScanFonts([]byte(svg))
+	if err != nil {
+		t.Fatal(err)
+	}
 	res, err := svg2png.Render(context.Background(), svg2png.Options{
-		Browser: b, SVG: []byte(svg), Width: 800, Height: 160, DPI: 96, Timeout: 60 * time.Second, TempDir: t.TempDir(),
+		SVG: []byte(svg), Fonts: scan.Fonts, Width: 800, Height: 160, DPI: 96,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -50,16 +52,12 @@ func differing(a, b *image.Gray) int {
 var base64Run = regexp.MustCompile(`base64,([^"]*)"`)
 
 // TestEmbeddedFontRenders draws the same text without and with the
-// embedded font in a browser: the embedded font must change the drawing,
+// embedded font with the engine: the embedded font must change the drawing,
 // line continuations inside the base64 must not, and a damaged font must
 // fall back to the drawing without it.
 func TestEmbeddedFontRenders(t *testing.T) {
 	if testing.Short() {
-		t.Skip("browser render skipped in -short mode")
-	}
-	b, err := svg2png.DefaultFinder(runtime.GOOS).Find("")
-	if err != nil {
-		t.Skip("no browser installed")
+		t.Skip("engine render skipped in -short mode")
 	}
 	plain := `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="80" viewBox="0 0 400 80"><rect width="400" height="80" fill="#ffffff"/>` +
 		`<text x="10" y="55" font-size="40" font-family="NoSuchFont" fill="#000000">Hamburgefonstiv</text></svg>`
@@ -79,14 +77,14 @@ func TestEmbeddedFontRenders(t *testing.T) {
 	}
 	damaged := strings.Replace(embedded, "base64,AAEAAA", "base64,!!EAAA", 1)
 
-	a := renderGray(t, b, plain)
-	e := renderGray(t, b, embedded)
-	c := renderGray(t, b, broken)
-	d := renderGray(t, b, damaged)
-	t.Logf("%s: plain vs embedded %d px, embedded vs continued %d px, plain vs damaged %d px",
-		b.Name, differing(a, e), differing(e, c), differing(a, d))
+	a := renderGray(t, plain)
+	e := renderGray(t, embedded)
+	c := renderGray(t, broken)
+	d := renderGray(t, damaged)
+	t.Logf("plain vs embedded %d px, embedded vs continued %d px, plain vs damaged %d px",
+		differing(a, e), differing(e, c), differing(a, d))
 	if differing(a, e) < 500 {
-		t.Errorf("embedding the font changed only %d pixels; the browser did not use it", differing(a, e))
+		t.Errorf("embedding the font changed only %d pixels; the engine did not use it", differing(a, e))
 	}
 	if n := differing(e, c); n != 0 {
 		t.Errorf("line continuations in the base64 changed %d pixels", n)

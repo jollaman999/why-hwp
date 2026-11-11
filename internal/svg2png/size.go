@@ -1,6 +1,7 @@
-// Package svg2png renders SVG files to PNG with a headless browser, so that
-// fonts (system fonts and @font-face web fonts embedded in the SVG) are drawn
-// exactly as a browser draws them.
+// Package svg2png renders SVG files to PNG with the embedded engine (resvg).
+// Text is drawn only with the fonts embedded in the SVG as data: URIs (see
+// ScanFonts); system fonts are not used, so the output is the same on every
+// machine.
 package svg2png
 
 import (
@@ -184,10 +185,8 @@ func TargetSize(svgW, svgH, widthMM float64, widthPx int, dpi float64) (w, h int
 	return w, h, nil
 }
 
-// Size limits. Headless Chrome left the bottom of a 16384x9216 render
-// unpainted while still returning a screenshot of the full size, so the
-// output is capped below the largest sizes that rendered completely
-// (20000 px per side, about 130 million pixels in total).
+// Size limits. They bound the memory of one render: the engine holds the
+// whole RGBA image, 4 bytes per pixel.
 const (
 	MaxSide = 20000
 	MaxArea = 120_000_000

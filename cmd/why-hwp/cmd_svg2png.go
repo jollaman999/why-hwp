@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -24,14 +23,15 @@ func runSVG2PNG(args []string, stdout, stderr io.Writer) int {
 	widthMM := fs.Float64("width-mm", 0, "output width in millimetres (height follows the SVG aspect ratio)")
 	widthPx := fs.Int("width-px", 0, "output width in pixels (height follows the SVG aspect ratio)")
 	dpi := fs.Float64("dpi", 600, "resolution for -width-mm and for the SVG's own size; stored in the PNG")
-	browser := fs.String("browser", "", "browser executable (default: $"+svg2png.EnvBrowser+", then Chrome, Edge, Chromium, Firefox)")
 	out := fs.String("o", "", "output PNG path (default: input path with .png)")
 	trim := fs.Bool("trim", false, "cut white or transparent margins")
-	timeout := fs.Duration("timeout", 60*time.Second, "browser time limit")
+	timeout := fs.Duration("timeout", 2*time.Minute, "time limit for rendering, including the first engine compile")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-browser path] [-o out.png] <in.svg>")
+		fmt.Fprintln(stderr, "Usage: why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-trim] [-timeout 2m] [-o out.png] <in.svg>")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Without -width-mm or -width-px the SVG's own size (96 px per inch) is rendered at -dpi.")
+		fmt.Fprintln(stderr, "Text is drawn only with fonts embedded in the SVG (run 'why-hwp svgfont' first);")
+		fmt.Fprintln(stderr, "system fonts are not used, so the PNG is the same on every machine.")
 		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
 	}
@@ -74,20 +74,34 @@ func runSVG2PNG(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "why-hwp svg2png: %v\n", err)
 		return 1
 	}
-	b, err := svg2png.DefaultFinder(runtime.GOOS).Find(*browser)
+	scan, err := svg2png.ScanFonts(data)
 	if err != nil {
-		fmt.Fprintf(stderr, "why-hwp svg2png: %v\n", err)
+		fmt.Fprintf(stderr, "why-hwp svg2png: %s: %v\n", in, err)
 		return 1
 	}
-	res, err := svg2png.Render(context.Background(), svg2png.Options{
-		Browser: b,
-		SVG:     data,
-		Width:   w,
-		Height:  h,
-		DPI:     *dpi,
-		Trim:    *trim,
-		Timeout: *timeout,
+	for _, s := range scan.Skipped {
+		fmt.Fprintf(stderr, "why-hwp svg2png: warning: %s: skipped embedded %s\n", in, s)
+	}
+	if len(scan.Fonts) == 0 && scan.HasText {
+		fmt.Fprintf(stderr, "why-hwp svg2png: warning: %s has text but no embedded font, so no text will be drawn; run 'why-hwp svgfont' on it first\n", in)
+	}
+	if *timeout <= 0 {
+		*timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	res, err := svg2png.Render(ctx, svg2png.Options{
+		SVG:    data,
+		Fonts:  scan.Fonts,
+		Width:  w,
+		Height: h,
+		DPI:    *dpi,
+		Trim:   *trim,
 	})
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(stderr, "why-hwp svg2png: rendering did not finish within %s (raise -timeout)\n", *timeout)
+		return 1
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "why-hwp svg2png: %v\n", err)
 		return 1
@@ -96,6 +110,6 @@ func runSVG2PNG(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "why-hwp svg2png: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "%s: %dx%d px, %.0f dpi, %s (%s)\n", dst, res.Width, res.Height, *dpi, b.Name, b.Path)
+	fmt.Fprintf(stdout, "%s: %dx%d px, %.0f dpi, %d embedded font(s)\n", dst, res.Width, res.Height, *dpi, len(scan.Fonts))
 	return 0
 }
