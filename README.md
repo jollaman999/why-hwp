@@ -22,7 +22,7 @@ why-hwp is written in Go and built into one executable per platform, so the same
 - Record edits as **tracked changes**, so reviewers see them in Hancom's review view
 - Insert images at the highest resolution that fits the target area
 - Keep existing memos and other authors' content untouched
-- On Windows with Hancom Office installed, convert between HWP and HWPX
+- On Windows with Hancom Office installed, convert HWP, HWPX and DOCX to HWP, HWPX, PDF or UTF-8 text
 
 ## Platforms
 
@@ -51,6 +51,14 @@ why-hwp info [-format plain|json] <file>
 Shows sections, paragraphs, tables and their size, owner marks such as `(A)` or `(A/B)` with where they occur, memos, tracked changes, styles and pictures.
 
 `.hwp` files are not supported by `text` and `info` yet.
+
+### convert
+
+```sh
+why-hwp convert [-to hwp|hwpx|pdf|txt] [-o out] [-timeout 120s] [-force] <in.hwp|in.hwpx|in.docx>
+```
+
+Converts a document with the installed Hancom Office (Windows only; on other systems it exits with "convert needs Windows with Hancom Office"). The format comes from `-to`, or from the extension of `-o`. Without `-o` the output is the input path with the new extension. Text output is UTF-8. An existing output file is not overwritten unless `-force` is given. Hancom runs hidden and works on a copy in the temporary folder, so it never asks for file access. Only the Hancom instance this command starts is closed, and on timeout only that process is killed; Hancom windows you already have open are left alone.
 
 ### svg2png
 
