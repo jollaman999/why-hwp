@@ -4,7 +4,7 @@
 
 A single-binary command-line tool for working with Hangul word processor documents (HWP / HWPX) on Windows, Linux and macOS, without Python, Java or any other runtime.
 
-> **Status: early development.** Nothing is usable yet. This README describes the goal, not finished features.
+> **Status: early development.** The commands below work and are tested on Windows and Linux, but options and the spec format may still change before 1.0.
 
 ## Why
 
