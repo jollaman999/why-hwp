@@ -47,6 +47,11 @@ try {
     try { $reg = [bool]$hwp.RegisterModule('FilePathCheckDLL', 'FilePathCheckerModule') } catch { }
     Out-Line ('registermodule ' + $reg)
 
+    # The window is hidden, so a message box would wait forever. Saving a
+    # document with tracked changes as PDF or TEXT asks "save in this format?";
+    # 0x10000 answers such Yes/No boxes with Yes.
+    $hwp.SetMessageBoxMode(0x10000) | Out-Null
+
     if (-not $hwp.Open($in, $openFormat, 'forceopen:true')) {
         throw 'Hwp could not open the input'
     }
