@@ -34,6 +34,24 @@ why-hwp is written in Go and built into one executable per platform, so the same
 
 ## Commands
 
+### text
+
+```sh
+why-hwp text [-format plain|json] <file>
+```
+
+Prints the text of an `.hwpx` or `.docx` file, one block per line as `<loc><TAB><text>`. A loc points back into the document: `s0/p12` is paragraph 12 of section 0, `s0/p3/t0/r1/c2` is row 1, column 2 of the first table in paragraph 3. Memo bodies, headers, footers and footnotes are left out.
+
+### info
+
+```sh
+why-hwp info [-format plain|json] <file>
+```
+
+Shows sections, paragraphs, tables and their size, owner marks such as `(A)` or `(A/B)` with where they occur, memos, tracked changes, styles and pictures.
+
+`.hwp` files are not supported by `text` and `info` yet.
+
 ### svg2png
 
 ```sh
