@@ -1,0 +1,15 @@
+{
+  "ops": [
+    {"op": "set_text", "loc": "s0/p2", "text": "이 문서는 apply 명령 시험용 가짜 문서다."},
+    {"op": "replace", "loc": "s0/p7", "find": "프로그램이", "with": "도구가"},
+    {"op": "set_text", "loc": "s0/p4/t0/r1/c2", "text": "(B)"},
+    {"op": "insert_after", "loc": "s0/p1", "paras": [
+      {"text": "1.1 목적", "like": "s0/p1"},
+      {"text": "양식의 서식을 유지한 채 글을 채운다.", "like": "s0/p2"}
+    ]},
+    {"op": "insert_before", "loc": "s0/p6", "paras": [{"text": "표 1. 가짜 일정"}]},
+    {"op": "delete", "loc": "s0/p5"},
+    {"op": "image", "after": "s0/p9", "src": "figure.png", "width_mm": 120},
+    {"op": "insert_after", "loc": "s0/p9", "paras": [{"text": "그림 2. apply 로 넣은 그림", "like": "s0/p8"}]}
+  ]
+}

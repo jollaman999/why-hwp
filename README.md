@@ -52,6 +52,14 @@ Shows sections, paragraphs, tables and their size, owner marks such as `(A)` or 
 
 `text` and `info` also read `.hwp` (HWP 5.0 binary) files and give the same locations as the `.hwpx` copy of the same document. Password-protected, DRM and distribution documents are refused with an error (exit code 1); they are not decrypted.
 
+### apply
+
+```sh
+why-hwp apply -spec edits.json -o out.hwpx -author NAME [-date RFC3339] [-no-track] [-force] in.hwpx
+```
+
+Writes a copy of an HWPX document with the edits in the spec recorded as tracked changes (use `-no-track` to edit without them). Locations are the ones `why-hwp text` prints for the input, and every op uses the input's numbering. Ops: `set_text` {loc, text}, `replace` {loc, find, with, all}, `insert_after` / `insert_before` {loc, paras:[{text, like}]}, `delete` {loc}, `image` {after or loc, src (PNG), width_mm, like}. New paragraphs copy the paragraph, style and character shapes of `like` (or of `loc`). Paragraphs that are not edited keep their bytes; memos are kept; PNGs are embedded unchanged. An `.hwp` input must be converted with `why-hwp convert -to hwpx` first. Example: [`testdata/apply/spec.json`](testdata/apply/spec.json).
+
 ### verify
 
 ```sh

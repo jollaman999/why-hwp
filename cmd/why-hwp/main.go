@@ -68,11 +68,3 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run 'why-hwp <command> -h' for command options.")
 }
-
-// notImplemented is the placeholder body for commands that are not built yet.
-func notImplemented(name string) func(args []string, stdout, stderr io.Writer) int {
-	return func(args []string, stdout, stderr io.Writer) int {
-		fmt.Fprintf(stderr, "why-hwp %s: not implemented yet\n", name)
-		return 2
-	}
-}

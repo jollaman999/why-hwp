@@ -53,15 +53,3 @@ func TestHelp(t *testing.T) {
 		}
 	}
 }
-
-func TestNotImplemented(t *testing.T) {
-	for _, name := range []string{"apply"} {
-		var out, errOut bytes.Buffer
-		if code := run([]string{name}, &out, &errOut); code != 2 {
-			t.Errorf("%s: exit code = %d, want 2", name, code)
-		}
-		if !strings.Contains(errOut.String(), "not implemented yet") {
-			t.Errorf("%s: stderr = %q", name, errOut.String())
-		}
-	}
-}
