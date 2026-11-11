@@ -85,7 +85,7 @@ func runSVGFont(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "why-hwp svgfont: %v\n", err)
 			return 1
 		}
-		sub, err := lf.Font.Subset(runes)
+		face, sub, err := svgtool.SubsetFace(lf.Font, w, *family, runes)
 		if err != nil {
 			fmt.Fprintf(stderr, "why-hwp svgfont: %s: %v\n", lf.Path, err)
 			return 1
@@ -98,7 +98,7 @@ func runSVGFont(args []string, stdout, stderr io.Writer) int {
 		if len(sub.Empty) > 0 {
 			fmt.Fprintf(stderr, "%s: %d characters have an empty glyph and come out blank: %q\n", w, len(sub.Empty), string(sub.Empty))
 		}
-		faces = append(faces, svgtool.Face{Weight: w, TTF: sub.Font})
+		faces = append(faces, face)
 	}
 	if len(faces) == 0 {
 		fmt.Fprintln(stderr, "why-hwp svgfont: no <text> in the SVG; nothing embedded")

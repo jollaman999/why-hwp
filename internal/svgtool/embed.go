@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/jollaman999/why-hwp/internal/sfnt"
 )
 
 // DefaultFamily is the font-family name given to the embedded font.
@@ -110,6 +112,18 @@ func Collect(svg []byte) (map[Weight][]rune, error) {
 type Face struct {
 	Weight Weight
 	TTF    []byte
+}
+
+// SubsetFace writes the subset of f holding runes for weight w. The subset's
+// name table gives family as its family and w as its weight, the same as the
+// @font-face rule Embed writes, so renderers that ignore @font-face and pick
+// fonts by their own names (resvg) find it too.
+func SubsetFace(f *sfnt.Font, w Weight, family string, runes []rune) (Face, *sfnt.SubsetResult, error) {
+	sub, err := f.SubsetAs(runes, sfnt.Naming{Family: family, Bold: w == Bold})
+	if err != nil {
+		return Face{}, nil, err
+	}
+	return Face{Weight: w, TTF: sub.Font}, sub, nil
 }
 
 var familyName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 _-]*$`)

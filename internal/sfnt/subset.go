@@ -39,6 +39,20 @@ type SubsetResult struct {
 // signatures (DSIG) and vertical metrics are dropped: they refer to glyph ids
 // that no longer exist.
 func (f *Font) Subset(runes []rune) (*SubsetResult, error) {
+	return f.subset(runes, nil)
+}
+
+// SubsetAs is Subset with the family name and weight of n written into the
+// subset: name IDs 1, 2, 3, 4 and 6 are replaced, the other identity names
+// (16, 17, 18, 21, 22, 25) are dropped, and OS/2 usWeightClass, the OS/2
+// fsSelection bold and regular bits and the head macStyle bold bit are set
+// for the weight. Copyright, trademark and licence names (0, 7, 13, 14) and
+// every other name are kept.
+func (f *Font) SubsetAs(runes []rune, n Naming) (*SubsetResult, error) {
+	return f.subset(runes, &n)
+}
+
+func (f *Font) subset(runes []rune, naming *Naming) (*SubsetResult, error) {
 	res := &SubsetResult{}
 	cmap := map[rune]int{} // rune -> old glyph id
 	used := map[int]bool{0: true}
@@ -148,6 +162,11 @@ func (f *Font) Subset(runes []rune) (*SubsetResult, error) {
 	for _, t := range []string{"OS/2", "name", "cvt ", "fpgm", "prep", "gasp"} {
 		if b := f.tables[t]; b != nil {
 			out[t] = b
+		}
+	}
+	if naming != nil {
+		if err := applyNaming(out, *naming); err != nil {
+			return nil, err
 		}
 	}
 	res.Font = writeFont(out)

@@ -52,11 +52,11 @@ func embedWith(t *testing.T, f *sfnt.Font, svg []byte) []byte {
 		if len(sets[w]) == 0 {
 			continue
 		}
-		sub, err := f.Subset(sets[w])
+		face, _, err := SubsetFace(f, w, DefaultFamily, sets[w])
 		if err != nil {
 			t.Fatal(err)
 		}
-		faces = append(faces, Face{Weight: w, TTF: sub.Font})
+		faces = append(faces, face)
 	}
 	out, err := Embed(svg, DefaultFamily, faces)
 	if err != nil {
@@ -123,6 +123,18 @@ func TestEmbed(t *testing.T) {
 		}
 		if got, want := string(sub.Runes()), string(sets[w]); got != want {
 			t.Errorf("%s face maps %q, want %q", w, got, want)
+		}
+		if got := sub.Name(1); got != DefaultFamily {
+			t.Errorf("%s face name ID 1 = %q, want %q", w, got, DefaultFamily)
+		}
+		if got, want := sub.Name(2), map[Weight]string{Regular: "Regular", Bold: "Bold"}[w]; got != want {
+			t.Errorf("%s face name ID 2 = %q, want %q", w, got, want)
+		}
+		if got := int(sub.Table("OS/2")[4])<<8 | int(sub.Table("OS/2")[5]); got != int(w) {
+			t.Errorf("%s face usWeightClass %d, want %d", w, got, int(w))
+		}
+		if got, want := sub.Name(13), f.Name(13); got != want {
+			t.Errorf("%s face licence %q, want %q", w, got, want)
 		}
 	}
 
