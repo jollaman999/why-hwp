@@ -47,7 +47,7 @@ func TestHelp(t *testing.T) {
 	if code := run([]string{"help"}, &out, &errOut); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	for _, name := range []string{"info", "text", "apply", "svg2png", "verify", "convert", "version"} {
+	for _, name := range []string{"info", "text", "apply", "svg2png", "svgfont", "svgcheck", "verify", "convert", "version"} {
 		if !strings.Contains(out.String(), "  "+name+" ") {
 			t.Errorf("usage does not list %q:\n%s", name, out.String())
 		}

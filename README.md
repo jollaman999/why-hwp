@@ -88,6 +88,24 @@ why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-o out.png] <in.svg>
 
 Renders an SVG to a PNG sized for the space it will fill in the document (600 dpi by default; the height follows the SVG aspect ratio). It drives a headless Chrome, Edge, Chromium or Firefox, so fonts, including web fonts embedded in the SVG as data URIs, come out exactly as in a browser. Pick a browser with `-browser` or `WHY_HWP_BROWSER`; `-trim` cuts white margins. Without a width, the SVG's own size (96 px per inch) is used. Output is limited to 20000 px per side and 120 million pixels.
 
+### svgfont
+
+```sh
+why-hwp svgfont [-regular font.ttf] [-bold font.ttf] [-family NAME] (-o out.svg | -w) <in.svg>
+```
+
+Embeds a Korean font into an SVG figure, so it looks the same on a PC that does not have the font. Only the characters of the `<text>` elements (and their `<tspan>`s) go in: per weight, a TrueType subset is written as base64 into `<style id="embedded-font">` at the start of `<defs>`, and `'NAME'` (default `WhyHwpEmbed`) is put first in every `font-family` attribute and declaration. Text with `font-weight` bold or 600 and more, on the element or its nearest ancestor that sets it, uses the bold font. An existing `<style id="embedded-font">` is replaced, so running the command again on its output gives the same file. A run of the base64 that looks like a cloud access key (`AKIA` and 16 letters or digits), which commit hooks take for a secret, is split with a CSS line continuation (backslash and line break); the font data stays the same. stderr shows, per weight, the font file, the number of characters and the subset size, and lists characters the font lacks or draws blank.
+
+Fonts must be TrueType (`.ttf` with glyf outlines). CFF (`.otf`), variable fonts (an `fvar` table, such as `NotoSansKR-VF.ttf`), collections (`.ttc`) and fonts whose licence restricts embedding (OS/2 fsType bit 0x0002) are refused. Each weight is taken from the flag, then `WHY_HWP_FONT_REGULAR` / `WHY_HWP_FONT_BOLD`, then a search of the OS font folders (Windows `%WINDIR%\Fonts` and `%LOCALAPPDATA%\Microsoft\Windows\Fonts`; Linux `/usr/share/fonts`, `/usr/local/share/fonts`, `~/.local/share/fonts`, `~/.fonts` and their subfolders; macOS `/Library/Fonts`, `~/Library/Fonts`) for `NotoSansKR-Regular.ttf` / `NotoSansKR-Bold.ttf`, `NanumGothic.ttf` / `NanumGothicBold.ttf`, `NanumSquareR.ttf` / `NanumSquareB.ttf` and `malgun.ttf` / `malgunbd.ttf`, in that order. Variable and CFF files found by the search are skipped. If nothing is found, install the static Noto Sans KR TrueType fonts or pass `-regular` (and `-bold` when the figure has bold text).
+
+### svgcheck
+
+```sh
+why-hwp svgcheck [-regular font.ttf] [-bold font.ttf] [-format plain|json] [-tol 2] <in.svg>
+```
+
+Checks the layout of an SVG figure by computation. Text is measured with the advance widths of the fonts (found as in `svgfont`), with `font-size`, `text-anchor` and `tspan` lines applied. Violations: text that leaves the inside of its box (the smallest `<rect>` holding the text's `x`, `y`; a stroke narrows the inside), text of different `<text>` elements that overlaps, an arrow end that is more than `-tol` px from every box edge (an arrow is a `line`, `polyline` or `path` with `marker-start` or `marker-end`; both ends are checked), and an arrow that passes through a box holding neither of its ends. Three or more arrow ends within 3 x `-tol` px of each other are a warning, because the heads look like a star. Paths with curves or arcs are not checked, and only `translate` transforms are followed; anything skipped is listed under notes. Locations are the element id, or the element name and its number in document order (`text#3`, `line#7`), with the start of the text. Exit status: 0 no violations (warnings allowed), 1 violations, 2 usage error, a file that cannot be read or no usable font.
+
 ## Build
 
 Requires Go 1.24 or later and GNU make. On Windows, run make from Git Bash.

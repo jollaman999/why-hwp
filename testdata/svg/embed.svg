@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="120" viewBox="0 0 300 120">
+  <style>.note { font-family: Arial, sans-serif; font-size: 12px }</style>
+  <rect width="300" height="120" fill="#ffffff"/>
+  <text x="10" y="30" font-family="NoSuchFont">Plain &amp; <tspan font-weight="bold">Bold</tspan></text>
+  <g style="font-weight: 700; font-family: 'NoSuchFont', serif">
+    <text x="10" y="60">Heavy <tspan font-weight="normal">light</tspan></text>
+  </g>
+  <text x="10" y="90" class="note" style="font-weight:600">&#233;t&#xE9;</text>
+</svg>

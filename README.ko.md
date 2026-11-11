@@ -88,6 +88,24 @@ why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-o out.png] <in.svg>
 
 SVG 를 문서에 들어갈 너비에 맞춘 PNG 로 만듭니다(기본 600 dpi, 높이는 SVG 비율대로). headless Chrome·Edge·Chromium·Firefox 로 렌더링하므로, SVG 에 data URI 로 넣은 웹폰트를 포함해 글꼴이 브라우저에서 보이는 그대로 나옵니다. 브라우저는 `-browser` 나 `WHY_HWP_BROWSER` 로 고르고, `-trim` 은 흰 여백을 잘라냅니다. 너비를 주지 않으면 SVG 고유 크기(1인치 = 96px)를 씁니다. 출력은 한 변 20000px, 전체 1억 2천만 픽셀까지입니다.
 
+### svgfont
+
+```sh
+why-hwp svgfont [-regular font.ttf] [-bold font.ttf] [-family NAME] (-o out.svg | -w) <in.svg>
+```
+
+SVG 그림에 한글 폰트를 넣어, 그 폰트가 없는 PC 에서도 같게 보이게 합니다. `<text>`(안의 `<tspan>` 포함)에 쓴 글자만 넣습니다. 굵기마다 TrueType 부분 집합을 만들어 base64 로 `<defs>` 맨 앞의 `<style id="embedded-font">` 에 넣고, 모든 `font-family` 속성과 선언 맨 앞에 `'NAME'`(기본 `WhyHwpEmbed`)을 붙입니다. 그 요소나 가장 가까운 조상의 `font-weight` 가 bold 이거나 600 이상이면 굵은 폰트를 씁니다. 이미 있는 `<style id="embedded-font">` 는 바꿔 넣으므로, 결과에 다시 돌려도 같은 파일이 나옵니다. base64 안에 클라우드 액세스 키처럼 보이는 부분(`AKIA` 와 영문·숫자 16자)이 생기면 커밋 훅이 비밀값으로 막기 때문에, 그 자리를 CSS 줄 이어쓰기(역슬래시와 줄바꿈)로 끊습니다. 폰트 데이터는 그대로입니다. stderr 에 굵기별로 폰트 파일, 글자 수, 부분 집합 크기를 보여 주고, 폰트에 없거나 빈 모양으로 나오는 글자를 알려 줍니다.
+
+폰트는 TrueType(glyf 윤곽을 쓰는 `.ttf`)만 받습니다. CFF(`.otf`), 가변 폰트(`fvar` 표가 있는 것, 예: `NotoSansKR-VF.ttf`), 모음(`.ttc`), 라이선스가 넣기를 막는 폰트(OS/2 fsType 0x0002 비트)는 거절합니다. 굵기마다 플래그, `WHY_HWP_FONT_REGULAR` / `WHY_HWP_FONT_BOLD`, OS 폰트 폴더 검색 순서로 찾습니다. 검색하는 폴더는 Windows `%WINDIR%\Fonts`, `%LOCALAPPDATA%\Microsoft\Windows\Fonts`, Linux `/usr/share/fonts`, `/usr/local/share/fonts`, `~/.local/share/fonts`, `~/.fonts`(하위 폴더 포함), macOS `/Library/Fonts`, `~/Library/Fonts` 이고, 찾는 파일은 `NotoSansKR-Regular.ttf` / `NotoSansKR-Bold.ttf`, `NanumGothic.ttf` / `NanumGothicBold.ttf`, `NanumSquareR.ttf` / `NanumSquareB.ttf`, `malgun.ttf` / `malgunbd.ttf` 순서입니다. 검색에서 나온 가변·CFF 파일은 건너뜁니다. 아무것도 없으면 Noto Sans KR 정적 TrueType 폰트를 설치하거나 `-regular`(굵은 글자가 있으면 `-bold` 도)를 줍니다.
+
+### svgcheck
+
+```sh
+why-hwp svgcheck [-regular font.ttf] [-bold font.ttf] [-format plain|json] [-tol 2] <in.svg>
+```
+
+SVG 그림의 배치를 계산으로 검사합니다. 글자 폭은 `svgfont` 와 같은 방법으로 찾은 폰트의 advance 폭으로 재고, `font-size`, `text-anchor`, `tspan` 줄을 반영합니다. 위반은 넷입니다. 글자가 자기 상자(글자의 `x`, `y` 를 담은 가장 작은 `<rect>`, 테두리 선 두께만큼 안쪽이 좁아짐) 안쪽을 넘침, 서로 다른 `<text>` 의 글자끼리 겹침, 화살표 끝이 어느 상자 테두리에서도 `-tol` px 넘게 떨어짐(화살표는 `marker-start` 나 `marker-end` 가 있는 `line`, `polyline`, `path` 이고 양쪽 끝을 다 봄), 화살표가 자기 끝이 없는 상자 안을 지나감입니다. 화살표 끝 셋 이상이 3 x `-tol` px 안에 몰리면 화살촉이 별처럼 보이므로 경고입니다. 곡선·호가 있는 path 는 검사하지 않고, transform 은 `translate` 만 따라갑니다. 건너뛴 것은 notes 에 나옵니다. 위치는 요소 id, 없으면 요소 이름과 문서 순서 번호(`text#3`, `line#7`)에 글자 앞부분을 붙여 보여 줍니다. 위반이 있으면 종료 코드 1, 없으면 0(경고는 허용), 사용법 오류나 파일을 못 읽거나 쓸 폰트가 없으면 2 입니다.
+
 ## 빌드
 
 Go 1.24 이상과 GNU make 가 필요합니다. Windows 에서는 Git Bash 에서 make 를 실행합니다.
