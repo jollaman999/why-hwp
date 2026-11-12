@@ -229,7 +229,7 @@ impl Database {
     }
 
     /// Backend function used by load_font_file to load font files.
-    #[cfg(feature = "fs")]
+    #[cfg(all(feature = "fs", any(feature = "memmap", not(any(target_os = "wasi", test)))))]
     fn load_fonts_from_file(&mut self, path: &std::path::Path, data: &[u8]) {
         let source = Source::File(path.into());
 
@@ -284,11 +284,20 @@ impl Database {
     }
 
     // A non-generic version.
-    #[cfg(all(feature = "fs", not(feature = "memmap")))]
+    #[cfg(all(feature = "fs", not(feature = "memmap"), not(any(target_os = "wasi", test))))]
     fn load_font_file_impl(&mut self, path: &std::path::Path) -> Result<(), std::io::Error> {
         let data = std::fs::read(path)?;
 
         self.load_fonts_from_file(path, &data);
+        Ok(())
+    }
+
+    // A non-generic version.
+    #[cfg(all(feature = "fs", not(feature = "memmap"), any(target_os = "wasi", test)))]
+    fn load_font_file_impl(&mut self, path: &std::path::Path) -> Result<(), std::io::Error> {
+        for info in scan_file_once(path)?.iter() {
+            self.push_face_info(info.clone());
+        }
         Ok(())
     }
 
@@ -946,6 +955,100 @@ fn read_file_once(path: &std::path::Path) -> Option<std::sync::Arc<Vec<u8>>> {
     Some(files.entry(path.to_path_buf()).or_insert(data).clone())
 }
 
+// why-hwp: loading a font folder read every file in it whole to get each
+// face's names and style, and rhwp loads the same folders several times per
+// run. Read only the table directory and the name, OS/2 and post tables, and
+// keep the result per file for the rest of the process.
+#[cfg(all(feature = "fs", not(feature = "memmap"), any(target_os = "wasi", test)))]
+fn scan_file_once(path: &std::path::Path) -> Result<std::sync::Arc<Vec<FaceInfo>>, std::io::Error> {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    static FACES: Mutex<BTreeMap<PathBuf, Arc<Vec<FaceInfo>>>> = Mutex::new(BTreeMap::new());
+
+    if let Some(faces) = FACES.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
+        return Ok(faces.clone());
+    }
+    let faces = Arc::new(scan_file(path)?);
+    let mut all = FACES.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(all.entry(path.to_path_buf()).or_insert(faces).clone())
+}
+
+// How much of a font file is read for its table directories. The largest seen
+// in a Linux and a Windows font folder ends before 3 KB; past this the whole
+// file is read as before.
+#[cfg(all(feature = "fs", not(feature = "memmap"), any(target_os = "wasi", test)))]
+const SCAN_HEAD_LEN: u64 = 16 * 1024;
+
+// The faces in the font file at path, as parse_face_info gives them from the
+// whole file, with only the start of the file and three tables read.
+#[cfg(all(feature = "fs", not(feature = "memmap"), any(target_os = "wasi", test)))]
+fn scan_file(path: &std::path::Path) -> Result<Vec<FaceInfo>, std::io::Error> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut head = Vec::new();
+    (&mut file).take(SCAN_HEAD_LEN).read_to_end(&mut head)?;
+
+    let source = Source::File(path.into());
+    let mut whole: Option<Vec<u8>> = None;
+    let mut faces = Vec::new();
+    let n = ttf_parser::fonts_in_collection(&head).unwrap_or(1);
+    for index in 0..n {
+        let info = match ttf_parser::RawFace::parse(&head, index) {
+            Ok(raw_face) => {
+                let mut table = |tag: ttf_parser::Tag| -> Result<Option<Vec<u8>>, std::io::Error> {
+                    let (_, record) = match raw_face
+                        .table_records
+                        .binary_search_by(|record| record.tag.cmp(&tag))
+                    {
+                        Some(v) => v,
+                        None => return Ok(None),
+                    };
+                    let offset = record.offset as usize;
+                    let end = match offset.checked_add(record.length as usize) {
+                        Some(end) if end as u64 <= len => end,
+                        _ => return Ok(None),
+                    };
+                    let mut data = vec![0; end - offset];
+                    file.seek(SeekFrom::Start(offset as u64))?;
+                    file.read_exact(&mut data)?;
+                    Ok(Some(data))
+                };
+                let name = table(NAME_TAG)?;
+                let os2 = table(OS2_TAG)?;
+                let post = table(POST_TAG)?;
+                face_info_from_tables(
+                    source.clone(),
+                    index,
+                    name.as_deref(),
+                    os2.as_deref(),
+                    post.as_deref(),
+                )
+            }
+            Err(_) if (head.len() as u64) < len => {
+                if whole.is_none() {
+                    whole = Some(std::fs::read(path)?);
+                }
+                parse_face_info(source.clone(), whole.as_deref().unwrap_or_default(), index)
+            }
+            Err(_) => Err(LoadError::MalformedFont),
+        };
+        match info {
+            Ok(info) => faces.push(info),
+            Err(e) => log::warn!(
+                "Failed to load a font face {} from '{}' cause {}.",
+                index,
+                path.display(),
+                e
+            ),
+        }
+    }
+    Ok(faces)
+}
+
 #[cfg(all(test, feature = "fs", not(feature = "memmap")))]
 mod why_hwp_tests {
     use super::*;
@@ -966,6 +1069,164 @@ mod why_hwp_tests {
         let missing = Source::File(dir.join("missing.bin"));
         assert_eq!(missing.with_data(|d| d.len()), None);
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn name_table(family: &str, post_script: &str) -> Vec<u8> {
+        let strings: Vec<Vec<u8>> = [family, post_script]
+            .iter()
+            .map(|s| s.encode_utf16().flat_map(|c| c.to_be_bytes()).collect())
+            .collect();
+        let mut t = Vec::new();
+        t.extend(0u16.to_be_bytes());
+        t.extend(2u16.to_be_bytes());
+        t.extend((6u16 + 12 * 2).to_be_bytes());
+        let mut offset = 0u16;
+        for (name_id, s) in [1u16, 6].iter().zip(&strings) {
+            for v in [3u16, 1, 0x409, *name_id, s.len() as u16, offset] {
+                t.extend(v.to_be_bytes());
+            }
+            offset += s.len() as u16;
+        }
+        for s in &strings {
+            t.extend(s);
+        }
+        t
+    }
+
+    fn os2_table(weight: u16) -> Vec<u8> {
+        let mut t = vec![0; 78];
+        t[4..6].copy_from_slice(&weight.to_be_bytes());
+        t[6..8].copy_from_slice(&5u16.to_be_bytes());
+        t
+    }
+
+    fn post_table(italic: bool) -> Vec<u8> {
+        let mut t = vec![0; 32];
+        if italic {
+            t[4..8].copy_from_slice(&(-12i32 << 16).to_be_bytes());
+        }
+        t
+    }
+
+    // One sfnt face whose first byte will sit at start in the file. Each
+    // table is (tag, data, length written in its record).
+    fn face(start: usize, tables: &[(&[u8; 4], Vec<u8>, u32)]) -> Vec<u8> {
+        let mut dir = Vec::new();
+        dir.extend(0x00010000u32.to_be_bytes());
+        dir.extend((tables.len() as u16).to_be_bytes());
+        dir.extend([0; 6]);
+        let mut data: Vec<u8> = Vec::new();
+        let data_start = start + 12 + 16 * tables.len();
+        for (tag, t, len) in tables {
+            dir.extend(*tag);
+            dir.extend(0u32.to_be_bytes());
+            dir.extend(((data_start + data.len()) as u32).to_be_bytes());
+            dir.extend(len.to_be_bytes());
+            data.extend(t);
+        }
+        dir.extend(data);
+        dir
+    }
+
+    fn plain_face(start: usize, family: &str, weight: u16, italic: bool) -> Vec<u8> {
+        let name = name_table(family, &format!("{}-PS", family));
+        let os2 = os2_table(weight);
+        let post = post_table(italic);
+        let (nl, ol, pl) = (name.len() as u32, os2.len() as u32, post.len() as u32);
+        face(start, &[(b"OS/2", os2, ol), (b"name", name, nl), (b"post", post, pl)])
+    }
+
+    fn whole_file_faces(path: &std::path::Path) -> Vec<FaceInfo> {
+        let data = std::fs::read(path).unwrap();
+        let n = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
+        (0..n)
+            .filter_map(|i| parse_face_info(Source::File(path.into()), &data, i).ok())
+            .collect()
+    }
+
+    #[test]
+    fn scan_reads_the_same_faces_as_the_whole_file() {
+        let dir = std::env::temp_dir().join(format!("fontdb-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ttf = plain_face(0, "Alpha", 700, true);
+
+        // A collection whose second face directory lies past SCAN_HEAD_LEN.
+        let far = SCAN_HEAD_LEN as usize + 4000;
+        let mut ttc = Vec::new();
+        ttc.extend(b"ttcf");
+        ttc.extend(0x00010000u32.to_be_bytes());
+        ttc.extend(2u32.to_be_bytes());
+        ttc.extend(20u32.to_be_bytes());
+        ttc.extend((far as u32).to_be_bytes());
+        ttc.extend(plain_face(20, "Beta", 400, false));
+        ttc.resize(far, 0);
+        ttc.extend(plain_face(far, "Gamma", 300, false));
+
+        // A post table record running past the end of the file.
+        let name = name_table("Delta", "Delta-PS");
+        let nl = name.len() as u32;
+        let short_post = face(0, &[(b"name", name, nl), (b"post", post_table(true), 4096)]);
+
+        let no_name = face(0, &[(b"post", post_table(false), 32)]);
+        let not_font = vec![7u8; SCAN_HEAD_LEN as usize + 10];
+
+        let cases: [(&str, &[u8], usize); 5] = [
+            ("a.ttf", &ttf, 1),
+            ("b.ttc", &ttc, 2),
+            ("c.ttf", &short_post, 1),
+            ("d.ttf", &no_name, 0),
+            ("e.ttf", &not_font, 0),
+        ];
+        for (file, data, faces) in cases {
+            let path = dir.join(file);
+            std::fs::write(&path, data).unwrap();
+            let scanned = scan_file(&path).unwrap();
+            assert_eq!(scanned.len(), faces, "{}", file);
+            assert_eq!(
+                format!("{:?}", scanned),
+                format!("{:?}", whole_file_faces(&path)),
+                "{}",
+                file
+            );
+        }
+
+        let a = scan_file(&dir.join("a.ttf")).unwrap();
+        assert_eq!(a[0].families[0].0, "Alpha");
+        assert_eq!(a[0].post_script_name, "Alpha-PS");
+        assert_eq!(a[0].weight, Weight::BOLD);
+        assert_eq!(a[0].style, Style::Italic);
+        let b = scan_file(&dir.join("b.ttc")).unwrap();
+        assert_eq!(b[1].families[0].0, "Gamma");
+        assert_eq!(b[1].index, 1);
+        assert_eq!(b[1].weight, Weight::LIGHT);
+        let c = scan_file(&dir.join("c.ttf")).unwrap();
+        assert_eq!(c[0].families[0].0, "Delta");
+        assert_eq!(c[0].style, Style::Normal);
+
+        assert!(scan_file(&dir.join("missing.ttf")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn font_file_is_scanned_once() {
+        let dir = std::env::temp_dir().join(format!("fontdb-scan-once-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("font.ttf");
+        std::fs::write(&path, plain_face(0, "First", 400, false)).unwrap();
+
+        let mut db = Database::new();
+        db.load_fonts_dir(&dir);
+        std::fs::write(&path, plain_face(0, "Second", 400, false)).unwrap();
+        db.load_fonts_dir(&dir);
+        db.load_font_file(&path).unwrap();
+        let families: Vec<&str> = db.faces().map(|f| f.families[0].0.as_str()).collect();
+        assert_eq!(families, ["First", "First", "First"]);
+        let ids: std::collections::BTreeSet<ID> = db.faces().map(|f| f.id).collect();
+        assert_eq!(ids.len(), 3);
+
+        assert!(db.load_font_file(dir.join("missing.ttf")).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
@@ -1079,11 +1340,31 @@ impl Default for Style {
     }
 }
 
+const NAME_TAG: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"name");
+const OS2_TAG: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"OS/2");
+const POST_TAG: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"post");
+
 fn parse_face_info(source: Source, data: &[u8], index: u32) -> Result<FaceInfo, LoadError> {
     let raw_face = ttf_parser::RawFace::parse(data, index).map_err(|_| LoadError::MalformedFont)?;
-    let (families, post_script_name) = parse_names(&raw_face).ok_or(LoadError::UnnamedFont)?;
-    let (mut style, weight, stretch) = parse_os2(&raw_face);
-    let (monospaced, italic) = parse_post(&raw_face);
+    face_info_from_tables(
+        source,
+        index,
+        raw_face.table(NAME_TAG),
+        raw_face.table(OS2_TAG),
+        raw_face.table(POST_TAG),
+    )
+}
+
+fn face_info_from_tables(
+    source: Source,
+    index: u32,
+    name: Option<&[u8]>,
+    os2: Option<&[u8]>,
+    post: Option<&[u8]>,
+) -> Result<FaceInfo, LoadError> {
+    let (families, post_script_name) = parse_names(name).ok_or(LoadError::UnnamedFont)?;
+    let (mut style, weight, stretch) = parse_os2(os2);
+    let (monospaced, italic) = parse_post(post);
 
     if style == Style::Normal && italic {
         style = Style::Italic;
@@ -1102,9 +1383,8 @@ fn parse_face_info(source: Source, data: &[u8], index: u32) -> Result<FaceInfo, 
     })
 }
 
-fn parse_names(raw_face: &ttf_parser::RawFace) -> Option<(Vec<(String, Language)>, String)> {
-    const NAME_TAG: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"name");
-    let name_data = raw_face.table(NAME_TAG)?;
+fn parse_names(name_data: Option<&[u8]>) -> Option<(Vec<(String, Language)>, String)> {
+    let name_data = name_data?;
     let name_table = ttf_parser::name::Table::parse(name_data)?;
 
     let mut families = collect_families(ttf_parser::name_id::TYPOGRAPHIC_FAMILY, &name_table.names);
@@ -1190,12 +1470,8 @@ fn name_to_unicode(name: &ttf_parser::name::Name) -> Option<String> {
     }
 }
 
-fn parse_os2(raw_face: &ttf_parser::RawFace) -> (Style, Weight, Stretch) {
-    const OS2_TAG: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"OS/2");
-    let table = match raw_face
-        .table(OS2_TAG)
-        .and_then(ttf_parser::os2::Table::parse)
-    {
+fn parse_os2(os2_data: Option<&[u8]>) -> (Style, Weight, Stretch) {
+    let table = match os2_data.and_then(ttf_parser::os2::Table::parse) {
         Some(table) => table,
         None => return (Style::Normal, Weight::NORMAL, Stretch::Normal),
     };
@@ -1212,12 +1488,11 @@ fn parse_os2(raw_face: &ttf_parser::RawFace) -> (Style, Weight, Stretch) {
     (style, Weight(weight.to_number()), stretch)
 }
 
-fn parse_post(raw_face: &ttf_parser::RawFace) -> (bool, bool) {
+fn parse_post(post_data: Option<&[u8]>) -> (bool, bool) {
     // We need just a single value from the `post` table, while ttf-parser will parse all.
     // Therefore we have a custom parser.
 
-    const POST_TAG: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"post");
-    let data = match raw_face.table(POST_TAG) {
+    let data = match post_data {
         Some(v) => v,
         None => return (false, false),
     };

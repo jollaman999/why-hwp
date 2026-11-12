@@ -109,24 +109,41 @@ produced before this step, edit, and write a new diff with `git diff -U0`.
 Without memory mapping, fontdb 0.23 reads the whole font file from disk every
 time a face's data is asked for, and usvg asks about a dozen times per glyph.
 With 20-30 MB Korean fonts that made PDF export 25-35 times slower than
-native rhwp. `vendor/fontdb` is fontdb 0.23.0 from crates.io (MIT, `LICENSE`
-kept) with one change in `src/lib.rs`: under WASI, `Source::File` data is read
-once per file and kept for the rest of the process. Other targets read as
-before. `Cargo.toml` swaps it in with `[patch.crates-io]`, so usvg, resvg and
-rhwp's vendored svg2pdf all use it; the only other edits are dropping the
+native rhwp. Loading a font folder had the same cost: fontdb read every file
+in it whole to learn each face's names and style, and one PDF export loads
+the host font folders four times (once in `font-plan`, three times in
+`convert`), so a 475 MB Linux font folder meant about 2 GB of reads per PDF.
+
+`vendor/fontdb` is fontdb 0.23.0 from crates.io (MIT, `LICENSE` kept) with two
+changes in `src/lib.rs`, both under WASI only; other targets work as before:
+
+1. `Source::File` data is read once per file and kept for the rest of the
+   process.
+2. `load_font_file` and `load_fonts_dir` read only the start of a font file
+   (its table directories) and the `name`, `OS/2` and `post` tables, which are
+   all fontdb takes a face's details from, and keep the faces found per file
+   for the rest of the process. A file whose table directory lies past the
+   first 16 KB is read whole as before. The faces are the same as from the
+   whole file; a unit test checks this for a font, a collection, a table
+   running past the end of the file and files that are not fonts.
+
+`Cargo.toml` swaps it in with `[patch.crates-io]`, so usvg, resvg and
+rhwp's vendored svg2pdf all use it. For the second change, the functions that
+read a face's names and style take the three tables instead of the parsed
+font. The only other edits are dropping the
 dev-dependencies, which serve upstream tests that are not copied, and turning
 an em dash in a doc comment into a hyphen for this repository's commit check.
 
 It is a copy in the repository rather than a patch applied at build time
 because cargo needs the `[patch]` path to exist before it resolves, so a
-patch would have to fetch the crate outside cargo. The copy is about 55 KB.
+patch would have to fetch the crate outside cargo. The copy is about 65 KB.
 To see the change, compare it with the registry copy:
 
 ```sh
 diff -r ~/.cargo/registry/src/index.crates.io-*/fontdb-0.23.0/src vendor/fontdb/src
 ```
 
-The cache has a unit test that runs natively (the test build turns the cache on
+Both changes have unit tests that run natively (the test build turns them on
 for every target):
 
 ```sh
