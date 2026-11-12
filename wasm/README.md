@@ -145,6 +145,23 @@ patches give 14.
 | The 64 MiB limit on supplied (downloaded) fonts applies only when rhwp is built with Skia, whose font catalog it protects. Without Skia, as in this engine, every supplied font is kept | Host font folders were counted against the limit first, so with a large font folder downloaded fonts such as HCR Batang and HCR Dotum were dropped and text fell back to other fonts |
 | The invisible text drawn over a vector `·` is fitted to the same glyph width as visible characters | It took the substitute font's own width, so the word box read from the PDF ended about 2 pt short |
 
+`patches/rhwp-layout5.patch` is applied after `rhwp-layout4.patch`. The count
+stays at 15 of 18, and two of the three documents that fail come closer. In the
+equation document every word of Hancom Office's PDF has a partner (38 had
+none), the largest deviation is 1.48 pt instead of 2.30 pt and 5 word edges are
+more than 1 pt off instead of 16. In the 40-page document printed two pages per
+sheet the largest deviation is 4.85 pt instead of 8.30 pt and 235 word edges are
+more than 1 pt off instead of 411.
+
+| Change | Before |
+|--------|--------|
+| A fraction in a superscript of an HYhwpEQ equation is placed by the line and fraction frames at each of the 15 body sizes that have a line frame (6 pt to 16 pt, 18, 20, 22 and 24 pt). The frames of sizes that were not measured follow the rule all measured ones follow: the height is the size rounded to a whole pixel at 96 dpi, the math axis is the middle of the frame and the baseline is 0.36 em below it | Only seven body sizes had a frame for it. At 11 pt the numerator and denominator sat 1.8 pt and 2.3 pt below Hancom Office's |
+| The name of an HYhwpEQ `lim` shares the math axis of the body line, and the lower limit sits right under the name's line frame | The name was 1.2 pt and the lower limit 1.4 pt above Hancom Office's |
+| The cells of an HYhwpEQ `cases` row are aligned by the middle of their frames | They were aligned by their baselines, which put a cell next to one with a superscript 1.2 pt to 1.6 pt below Hancom Office's |
+| In a PDF, the equation parts Hancom Office paints with HyhwpEQ glyphs are painted with those glyphs when the font database holds HyhwpEQ: fraction, radical and overline rules up to 9 em long, radical signs, parentheses of text height, braces, a tall left brace without a right one (a top, a middle and a bottom part with an extender in each gap) and the upright letters of function names. Without the font they are drawn as paths, as before | They were always drawn as paths, so the 38 words Hancom Office's PDF holds for them had no partner |
+| A right-aligned line leaves trailing ideographic spaces (U+3000) out of the width it aligns, as it does trailing spaces | The ideographic space was aligned with the text, which left the line about 6.5 pt to the left on the two-up sheet |
+| `–` (U+2013), `≥` (U+2265), `「` and `」` (U+300C, U+300D) of an HFT font advance a full em | `–` advanced half an em, and the text after such a character sat 3.5 pt to 5 pt to the left on the two-up sheet |
+
 The patches also add rhwp unit tests for these changes. They are zero-context
 diffs because the surrounding rhwp lines contain em dashes, which this
 repository's commit check refuses. The comment at the top of each file lists

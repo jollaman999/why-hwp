@@ -1,0 +1,1325 @@
+# rhwp equation and line-end fixes for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch, rhwp-layout2.patch, rhwp-layout3.patch and
+# rhwp-layout4.patch; apply this after rhwp-layout4.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - equation/font_frame_metrics.rs, script_fraction_frame.rs: HYhwpEQ line and
+#   fraction frames for sizes outside the measured tables follow the rule the
+#   tables' rows follow (height is the size rounded to a whole 96 dpi pixel,
+#   the math axis is the frame's middle, the baseline 0.36 em below it), so a
+#   fraction in a superscript is placed at body sizes such as 11 pt too.
+# - equation/layout/limit_geometry.rs: a HYhwpEQ `lim` name shares the math
+#   axis of the body line and its lower limit sits right under the name's line
+#   frame.
+# - equation/layout/cases_columns.rs: HYhwpEQ `cases` cells are aligned by the
+#   middle of their frames, not by their baselines.
+# - equation/svg_render.rs, variable_outline.rs, brace_stretch.rs,
+#   accent_outline.rs, svg.rs, pdf.rs, document_core/queries/rendering.rs: in a
+#   PDF export, the equation structures Hangul 2024 paints with HyhwpEQ glyphs
+#   (rules of fractions, radicals and overlines up to 9 em, radical signs,
+#   text-height parentheses, braces, a tall left brace without a right one
+#   assembled from parts, roman function-name letters) are painted with those
+#   glyphs when the PDF font database holds HyhwpEQ. Without the font the paths
+#   are drawn as before.
+# - layout/paragraph_layout.rs: a right-aligned line leaves its trailing
+#   ideographic spaces (U+3000) out of the aligned width, as it does trailing
+#   ASCII spaces.
+# - layout/text_measurement.rs: U+2013, U+2265, U+300C and U+300D of an HFT
+#   font advance a full em.
+# - equation/layout.rs, font_frame_metrics.rs, script_fraction_frame.rs,
+#   svg_render.rs, pdf.rs, layout/paragraph_layout.rs and
+#   layout/text_measurement.rs cover these changes.
+diff --git a/src/document_core/queries/rendering.rs b/src/document_core/queries/rendering.rs
+index 315c46b06..824f88b84 100644
+--- a/src/document_core/queries/rendering.rs
++++ b/src/document_core/queries/rendering.rs
+@@ -1995 +1995,5 @@ impl DocumentCore {
+-            svg_pages.push(self.render_layer_tree_svg(&tree)?);
++            svg_pages.push(
++                crate::renderer::equation::svg_render::with_structure_glyph_hints(|| {
++                    self.render_layer_tree_svg(&tree)
++                })?,
++            );
+diff --git a/src/renderer/equation/accent_outline.rs b/src/renderer/equation/accent_outline.rs
+index 2cc9c0878..79121f2d2 100644
+--- a/src/renderer/equation/accent_outline.rs
++++ b/src/renderer/equation/accent_outline.rs
+@@ -180,0 +181,11 @@ fn append_head(
++
++/// Start, end and centre line of the rule that `commands` draws for a bar:
++/// the one closed rectangle this module builds.
++pub(crate) fn rule_span(commands: &[Command]) -> Option<(f64, f64, f64)> {
++    match commands {
++        [Command::Move((start, top)), Command::Line((end, _)), Command::Line((_, bottom)), Command::Line(_), Command::Close] => {
++            Some((*start, *end, (top + bottom) / 2.0))
++        }
++        _ => None,
++    }
++}
+diff --git a/src/renderer/equation/brace_stretch.rs b/src/renderer/equation/brace_stretch.rs
+index 6aa0fe3e7..3c45137a1 100644
+--- a/src/renderer/equation/brace_stretch.rs
++++ b/src/renderer/equation/brace_stretch.rs
+@@ -31,0 +32,11 @@ fn project(out: &mut Vec<Command>, glyph: Glyph, map: impl Fn((f64, f64)) -> (f6
++/// Whether a brace of this height is assembled from parts instead of drawn
++/// as one size variant.
++pub(crate) fn is_assembly(height: f64, fs: f64) -> bool {
++    fs > 0.0 && height * 1000.0 / fs > data::VARIANTS.last().expect("공개 variant").0
++}
++
++/// Least overlap of two connected parts of the public assembly.
++pub(crate) fn connector_overlap(fs: f64) -> f64 {
++    data::MIN_OVERLAP * fs / 1000.0
++}
++
+diff --git a/src/renderer/equation/font_frame_metrics.rs b/src/renderer/equation/font_frame_metrics.rs
+index 87bdd4b54..a6734ca27 100644
+--- a/src/renderer/equation/font_frame_metrics.rs
++++ b/src/renderer/equation/font_frame_metrics.rs
+@@ -99,0 +100,17 @@ pub(super) fn for_size_at_dpi(fs: f64, dpi: f64) -> Option<FontFrameMetrics> {
++/// 표에 없는 크기의 글줄 프레임을 표의 행들이 따르는 규칙으로 구한다.
++/// 높이는 96DPI 정수 픽셀(75HU)로 반올림한 글자 크기이고, 프레임의
++/// 가운데가 수학 축이며 기준선은 축보다 0.36em 아래다. 이 파일과
++/// script_fraction_frame의 22개 크기 행의 높이가 모두 이 규칙과 일치한다.
++pub(super) fn grid_line_at_dpi(fs: f64, dpi: f64) -> (f64, f64) {
++    let unit = fs * crate::renderer::HWPUNIT_PER_INCH / dpi;
++    let height = (unit / 75.0).round().max(1.0) * 75.0 * dpi / crate::renderer::HWPUNIT_PER_INCH;
++    (height, height / 2.0 + fs * 0.36)
++}
++
++/// 같은 규칙의 일반 글자 분수: 분자·분모 글줄 사이가 0.3em이고
++/// 분수선(수학 축)은 그 가운데에 놓인다.
++pub(super) fn grid_fraction_at_dpi(fs: f64, dpi: f64) -> (f64, f64) {
++    let (line, _) = grid_line_at_dpi(fs, dpi);
++    (line * 2.0 + fs * 0.3, line + fs * 0.15 + fs * 0.36)
++}
++
+@@ -229,0 +247,24 @@ pub(super) fn roman_at_dpi(fs: f64, dpi: f64, accent: bool) -> Option<(f64, f64)
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn grid_rule_reproduces_every_measured_line_and_fraction_height() {
++        let dpi = crate::renderer::DEFAULT_DPI;
++        let to_unit = |px: f64| px * crate::renderer::HWPUNIT_PER_INCH / dpi;
++        for row in METRICS {
++            let fs = crate::renderer::hwpunit_to_px(row[0] as i32, dpi);
++            let line = to_unit(grid_line_at_dpi(fs, dpi).0);
++            let fraction = to_unit(grid_fraction_at_dpi(fs, dpi).0);
++            assert!((line - f64::from(row[1])).abs() < 1e-6, "{row:?}: {line}");
++            assert!(
++                (fraction - f64::from(row[11])).abs() < 1e-6,
++                "{row:?}: {fraction}"
++            );
++        }
++        let fs = crate::renderer::hwpunit_to_px(2200, dpi);
++        assert!((to_unit(grid_line_at_dpi(fs, dpi).0) - 2175.0).abs() < 1e-6);
++        assert!((to_unit(grid_fraction_at_dpi(fs, dpi).0) - 5010.0).abs() < 1e-6);
++    }
++}
+diff --git a/src/renderer/equation/layout.rs b/src/renderer/equation/layout.rs
+index 54fa761e8..51b77c99e 100644
+--- a/src/renderer/equation/layout.rs
++++ b/src/renderer/equation/layout.rs
+@@ -1233,0 +1234,126 @@ mod tests {
++
++    fn hyhwpeq_layout(script: &str, base_unit: i32) -> LayoutBox {
++        let dpi = crate::renderer::DEFAULT_DPI;
++        let mut layout = EqLayout::new(crate::renderer::hwpunit_to_px(base_unit, dpi));
++        layout.hancom_cjk_advance = true;
++        layout.hancom_latin = true;
++        layout.hancom_math_face = true;
++        layout.math_digit_advance = Some(512);
++        layout.layout(&EqParser::new(tokenize(script)).parse())
++    }
++
++    fn find_kind<'a>(
++        value: &'a LayoutBox,
++        y: f64,
++        accept: &dyn Fn(&LayoutKind) -> bool,
++    ) -> Option<(&'a LayoutBox, f64)> {
++        let y = y + value.y;
++        if accept(&value.kind) {
++            return Some((value, y));
++        }
++        match &value.kind {
++            LayoutKind::Row(items) => items.iter().find_map(|item| find_kind(item, y, accept)),
++            LayoutKind::Paren { body, .. }
++            | LayoutKind::Color { body, .. }
++            | LayoutKind::FontStyle { body, .. } => find_kind(body, y, accept),
++            _ => None,
++        }
++    }
++
++    /// 첫 글리프의 그려지는 기준선(부모 원점 기준, pt).
++    fn glyph_baseline_pt(value: &LayoutBox, y: f64) -> f64 {
++        let y = y + value.y;
++        match &value.kind {
++            LayoutKind::HancomGlyphs(run) => (y + value.baseline + run.baseline_shift) * 0.75,
++            LayoutKind::Row(items) => glyph_baseline_pt(&items[0], y),
++            LayoutKind::Superscript { base, .. } | LayoutKind::Subscript { base, .. } => {
++                glyph_baseline_pt(base, y)
++            }
++            LayoutKind::Paren { body, .. }
++            | LayoutKind::Color { body, .. }
++            | LayoutKind::FontStyle { body, .. } => glyph_baseline_pt(body, y),
++            _ => (y + value.baseline) * 0.75,
++        }
++    }
++
++    #[test]
++    fn hyhwpeq_script_fraction_follows_frame_rule_at_11pt() {
++        // 한글 2024 PDF(11pt, 25^{1 over 3}): 분자·분모 기준선은 본체 기준선보다
++        // 14.50pt, 4.79pt 위. 저장 높이 2287HU, 기준선 93%.
++        let layout = hyhwpeq_layout("25^{{1} over {3}}", 1100);
++        let (superscript, top) = find_kind(&layout, 0.0, &|kind| {
++            matches!(kind, LayoutKind::Superscript { .. })
++        })
++        .expect("superscript");
++        let LayoutKind::Superscript { base, sup } = &superscript.kind else {
++            unreachable!()
++        };
++        let fs = crate::renderer::hwpunit_to_px(1100, crate::renderer::DEFAULT_DPI);
++        let (height, baseline) =
++            crate::renderer::equation::logical_font_frame::metrics(superscript, fs)
++                .expect("script fraction frame");
++        let unit = crate::renderer::HWPUNIT_PER_INCH / crate::renderer::DEFAULT_DPI;
++        assert!((height * unit - 2287.0).abs() <= 0.5, "height {height}");
++        assert_eq!((baseline / height * 100.0).round(), 93.0);
++        let (fraction, fraction_top) = find_kind(sup, top, &|kind| {
++            matches!(kind, LayoutKind::Fraction { .. })
++        })
++        .expect("script fraction");
++        let LayoutKind::Fraction { numer, denom, .. } = &fraction.kind else {
++            unreachable!()
++        };
++        let base_line = glyph_baseline_pt(base, top);
++        let numer_rise = base_line - glyph_baseline_pt(numer, fraction_top);
++        let denom_rise = base_line - glyph_baseline_pt(denom, fraction_top);
++        assert!((numer_rise - 14.50).abs() < 0.35, "numerator {numer_rise}");
++        assert!((denom_rise - 4.79).abs() < 0.35, "denominator {denom_rise}");
++    }
++
++    #[test]
++    fn hyhwpeq_limit_name_and_lower_limit_follow_line_frames() {
++        // 한글 2024 PDF: 11pt는 이름 원점이 본체 기준선보다 0.55pt, 하한 기준선이
++        // 9.18pt 아래. 9pt(30곳)는 0.72~0.84pt, 7.20~7.44pt 아래.
++        for (unit, name_drop, sub_drop) in [(1100, 0.55, 9.18), (900, 0.78, 7.32)] {
++            let layout = hyhwpeq_layout("lim _{h rarrow 0} x", unit);
++            let (limit, top) =
++                find_kind(&layout, 0.0, &|kind| matches!(kind, LayoutKind::Limit { .. }))
++                    .expect("limit");
++            let LayoutKind::Limit { name, sub, .. } = &limit.kind else {
++                unreachable!()
++            };
++            let main = (top + limit.baseline) * 0.75;
++            let name = glyph_baseline_pt(name.as_deref().expect("name glyphs"), top) - main;
++            let sub = glyph_baseline_pt(sub.as_deref().expect("lower limit"), top) - main;
++            assert!((name - name_drop).abs() < 0.3, "{unit}: name {name}");
++            assert!((sub - sub_drop).abs() < 0.15, "{unit}: lower limit {sub}");
++        }
++    }
++
++    #[test]
++    fn hyhwpeq_cases_cells_share_the_frame_middle() {
++        // 한글 2024 PDF(11pt): x^2 칸 옆의 일반 글줄 칸은 기준선이 0.96pt 높다.
++        // 위첨자 프레임 1313HU와 글줄 프레임 1125HU의 가운데를 맞춘 값이다.
++        let layout = hyhwpeq_layout("cases{x ^{2} &a#b&c}", 1100);
++        let (body, top) = find_kind(&layout, 0.0, &|kind| {
++            matches!(kind, LayoutKind::Paren { left, .. } if left == "{")
++        })
++        .expect("cases");
++        let LayoutKind::Paren { body, .. } = &body.kind else {
++            unreachable!()
++        };
++        let LayoutKind::Row(rows) = &body.kind else {
++            panic!("cases rows")
++        };
++        let LayoutKind::Row(cells) = &rows[0].kind else {
++            panic!("cases cells")
++        };
++        let row_top = top + body.y + rows[0].y;
++        let rise = glyph_baseline_pt(&cells[0], row_top) - glyph_baseline_pt(&cells[1], row_top);
++        assert!((rise - 0.94).abs() < 0.03, "first row {rise}");
++        let LayoutKind::Row(cells) = &rows[1].kind else {
++            panic!("cases cells")
++        };
++        let row_top = top + body.y + rows[1].y;
++        let rise = glyph_baseline_pt(&cells[0], row_top) - glyph_baseline_pt(&cells[1], row_top);
++        assert!(rise.abs() < 1e-9, "second row {rise}");
++    }
+diff --git a/src/renderer/equation/layout/cases_columns.rs b/src/renderer/equation/layout/cases_columns.rs
+index 701267b57..f3bd14f6b 100644
+--- a/src/renderer/equation/layout/cases_columns.rs
++++ b/src/renderer/equation/layout/cases_columns.rs
+@@ -75,0 +76,14 @@ impl EqLayout {
++                // HYhwpEQ의 칸은 기준선이 아니라 논리 프레임의 가운데를 행에 맞춘다.
++                let centered = self.hancom_math_face && !self.legacy_math_face;
++                let (height, baseline) = if centered {
++                    let height = frames
++                        .iter()
++                        .map(|(height, _)| *height)
++                        .fold(0.0_f64, f64::max);
++                    let baseline = frames
++                        .first()
++                        .map_or(ascent, |(first, baseline)| (height - first) / 2.0 + baseline);
++                    (height, baseline)
++                } else {
++                    (ascent + descent, ascent)
++                };
+@@ -79 +93,6 @@ impl EqLayout {
+-                    cell.y = ascent - cell.baseline;
++                    cell.y = if centered {
++                        let (frame_height, frame_baseline) = frames[column];
++                        (height - frame_height) / 2.0 + frame_baseline - cell.baseline
++                    } else {
++                        ascent - cell.baseline
++                    };
+@@ -87,2 +106,2 @@ impl EqLayout {
+-                    height: ascent + descent,
+-                    baseline: ascent,
++                    height,
++                    baseline,
+diff --git a/src/renderer/equation/layout/limit_geometry.rs b/src/renderer/equation/layout/limit_geometry.rs
+index 4afddea2b..33aaa3647 100644
+--- a/src/renderer/equation/layout/limit_geometry.rs
++++ b/src/renderer/equation/layout/limit_geometry.rs
+@@ -17,0 +18 @@ impl EqLayout {
++        let source_frame = self.hancom_math_face && !self.legacy_math_face;
+@@ -27,0 +29,7 @@ impl EqLayout {
++                if source_frame {
++                    // 1.2배 이름 글줄은 본체 글줄과 수학 축(기준선 위 0.36em)을 공유한다.
++                    name.y = (name_font_size - fs) * 0.36;
++                    if let LayoutKind::HancomGlyphs(run) = &mut name.kind {
++                        run.baseline_shift = 0.0;
++                    }
++                }
+@@ -38 +46,10 @@ impl EqLayout {
+-            child.y = if self.hancom_math_face {
++            child.y = if source_frame {
++                // 하한 글줄은 이름 글줄 프레임 바로 아래에 놓인다.
++                let (name_line, _) =
++                    super::super::font_frame_metrics::grid_line_at_dpi(name_font_size, self.dpi);
++                let (_, sub_baseline) =
++                    super::super::font_frame_metrics::grid_line_at_dpi(sub_font_size, self.dpi);
++                let extra_ascent = (child.baseline - sub_font_size * super::TEXT_BASELINE).max(0.0);
++                baseline - fs * 0.36 + name_line / 2.0 + sub_baseline + extra_ascent
++                    - child.baseline
++            } else if self.hancom_math_face {
+@@ -56 +73 @@ impl EqLayout {
+-            height: height.max(name_box.as_ref().map_or(0.0, |name| name.height)),
++            height: height.max(name_box.as_ref().map_or(0.0, |name| name.y + name.height)),
+diff --git a/src/renderer/equation/script_fraction_frame.rs b/src/renderer/equation/script_fraction_frame.rs
+index 69310a1e3..6629ba14e 100644
+--- a/src/renderer/equation/script_fraction_frame.rs
++++ b/src/renderer/equation/script_fraction_frame.rs
+@@ -27,0 +28,24 @@ const REDUCED: [[u32; 5]; 7] = [
++// 독립 프레임 표(font_frame_metrics)가 있는 본문 크기. 그 0.68배 첨자 크기 중
++// REDUCED에 없는 것은 표의 행들이 따르는 격자 규칙으로 구한다.
++const GRID_PARENTS: [u32; 15] = [
++    600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1800, 2000, 2200, 2400,
++];
++
++fn grid_parent(unit: u32) -> bool {
++    GRID_PARENTS.contains(&unit)
++}
++
++fn grid_reduced(unit: u32, fs: f64, dpi: f64, fraction: bool) -> Option<(f64, f64)> {
++    if !GRID_PARENTS
++        .iter()
++        .any(|parent| (f64::from(*parent) * 0.68).round() as u32 == unit)
++    {
++        return None;
++    }
++    Some(if fraction {
++        super::font_frame_metrics::grid_fraction_at_dpi(fs, dpi)
++    } else {
++        super::font_frame_metrics::grid_line_at_dpi(fs, dpi)
++    })
++}
++
+@@ -30 +54,3 @@ pub(super) fn reduced(fs: f64, dpi: f64, fraction: bool) -> Option<(f64, f64)> {
+-    let row = REDUCED.iter().find(|row| row[0] == unit)?;
++    let Some(row) = REDUCED.iter().find(|row| row[0] == unit) else {
++        return grid_reduced(unit, fs, dpi, fraction);
++    };
+@@ -70,2 +96,12 @@ pub(super) fn frame(base: &LayoutBox, sup: &LayoutBox, fs: f64, dpi: f64) -> Opt
+-    let row = PARENT.iter().find(|row| row[0] == unit)?;
+-    let line_height = super::font_frame_metrics::line_at_dpi(fs, dpi)?.0;
++    let (line_height, line_baseline) = super::font_frame_metrics::line_at_dpi(fs, dpi)?;
++    let Some(row) = PARENT.iter().find(|row| row[0] == unit) else {
++        // PARENT의 일곱 행은 모두 축소 분수 높이에 본체 글줄 높이의 절반을
++        // 더한 값이다. 축소 분수의 아래 끝이 본체 글줄 프레임의 가운데에 놓인다.
++        if !grid_parent(unit) {
++            return None;
++        }
++        let (fraction_height, _) =
++            super::font_frame_metrics::fraction_at_dpi(sup.font_size, dpi)?;
++        let top = fraction_height - line_height / 2.0;
++        return Some((top + line_height, top + line_baseline));
++    };
+@@ -87,0 +124,46 @@ pub(super) fn shift(base: &LayoutBox, sup: &LayoutBox, fs: f64, dpi: f64) -> Opt
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn grid_rule_reproduces_every_measured_script_fraction_frame() {
++        let dpi = crate::renderer::DEFAULT_DPI;
++        let to_unit = |px: f64| px * crate::renderer::HWPUNIT_PER_INCH / dpi;
++        for row in REDUCED {
++            let fs = crate::renderer::hwpunit_to_px(row[0] as i32, dpi);
++            let line = to_unit(super::super::font_frame_metrics::grid_line_at_dpi(fs, dpi).0);
++            let fraction =
++                to_unit(super::super::font_frame_metrics::grid_fraction_at_dpi(fs, dpi).0);
++            assert!((line - f64::from(row[1])).abs() < 1e-6, "{row:?}: {line}");
++            assert!(
++                (fraction - f64::from(row[3])).abs() <= 0.5 + 1e-6,
++                "{row:?}: {fraction}"
++            );
++        }
++        for row in PARENT {
++            let fs = crate::renderer::hwpunit_to_px(row[0] as i32, dpi);
++            let line = to_unit(super::super::font_frame_metrics::line_at_dpi(fs, dpi).unwrap().0);
++            let fraction = to_unit(
++                super::super::font_frame_metrics::fraction_at_dpi(fs * 0.68, dpi)
++                    .unwrap()
++                    .0,
++            );
++            let height = fraction + line / 2.0;
++            assert!(
++                (height - f64::from(row[1])).abs() <= 0.5 + 1e-6,
++                "{row:?}: {height}"
++            );
++        }
++    }
++
++    #[test]
++    fn script_sizes_outside_the_measured_parents_stay_unframed() {
++        let dpi = crate::renderer::DEFAULT_DPI;
++        let fs = crate::renderer::hwpunit_to_px(748, dpi);
++        let (line, baseline) = reduced(fs, dpi, false).unwrap();
++        assert!((line - 10.0).abs() < 1e-9 && (baseline - (5.0 + fs * 0.36)).abs() < 1e-9);
++        let fs = crate::renderer::hwpunit_to_px(950, dpi);
++        assert_eq!(reduced(fs * 0.68, dpi, false), None);
++    }
++}
+diff --git a/src/renderer/equation/svg_render.rs b/src/renderer/equation/svg_render.rs
+index 4c4d6a94f..d6e73e28c 100644
+--- a/src/renderer/equation/svg_render.rs
++++ b/src/renderer/equation/svg_render.rs
+@@ -35,0 +36,368 @@ pub fn render_equation_svg(layout: &LayoutBox, color: &str, base_font_size: f64)
++thread_local! {
++    static PDF_STRUCTURE_GLYPHS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++    static STRUCTURE_GLYPH_HINTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++/// Attribute of the group that carries the HyhwpEQ glyphs of one structure.
++pub(crate) const STRUCTURE_GLYPH_ATTR: &str = "data-hyhwpeq";
++
++/// Run the page SVG rendering of a PDF export. Equations rendered inside
++/// offer their structures as HyhwpEQ glyphs to the PDF stage.
++pub(crate) fn with_structure_glyph_hints<R>(render: impl FnOnce() -> R) -> R {
++    struct Reset(bool);
++    impl Drop for Reset {
++        fn drop(&mut self) {
++            PDF_STRUCTURE_GLYPHS.with(|flag| flag.set(self.0));
++        }
++    }
++    let _reset = Reset(PDF_STRUCTURE_GLYPHS.with(|flag| flag.replace(true)));
++    render()
++}
++
++/// The equation fragment with each structure Hancom Office paints as a
++/// HyhwpEQ glyph (radical, rule, delimiter) wrapped in a
++/// `<g data-hyhwpeq="...">` group around the path it has today. The PDF stage
++/// swaps the group for the glyphs when its font database holds HyhwpEQ and
++/// unwraps it otherwise, which leaves the fragment as it is without hints.
++/// Returns `None` outside a PDF export, and when the node's fragment is not
++/// the plain rendering of its layout.
++pub(crate) fn structure_glyph_fragment(
++    equation: &crate::renderer::render_tree::EquationNode,
++) -> Option<String> {
++    if !PDF_STRUCTURE_GLYPHS.with(|flag| flag.get()) {
++        return None;
++    }
++    let render = || {
++        render_equation_svg(
++            &equation.layout_box,
++            &equation.color_str,
++            equation.font_size,
++        )
++    };
++    if render() != equation.svg_content {
++        return None;
++    }
++    Some(render_equation_svg_with_structure_glyphs(
++        &equation.layout_box,
++        &equation.color_str,
++        equation.font_size,
++    ))
++}
++
++pub(crate) fn render_equation_svg_with_structure_glyphs(
++    layout: &LayoutBox,
++    color: &str,
++    base_font_size: f64,
++) -> String {
++    STRUCTURE_GLYPH_HINTS.with(|flag| flag.set(true));
++    let hinted = render_equation_svg(layout, color, base_font_size);
++    STRUCTURE_GLYPH_HINTS.with(|flag| flag.set(false));
++    hinted
++}
++
++/// Ink box of a HyhwpEQ structure glyph in 1/1024 em, y up, as the glyf table
++/// of the installed HYHWPEQ.TTF (UPM 1024) holds it.
++#[derive(Clone, Copy)]
++struct StructureInk {
++    code: char,
++    x_min: f64,
++    x_max: f64,
++    y_min: f64,
++    y_max: f64,
++}
++
++const RULE_INK: StructureInk = StructureInk {
++    code: '\u{e06d}',
++    x_min: 0.0,
++    x_max: 512.0,
++    y_min: 598.0,
++    y_max: 639.0,
++};
++const RADICAL_INK: StructureInk = StructureInk {
++    code: '\u{e05c}',
++    x_min: 230.0,
++    x_max: 1025.0,
++    y_min: -201.0,
++    y_max: 821.0,
++};
++const LEFT_PAREN_INK: StructureInk = StructureInk {
++    code: '\u{e044}',
++    x_min: 102.0,
++    x_max: 345.0,
++    y_min: -207.0,
++    y_max: 826.0,
++};
++const RIGHT_PAREN_INK: StructureInk = StructureInk {
++    code: '\u{e045}',
++    x_min: 52.0,
++    x_max: 295.0,
++    y_min: -208.0,
++    y_max: 826.0,
++};
++const LEFT_BRACE_INK: StructureInk = StructureInk {
++    code: '\u{e04b}',
++    x_min: 113.0,
++    x_max: 446.0,
++    y_min: -203.0,
++    y_max: 821.0,
++};
++const RIGHT_BRACE_INK: StructureInk = StructureInk {
++    code: '\u{e04c}',
++    x_min: 113.0,
++    x_max: 446.0,
++    y_min: -203.0,
++    y_max: 821.0,
++};
++
++const BRACE_TOP_INK: StructureInk = StructureInk {
++    code: '\u{e078}',
++    x_min: 210.0,
++    x_max: 455.0,
++    y_min: -203.0,
++    y_max: 606.0,
++};
++const BRACE_MIDDLE_INK: StructureInk = StructureInk {
++    code: '\u{e079}',
++    x_min: 15.0,
++    x_max: 259.0,
++    y_min: -203.0,
++    y_max: 821.0,
++};
++const BRACE_BOTTOM_INK: StructureInk = StructureInk {
++    code: '\u{e07a}',
++    x_min: 210.0,
++    x_max: 455.0,
++    y_min: 12.0,
++    y_max: 821.0,
++};
++const BRACE_EXTENDER_INK: StructureInk = StructureInk {
++    code: '\u{e07b}',
++    x_min: 210.0,
++    x_max: 258.0,
++    y_min: 54.0,
++    y_max: 567.0,
++};
++
++/// One glyph of a structure: origin, baseline and the two em sizes.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub(crate) struct StructureGlyph {
++    pub(crate) code: char,
++    pub(crate) x: f64,
++    pub(crate) baseline: f64,
++    pub(crate) size_x: f64,
++    pub(crate) size_y: f64,
++}
++
++/// Longest rule, in em, that is painted as the widened rule glyph. Poppler's
++/// Splash renderer (pdftoppm 26.01) drops a glyph painted about ten times
++/// wider than its size: it painted this glyph at 9.75 em and dropped it at
++/// 10 em, at 12 and 30 pt and at 72 and 200 dpi. A longer rule keeps its path.
++const RULE_GLYPH_MAX_EMS: f64 = 9.0;
++
++/// Hancom Office paints every rule (fraction, radical, overline) with the
++/// rule glyph at the text size, widened until its advance is the rule length.
++fn rule_glyph(start: f64, end: f64, center_y: f64, fs: f64) -> Option<StructureGlyph> {
++    let ink = RULE_INK;
++    (end > start && fs > 0.0 && end - start <= RULE_GLYPH_MAX_EMS * fs).then(|| StructureGlyph {
++        code: ink.code,
++        x: start,
++        baseline: center_y + (ink.y_min + ink.y_max) / 2.0 / 1024.0 * fs,
++        size_x: (end - start) * 1024.0 / (ink.x_max - ink.x_min),
++        size_y: fs,
++    })
++}
++
++/// Box of the outline's points, moved by (`dx`, `dy`): left, top, right, bottom.
++fn outline_box(
++    outline: &[super::GlyphOutlineCommand],
++    dx: f64,
++    dy: f64,
++) -> Option<(f64, f64, f64, f64)> {
++    use super::GlyphOutlineCommand as Command;
++    let mut points = outline.iter().flat_map(|command| match *command {
++        Command::Move(p) | Command::Line(p) => vec![p],
++        Command::Cubic(p) => p.to_vec(),
++        Command::Close => Vec::new(),
++    });
++    let first = points.next()?;
++    let (mut x0, mut y0, mut x1, mut y1) = (first.0, first.1, first.0, first.1);
++    for (px, py) in points {
++        x0 = x0.min(px);
++        x1 = x1.max(px);
++        y0 = y0.min(py);
++        y1 = y1.max(py);
++    }
++    (y1 > y0).then_some((x0 + dx, y0 + dy, x1 + dx, y1 + dy))
++}
++
++/// Hancom Office keeps the horizontal size of a radical or delimiter at the
++/// text size and stretches the glyph vertically. Give the glyph ink the
++/// height and the horizontal centre of the outline it stands for.
++fn stretched_glyph(
++    ink: StructureInk,
++    outline: &[super::GlyphOutlineCommand],
++    dx: f64,
++    dy: f64,
++    fs: f64,
++) -> Option<StructureGlyph> {
++    let (x0, y0, x1, y1) = outline_box(outline, dx, dy).filter(|_| fs > 0.0)?;
++    let size_y = (y1 - y0) * 1024.0 / (ink.y_max - ink.y_min);
++    Some(StructureGlyph {
++        code: ink.code,
++        x: (x0 + x1) / 2.0 - (ink.x_min + ink.x_max) / 2.0 / 1024.0 * fs,
++        baseline: y1 + ink.y_min / 1024.0 * size_y,
++        size_x: fs,
++        size_y,
++    })
++}
++
++/// Hancom Office assembles a left brace too tall for one glyph from a top,
++/// a middle and a bottom part at the text size: the top part's ink starts at
++/// the brace's top, the bottom part's ink ends at its bottom and the middle
++/// part is centred. One extender, stretched vertically, fills each gap. The
++/// extender overlaps its neighbours by the connector overlap of the public
++/// assembly this outline was built with.
++fn assembled_left_brace(
++    outline: &[super::GlyphOutlineCommand],
++    dx: f64,
++    dy: f64,
++    fs: f64,
++) -> Vec<Option<StructureGlyph>> {
++    let Some((x0, y0, x1, y1)) = outline_box(outline, dx, dy).filter(|_| fs > 0.0) else {
++        return vec![None];
++    };
++    let unit = fs / 1024.0;
++    let (top, middle, bottom, extender) = (
++        BRACE_TOP_INK,
++        BRACE_MIDDLE_INK,
++        BRACE_BOTTOM_INK,
++        BRACE_EXTENDER_INK,
++    );
++    let x = (x0 + x1) / 2.0 - (middle.x_min + top.x_max) / 2.0 * unit;
++    let part = |ink: StructureInk, baseline: f64| StructureGlyph {
++        code: ink.code,
++        x,
++        baseline,
++        size_x: fs,
++        size_y: fs,
++    };
++    let top_baseline = y0 + top.y_max * unit;
++    let middle_baseline = (y0 + y1) / 2.0 + (middle.y_min + middle.y_max) / 2.0 * unit;
++    let bottom_baseline = y1 + bottom.y_min * unit;
++    let overlap = super::brace_stretch::connector_overlap(fs);
++    let fill = |from: f64, to: f64| {
++        (to > from).then(|| {
++            let size_y = (to - from + 2.0 * overlap) * 1024.0 / (extender.y_max - extender.y_min);
++            StructureGlyph {
++                code: extender.code,
++                x,
++                baseline: to + overlap + extender.y_min / 1024.0 * size_y,
++                size_x: fs,
++                size_y,
++            }
++        })
++    };
++    vec![
++        Some(part(top, top_baseline)),
++        fill(
++            top_baseline - top.y_min * unit,
++            middle_baseline - middle.y_max * unit,
++        ),
++        Some(part(middle, middle_baseline)),
++        fill(
++            middle_baseline - middle.y_min * unit,
++            bottom_baseline - bottom.y_max * unit,
++        ),
++        Some(part(bottom, bottom_baseline)),
++    ]
++}
++
++/// Hancom Office paints a roman letter (function names) with the ASCII glyph
++/// of HyhwpEQ. The outline is the public letter fitted to that glyph's ink,
++/// so the glyph takes the outline's origin and baseline.
++fn roman_letter_glyph(
++    text: &str,
++    outline: &[super::GlyphOutlineCommand],
++    x: f64,
++    y: f64,
++    fs: f64,
++) -> Option<StructureGlyph> {
++    let mut letters = text.chars();
++    let letter = letters.next().filter(|_| letters.next().is_none())?;
++    let baseline = super::variable_outline::glyph_baseline(letter, fs, outline)?;
++    Some(StructureGlyph {
++        code: letter,
++        x,
++        baseline: y + baseline,
++        size_x: fs,
++        size_y: fs,
++    })
++}
++
++/// The glyphs Hancom Office paints a delimiter with: one stretched glyph for
++/// a text-height parenthesis or a brace, parts for a taller left brace. The
++/// taller right brace has no observed assembly and keeps its path, so a tall
++/// pair keeps both paths.
++#[allow(clippy::too_many_arguments)]
++fn delimiter_glyphs(
++    text: &str,
++    other: &str,
++    text_height: bool,
++    height: f64,
++    outline: &[super::GlyphOutlineCommand],
++    dx: f64,
++    dy: f64,
++    fs: f64,
++) -> Vec<Option<StructureGlyph>> {
++    let assembly = super::brace_stretch::is_assembly(height, fs);
++    let ink = match text {
++        "(" if text_height => LEFT_PAREN_INK,
++        ")" if text_height => RIGHT_PAREN_INK,
++        "{" if !assembly => LEFT_BRACE_INK,
++        "}" if !assembly => RIGHT_BRACE_INK,
++        "{" if other.is_empty() => return assembled_left_brace(outline, dx, dy, fs),
++        _ => return vec![None],
++    };
++    vec![stretched_glyph(ink, outline, dx, dy, fs)]
++}
++
++/// Write `element`, inside a hint group when hints are on and the structure
++/// has glyphs.
++fn push_structure(svg: &mut String, color: &str, glyphs: &[Option<StructureGlyph>], element: &str) {
++    let hints = STRUCTURE_GLYPH_HINTS.with(|flag| flag.get());
++    if !hints || glyphs.is_empty() || glyphs.iter().any(Option::is_none) {
++        svg.push_str(element);
++        return;
++    }
++    svg.push_str(&format!("<g {STRUCTURE_GLYPH_ATTR}=\"{color}"));
++    for glyph in glyphs.iter().flatten() {
++        svg.push_str(&format!(
++            ";{:x},{:.4},{:.4},{:.4},{:.4}",
++            glyph.code as u32, glyph.x, glyph.baseline, glyph.size_x, glyph.size_y,
++        ));
++    }
++    svg.push_str("\">");
++    svg.push_str(element);
++    svg.push_str("</g>");
++}
++
++/// Read back the fill and glyphs of a hint group's attribute value.
++pub(crate) fn parse_structure_glyphs(value: &str) -> Option<(&str, Vec<StructureGlyph>)> {
++    let mut fields = value.split(';');
++    let color = fields.next().filter(|color| !color.is_empty())?;
++    let mut glyphs = Vec::new();
++    for field in fields {
++        let mut parts = field.split(',');
++        let code = char::from_u32(u32::from_str_radix(parts.next()?, 16).ok()?)?;
++        let mut number = || parts.next()?.parse::<f64>().ok().filter(|v| v.is_finite());
++        glyphs.push(StructureGlyph {
++            code,
++            x: number()?,
++            baseline: number()?,
++            size_x: number()?,
++            size_y: number()?,
++        });
++    }
++    (!glyphs.is_empty()).then_some((color, glyphs))
++}
++
+@@ -143 +511 @@ fn render_box(
+-                svg.push_str(&format!(
++                let path = format!(
+@@ -146 +514,6 @@ fn render_box(
+-                ));
++                );
++                let glyph = paint
++                    .is_none()
++                    .then(|| roman_letter_glyph(text, commands, x, y, fs))
++                    .flatten();
++                push_structure(svg, color, &[glyph], &path);
+@@ -201 +574 @@ fn render_box(
+-            svg.push_str(&format!(
++            let rule = format!(
+@@ -206 +579,3 @@ fn render_box(
+-            ));
++            );
++            let glyph = rule_glyph(x + rule_start, x + rule_end, line_y, fs);
++            push_structure(svg, color, &[glyph], &rule);
+@@ -216,2 +591,2 @@ fn render_box(
+-            svg.push_str(&format!(
+-                "<path d=\"{}\" transform=\"translate({x:.4},{y:.4})\" fill=\"{color}\"/>\n",
++            let radical = format!(
++                "<path d=\"{}\" transform=\"translate({x:.4},{y:.4})\" fill=\"{color}\"/>\n<line x1=\"{:.4}\" y1=\"{:.4}\" x2=\"{:.4}\" y2=\"{:.4}\" stroke=\"{color}\" stroke-width=\"{:.4}\"/>\n",
+@@ -219,3 +593,0 @@ fn render_box(
+-            ));
+-            svg.push_str(&format!(
+-                "<line x1=\"{:.4}\" y1=\"{:.4}\" x2=\"{:.4}\" y2=\"{:.4}\" stroke=\"{color}\" stroke-width=\"{:.4}\"/>\n",
+@@ -225 +597,11 @@ fn render_box(
+-            ));
++            );
++            let glyphs = [
++                stretched_glyph(RADICAL_INK, &geometry.outline, x, y, fs),
++                rule_glyph(
++                    x + geometry.bar_start.0,
++                    x + geometry.bar_end.0,
++                    y + geometry.bar_start.1,
++                    fs,
++                ),
++            ];
++            push_structure(svg, color, &glyphs, &radical);
+@@ -430 +812,11 @@ fn render_box(
+-                    svg.push_str(&format!("<path d=\"{path}\" transform=\"translate({x:.4},{y:.4})\" fill=\"{color}\"/>\n"));
++                    let glyphs = delimiter_glyphs(
++                        left,
++                        right,
++                        use_glyph,
++                        *delimiter_height,
++                        commands,
++                        x,
++                        y,
++                        fs,
++                    );
++                    push_structure(svg, color, &glyphs, &format!("<path d=\"{path}\" transform=\"translate({x:.4},{y:.4})\" fill=\"{color}\"/>\n"));
+@@ -456 +848,11 @@ fn render_box(
+-                    svg.push_str(&format!("<path d=\"{path}\" transform=\"translate({right_x:.4},{y:.4})\" fill=\"{color}\"/>\n"));
++                    let glyphs = delimiter_glyphs(
++                        right,
++                        left,
++                        use_glyph,
++                        *delimiter_height,
++                        commands,
++                        right_x,
++                        y,
++                        fs,
++                    );
++                    push_structure(svg, color, &glyphs, &format!("<path d=\"{path}\" transform=\"translate({right_x:.4},{y:.4})\" fill=\"{color}\"/>\n"));
+@@ -484 +886 @@ fn render_box(
+-                svg.push_str(&format!(
++                let path = format!(
+@@ -487 +889,8 @@ fn render_box(
+-                ));
++                );
++                let glyph = (*kind == DecoKind::Bar)
++                    .then(|| super::accent_outline::rule_span(commands))
++                    .flatten()
++                    .and_then(|(start, end, center)| {
++                        rule_glyph(x + start, x + end, y + center, fs)
++                    });
++                push_structure(svg, color, &[glyph], &path);
+@@ -811,0 +1221,146 @@ mod tests {
++    fn structure_glyphs(script: &str) -> (String, Vec<StructureGlyph>) {
++        let ast = EqParser::new(tokenize(script)).parse();
++        let layout = EqLayout::new(20.0).layout(&ast);
++        let plain = render_equation_svg(&layout, "#000000", 20.0);
++        let hinted = render_equation_svg_with_structure_glyphs(&layout, "#000000", 20.0);
++        assert_eq!(render_equation_svg(&layout, "#000000", 20.0), plain);
++        let open = format!("<g {STRUCTURE_GLYPH_ATTR}=\"");
++        let mut glyphs = Vec::new();
++        for group in hinted.split(&open).skip(1) {
++            let value = group.split('"').next().expect("hint value");
++            let (color, parsed) = parse_structure_glyphs(value).expect("hint glyphs");
++            assert_eq!(color, "#000000");
++            glyphs.extend(parsed);
++        }
++        (plain, glyphs)
++    }
++
++    fn attr(element: &str, name: &str) -> f64 {
++        let start = element.find(&format!(" {name}=\"")).expect(name) + name.len() + 3;
++        element[start..]
++            .split('"')
++            .next()
++            .and_then(|value| value.parse().ok())
++            .expect(name)
++    }
++
++    #[test]
++    fn fraction_rule_is_offered_as_the_widened_rule_glyph() {
++        let (plain, glyphs) = structure_glyphs("a over b");
++        let line = &plain[plain.find("<line").expect("fraction rule")..];
++        let (x1, x2, y1) = (attr(line, "x1"), attr(line, "x2"), attr(line, "y1"));
++        assert_eq!(glyphs.len(), 1);
++        let glyph = glyphs[0];
++        assert_eq!(glyph.code, '\u{e06d}');
++        assert_eq!(glyph.size_y, 20.0);
++        assert!((glyph.x - x1).abs() < 0.01, "{glyph:?} {x1}");
++        // The rule glyph's advance and ink are both half an em.
++        assert!((glyph.size_x / 2.0 - (x2 - x1)).abs() < 0.02, "{glyph:?}");
++        // Ink 598..639 of 1024 above the baseline, centred on the rule.
++        let center = glyph.baseline - 618.5 / 1024.0 * 20.0;
++        assert!((center - y1).abs() < 0.01, "{glyph:?} {y1}");
++    }
++
++    #[test]
++    fn rule_longer_than_poppler_paints_keeps_its_path() {
++        assert!(rule_glyph(0.0, 9.0 * 20.0, 5.0, 20.0).is_some());
++        assert!(rule_glyph(0.0, 9.0 * 20.0 + 0.01, 5.0, 20.0).is_none());
++        // One rule without a glyph keeps the whole structure a path.
++        let mut svg = String::new();
++        STRUCTURE_GLYPH_HINTS.with(|flag| flag.set(true));
++        push_structure(
++            &mut svg,
++            "#000000",
++            &[
++                rule_glyph(0.0, 10.0, 5.0, 20.0),
++                rule_glyph(0.0, 400.0, 5.0, 20.0),
++            ],
++            "<line/>\n",
++        );
++        STRUCTURE_GLYPH_HINTS.with(|flag| flag.set(false));
++        assert_eq!(svg, "<line/>\n");
++    }
++
++    #[test]
++    fn radical_is_offered_as_the_stretched_radical_glyph_and_its_rule() {
++        let ast = EqParser::new(tokenize("sqrt {a over b}")).parse();
++        let layout = EqLayout::new(20.0).layout(&ast);
++        let (_, glyphs) = structure_glyphs("sqrt {a over b}");
++        let codes: Vec<char> = glyphs.iter().map(|glyph| glyph.code).collect();
++        assert_eq!(codes, ['\u{e05c}', '\u{e06d}', '\u{e06d}']);
++        let radical = glyphs[0];
++        assert_eq!(radical.size_x, 20.0);
++        // Ink -201..821 of 1024 spans the radical's box, top to bottom.
++        let top = radical.baseline - 821.0 / 1024.0 * radical.size_y;
++        let bottom = radical.baseline + 201.0 / 1024.0 * radical.size_y;
++        assert!(top.abs() < 0.01, "{radical:?}");
++        assert!(
++            (bottom - layout.height).abs() < 0.01,
++            "{radical:?} {}",
++            layout.height
++        );
++        assert!(radical.size_y > radical.size_x);
++    }
++
++    #[test]
++    fn structures_without_a_single_hancom_glyph_keep_only_their_paths() {
++        // A square bracket has no observed Hancom glyph.
++        let (_, glyphs) = structure_glyphs("left [ a right ]");
++        assert!(glyphs.is_empty(), "{glyphs:?}");
++        let (_, glyphs) = structure_glyphs("left lbrace a right rbrace");
++        let codes: Vec<char> = glyphs.iter().map(|glyph| glyph.code).collect();
++        assert_eq!(codes, ['\u{e04b}', '\u{e04c}']);
++    }
++
++    #[test]
++    fn tall_left_brace_is_assembled_from_parts_that_span_its_outline() {
++        use crate::renderer::equation::GlyphOutlineCommand as Command;
++        // Hancom Office 2024, math.hwpx cases brace at 11.03 pt: ink 389.88..422.05.
++        let fs = 11.03;
++        let outline = [
++            Command::Move((2.0, 389.88)),
++            Command::Line((6.0, 389.88)),
++            Command::Line((6.0, 422.05)),
++            Command::Line((2.0, 422.05)),
++            Command::Close,
++        ];
++        let glyphs: Vec<StructureGlyph> = assembled_left_brace(&outline, 0.0, 0.0, fs)
++            .into_iter()
++            .map(|glyph| glyph.expect("part"))
++            .collect();
++        let codes: Vec<char> = glyphs.iter().map(|glyph| glyph.code).collect();
++        assert_eq!(
++            codes,
++            ['\u{e078}', '\u{e07b}', '\u{e079}', '\u{e07b}', '\u{e07a}']
++        );
++        // The same baselines Hancom Office printed: 396.41, 409.23, 422.18,
++        // and extenders 400.96 and 413.79 at 4.56 pt.
++        let expected = [396.41, 400.96, 409.23, 413.79, 422.18];
++        for (glyph, baseline) in glyphs.iter().zip(expected) {
++            assert!(
++                (glyph.baseline - baseline).abs() < 0.1,
++                "{glyph:?} {baseline}"
++            );
++            assert_eq!(glyph.size_x, fs);
++            assert_eq!(glyph.x, glyphs[0].x);
++        }
++        assert_eq!(glyphs[0].size_y, fs);
++        assert!((glyphs[1].size_y - 4.56).abs() < 0.1, "{:?}", glyphs[1]);
++        assert!((glyphs[3].size_y - 4.56).abs() < 0.1, "{:?}", glyphs[3]);
++        // Ink 15..455 of 1024 is centred on the outline.
++        assert!((glyphs[0].x + 235.0 / 1024.0 * fs - 4.0).abs() < 1e-9);
++
++        // Parts taller than the brace cannot be assembled: the path stays.
++        let short = [
++            Command::Move((2.0, 0.0)),
++            Command::Line((6.0, 0.0)),
++            Command::Line((6.0, 20.0)),
++            Command::Close,
++        ];
++        assert!(assembled_left_brace(&short, 0.0, 0.0, fs).contains(&None));
++        // A tall pair keeps both paths.
++        let pair = "left lbrace matrix {a # b # c # d # e # f} right rbrace";
++        let (_, glyphs) = structure_glyphs(pair);
++        assert!(glyphs.is_empty(), "{glyphs:?}");
++    }
++
+diff --git a/src/renderer/equation/variable_outline.rs b/src/renderer/equation/variable_outline.rs
+index 6c44526b1..b436d7aa1 100644
+--- a/src/renderer/equation/variable_outline.rs
++++ b/src/renderer/equation/variable_outline.rs
+@@ -208,0 +209,11 @@ pub(super) fn commands(
++    let roman_rise = if italic {
++        0.0
++    } else {
++        // 정체 ASCII 프로그램의 기준선 차이. em 단위와 같은 Print 격자를 사용한다.
++        (fs * 600.0 / dpi * 70.0 / 1024.0).floor() * dpi / 600.0
++    };
++    let origin = baseline - super::negation_geometry::math_origin_shift(fs, dpi) - roman_rise;
++    commands_at_origin(ch, fs, origin, italic)
++}
++
++fn commands_at_origin(ch: char, fs: f64, origin: f64, italic: bool) -> Option<Vec<Command>> {
+@@ -234,6 +244,0 @@ pub(super) fn commands(
+-    let roman_rise = if italic {
+-        0.0
+-    } else {
+-        // 정체 ASCII 프로그램의 기준선 차이. em 단위와 같은 Print 격자를 사용한다.
+-        (fs * 600.0 / dpi * 70.0 / 1024.0).floor() * dpi / 600.0
+-    };
+@@ -246 +251 @@ pub(super) fn commands(
+-        origin: baseline - super::negation_geometry::math_origin_shift(fs, dpi) - roman_rise,
++        origin,
+@@ -252,0 +258,12 @@ pub(super) fn commands(
++
++/// Baseline of the roman HyhwpEQ letter that `outline` stands for: where the
++/// origin of `commands` put the glyph's y = 0. `None` when `outline` is not
++/// the roman outline of `ch` at this size.
++pub(super) fn glyph_baseline(ch: char, fs: f64, outline: &[Command]) -> Option<f64> {
++    let reference = commands_at_origin(ch, fs, 0.0, false)?;
++    let (Command::Move((ax, ay)), Command::Move((bx, by))) = (reference.first()?, outline.first()?)
++    else {
++        return None;
++    };
++    (reference.len() == outline.len() && (ax - bx).abs() < 1e-9).then_some(by - ay)
++}
+diff --git a/src/renderer/layout/paragraph_layout.rs b/src/renderer/layout/paragraph_layout.rs
+index 01c9071db..a333fbda2 100755
+--- a/src/renderer/layout/paragraph_layout.rs
++++ b/src/renderer/layout/paragraph_layout.rs
+@@ -1484,0 +1485,19 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
++) -> f64 {
++    trailing_blank_width_after_last_inline_object(
++        line,
++        last_inline_object_pos,
++        styles,
++        stop_on_underline,
++        measure_width,
++        false,
++    )
++}
++
++/// `ideographic_space` 이면 전각 공백(U+3000)도 말미 공백으로 센다 (오른쪽 정렬 전용).
++pub(crate) fn trailing_blank_width_after_last_inline_object(
++    line: &ComposedLine,
++    last_inline_object_pos: Option<usize>,
++    styles: &ResolvedStyleSet,
++    stop_on_underline: bool,
++    _measure_width: fn(&str, &TextStyle) -> f64,
++    ideographic_space: bool,
+@@ -1503 +1522,2 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
+-        let mut trailing_spaces = effective_text_for_metrics(run)
++        let run_text = effective_text_for_metrics(run);
++        let mut trailing_spaces = run_text
+@@ -1506 +1526 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
+-            .take_while(|c| *c == ' ')
++            .take_while(|c| *c == ' ' || (ideographic_space && *c == '\u{3000}'))
+@@ -1521 +1541,3 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
+-        width += estimate_text_width_exact(&" ".repeat(trailing_spaces), &ts);
++        let tail_start = run_text.chars().count() - trailing_spaces;
++        let tail: String = run_text.chars().skip(tail_start).collect();
++        width += estimate_text_width_exact(&tail, &ts);
+@@ -7861 +7883 @@ impl LayoutEngine {
+-                    trailing_space_width_after_last_inline_object(
++                    trailing_blank_width_after_last_inline_object(
+@@ -7871,0 +7894 @@ impl LayoutEngine {
++                        right_align_excludes_trailing_ws,
+@@ -12713,0 +12737,70 @@ mod trailing_tac_width_tests {
++#[cfg(test)]
++mod trailing_ideographic_space_tests {
++    use super::{
++        estimate_text_width_exact, trailing_blank_width_after_last_inline_object,
++        trailing_space_width_after_last_inline_object, ResolvedStyleSet,
++    };
++    use crate::renderer::composer::{ComposedLine, ComposedTextRun};
++
++    fn line(text: &str) -> ComposedLine {
++        ComposedLine {
++            runs: vec![ComposedTextRun {
++                text: text.to_string(),
++                ..Default::default()
++            }],
++            line_height: 1_000,
++            baseline_distance: 800,
++            segment_width: 10_000,
++            column_start: 0,
++            line_spacing: 0,
++            has_line_break: false,
++            char_start: 0,
++        }
++    }
++
++    fn blank_width(text: &str, ideographic_space: bool) -> f64 {
++        trailing_blank_width_after_last_inline_object(
++            &line(text),
++            None,
++            &ResolvedStyleSet::default(),
++            false,
++            estimate_text_width_exact,
++            ideographic_space,
++        )
++    }
++
++    #[test]
++    fn right_alignment_drops_trailing_ideographic_space() {
++        let styles = ResolvedStyleSet::default();
++        let style = line("-").runs[0].text_style(&styles);
++        let wide = estimate_text_width_exact("\u{3000}", &style);
++        let both = estimate_text_width_exact("\u{3000} ", &style);
++        assert!(wide > 0.0);
++        assert!(both > wide);
++
++        assert_eq!(blank_width("-\u{3000}", true), wide);
++        assert_eq!(blank_width("-\u{3000} ", true), both);
++        assert_eq!(blank_width("\u{3000}-", true), 0.0);
++    }
++
++    #[test]
++    fn other_alignments_keep_trailing_ideographic_space() {
++        let styles = ResolvedStyleSet::default();
++        let style = line("-").runs[0].text_style(&styles);
++        let space = estimate_text_width_exact(" ", &style);
++
++        assert_eq!(blank_width("-\u{3000}", false), 0.0);
++        assert_eq!(blank_width("-\u{3000} ", false), space);
++        assert_eq!(
++            trailing_space_width_after_last_inline_object(
++                &line("-\u{3000} "),
++                None,
++                &styles,
++                false,
++                estimate_text_width_exact,
++            ),
++            space
++        );
++    }
++}
++
+diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
+index 36d55697b..f7cfdb28e 100644
+--- a/src/renderer/layout/text_measurement.rs
++++ b/src/renderer/layout/text_measurement.rs
+@@ -2494,0 +2495,3 @@ fn char_width_decision_with_hft_tracking<'a>(
++            // 한컴 Print의 HFT 한양중고딕·한양신명조에서 U+2013·U+2265·「」도 전각으로 전진한다.
++            || (style.source_font_is_hft
++                && matches!(c, '\u{2013}' | '\u{2265}' | '\u{300C}' | '\u{300D}'))
+@@ -4082,0 +4086,22 @@ mod tests {
++    #[test]
++    fn hft_fallback_advances_ks_symbols_fullwidth() {
++        let m = EmbeddedTextMeasurer;
++        let advance = |c: char, source_font_is_hft: bool| {
++            let style = TextStyle {
++                font_family: "한양중고딕".to_string(),
++                font_size: 20.0,
++                ratio: 1.0,
++                source_font_is_hft,
++                ..Default::default()
++            };
++            let positions = m.compute_char_positions(&format!("가{c}나"), &style);
++            positions[2] - positions[1]
++        };
++        for c in ['\u{2013}', '\u{2265}', '\u{300C}', '\u{300D}'] {
++            let hft = advance(c, true);
++            assert!((hft - 20.0).abs() < 0.03, "U+{:04X} {hft}", c as u32);
++        }
++        let plain = advance('\u{2013}', false);
++        assert!((plain - 10.0).abs() < 0.03, "U+2013 {plain}");
++    }
++
+diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
+index 0fd489dba..177f2e372 100644
+--- a/src/renderer/pdf.rs
++++ b/src/renderer/pdf.rs
+@@ -1846,0 +1847,52 @@ fn decode_missing_hancom_equation_glyphs<'a>(
++/// Equation structures that Hancom Office paints with HyhwpEQ glyphs arrive
++/// as `<g data-hyhwpeq="...">` groups around the paths that draw them. Paint
++/// the glyphs when the font database holds the face; otherwise drop the group
++/// tags and keep the paths.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++fn apply_hancom_equation_structure_glyphs(
++    svg: &str,
++    face_available: bool,
++) -> std::borrow::Cow<'_, str> {
++    use crate::renderer::equation::svg_render::{parse_structure_glyphs, STRUCTURE_GLYPH_ATTR};
++    let open = format!("<g {STRUCTURE_GLYPH_ATTR}=\"");
++    const CLOSE: &str = "</g>";
++    if !svg.contains(&open) {
++        return std::borrow::Cow::Borrowed(svg);
++    }
++    let family = crate::renderer::equation::hancom_glyphs::FONT_FAMILY;
++    let mut out = String::with_capacity(svg.len());
++    let mut rest = svg;
++    while let Some(start) = rest.find(&open) {
++        out.push_str(&rest[..start]);
++        let after = &rest[start + open.len()..];
++        let parts = after.find("\">").and_then(|value_end| {
++            let body = &after[value_end + 2..];
++            let body_end = body.find(CLOSE)?;
++            Some((
++                &after[..value_end],
++                &body[..body_end],
++                &body[body_end + CLOSE.len()..],
++            ))
++        });
++        let Some((value, body, tail)) = parts else {
++            out.push_str(&open);
++            rest = after;
++            continue;
++        };
++        match parse_structure_glyphs(value).filter(|_| face_available) {
++            Some((color, glyphs)) => {
++                for glyph in glyphs {
++                    out.push_str(&format!(
++                        "<text x=\"0\" y=\"0\" transform=\"translate({:.4},{:.4}) scale({:.8},1)\" font-size=\"{:.4}\" fill=\"{color}\" font-family=\"{family}\">{}</text>\n",
++                        glyph.x, glyph.baseline, glyph.size_x / glyph.size_y, glyph.size_y, glyph.code,
++                    ));
++                }
++            }
++            None => out.push_str(body),
++        }
++        rest = tail;
++    }
++    out.push_str(rest);
++    std::borrow::Cow::Owned(out)
++}
++
+@@ -2515,0 +2568,6 @@ where
++        let structure_svg = apply_hancom_equation_structure_glyphs(
++            svg,
++            !missing_equation_families
++                .contains(&crate::renderer::equation::hancom_glyphs::FONT_FAMILY),
++        );
++        let svg: &str = &structure_svg;
+@@ -2957,0 +3016,58 @@ mod tests {
++    #[test]
++    fn equation_structure_glyphs_are_painted_only_with_the_hancom_face() {
++        let path = "<line x1=\"1.00\" y1=\"2.00\" x2=\"16.00\" y2=\"2.00\" stroke=\"#102030\" stroke-width=\"0.40\"/>\n";
++        let svg = format!(
++            "<svg><g data-hyhwpeq=\"#102030;e06d,1.0000,8.0400,30.0000,10.0000\">{path}</g><g>x</g></svg>"
++        );
++        assert_eq!(
++            apply_hancom_equation_structure_glyphs(&svg, false),
++            format!("<svg>{path}<g>x</g></svg>")
++        );
++        assert_eq!(
++            apply_hancom_equation_structure_glyphs(&svg, true),
++            "<svg><text x=\"0\" y=\"0\" transform=\"translate(1.0000,8.0400) scale(3.00000000,1)\" font-size=\"10.0000\" fill=\"#102030\" font-family=\"HyhwpEQ\">\u{e06d}</text>\n<g>x</g></svg>"
++        );
++        // A hint that does not parse keeps the path.
++        let broken = format!("<svg><g data-hyhwpeq=\"#102030;e06d,1.0\">{path}</g></svg>");
++        assert_eq!(
++            apply_hancom_equation_structure_glyphs(&broken, true),
++            format!("<svg>{path}</svg>")
++        );
++
++        use crate::renderer::equation::{
++            layout::EqLayout, parser::EqParser, svg_render, tokenizer,
++        };
++        let ast = EqParser::new(tokenizer::tokenize(
++            "sqrt {a over b} + left lbrace c right rbrace",
++        ))
++        .parse();
++        let layout = EqLayout::new(20.0).layout(&ast);
++        let plain = svg_render::render_equation_svg(&layout, "#000000", 20.0);
++        let hinted =
++            svg_render::render_equation_svg_with_structure_glyphs(&layout, "#000000", 20.0);
++        assert_ne!(hinted, plain);
++        assert_eq!(
++            apply_hancom_equation_structure_glyphs(&hinted, false),
++            plain
++        );
++        let glyphs = apply_hancom_equation_structure_glyphs(&hinted, true);
++        assert!(
++            !glyphs.contains("data-hyhwpeq")
++                && !glyphs.contains("<path")
++                && !glyphs.contains("<line")
++        );
++        assert_eq!(
++            glyphs
++                .matches("font-family=\"HyhwpEQ\">\u{e06d}</text>")
++                .count(),
++            2
++        );
++        assert_eq!(
++            glyphs
++                .matches("font-family=\"HyhwpEQ\">\u{e05c}</text>")
++                .count(),
++            1
++        );
++        assert_eq!(apply_hancom_equation_structure_glyphs(&plain, true), plain);
++    }
++
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index 1ac6e162a..920328a71 100644
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -1113 +1113,4 @@ impl SvgRenderer {
+-                self.output.push_str(&eq.svg_content);
++                match super::equation::svg_render::structure_glyph_fragment(eq) {
++                    Some(fragment) => self.output.push_str(&fragment),
++                    None => self.output.push_str(&eq.svg_content),
++                }
