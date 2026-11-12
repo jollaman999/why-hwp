@@ -77,10 +77,10 @@ why-hwp verify [-orig 원본] [-allow locs.txt] [-banned words.txt] [-ignore-cas
 ### convert
 
 ```sh
-why-hwp convert [-to hwp|hwpx|pdf|txt] [-o 출력] [-engine builtin|hancom] [-timeout 120s] [-force] <입력.hwp|입력.hwpx|입력.docx>
+why-hwp convert [-to hwp|hwpx|pdf|txt] [-o 출력] [-engine builtin|hancom] [-timeout 10m] [-force] <입력.hwp|입력.hwpx|입력.docx>
 ```
 
-문서를 HWP, HWPX, PDF, UTF-8 텍스트로 변환합니다. 형식은 `-to` 로 주거나 `-o` 의 확장자에서 정합니다. `-o` 가 없으면 입력 경로에서 확장자만 바꿔 쓰고, 출력이 입력 파일 자신이면 거부합니다. 출력 파일이 이미 있으면 `-force` 없이는 덮어쓰지 않습니다. `-timeout`(기본 120s)은 변환 한 번의 시간 상한입니다.
+문서를 HWP, HWPX, PDF, UTF-8 텍스트로 변환합니다. 형식은 `-to` 로 주거나 `-o` 의 확장자에서 정합니다. `-o` 가 없으면 입력 경로에서 확장자만 바꿔 쓰고, 출력이 입력 파일 자신이면 거부합니다. 출력 파일이 이미 있으면 `-force` 없이는 덮어쓰지 않습니다. `-timeout` 은 변환 한 번의 시간 상한입니다 (기본은 내장 엔진 10m, `-engine hancom` 120s).
 
 기본(`-engine builtin`)은 why-hwp 안에 든 엔진으로 변환합니다. [rhwp](https://github.com/edwardkim/rhwp) 와 resvg 를 WebAssembly(WASI)로 컴파일해 [wazero](https://wazero.io) 로 실행하므로 모든 OS 에서 되고 다른 프로그램을 띄우지 않습니다. `.hwp` 와 `.hwpx` 를 읽고, `.docx` 는 오류를 내고 거부합니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초(8코어 PC 에서 약 10초) 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. 이 폴더에는 지금 버전의 컴파일 결과만 남고, 그것이 만들어지면 다른 why-hwp 버전의 것은 지웁니다. `-timeout` 은 변환과, PDF 출력이면 글꼴 내려받기의 시간 상한입니다. 첫 컴파일 시간도 `-timeout` 에 들어가므로, 컴파일보다 짧은 `-timeout` 은 상한에 닿는 즉시 실패하고 컴파일이 끝나지 않았으니 다음 실행에서 다시 컴파일합니다.
 

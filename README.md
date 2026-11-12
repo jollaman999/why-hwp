@@ -77,10 +77,10 @@ Checks a document before you hand it over. It reads `.hwpx`, `.hwp`, `.docx`, `.
 ### convert
 
 ```sh
-why-hwp convert [-to hwp|hwpx|pdf|txt] [-o out] [-engine builtin|hancom] [-timeout 120s] [-force] <in.hwp|in.hwpx|in.docx>
+why-hwp convert [-to hwp|hwpx|pdf|txt] [-o out] [-engine builtin|hancom] [-timeout 10m] [-force] <in.hwp|in.hwpx|in.docx>
 ```
 
-Converts a document to HWP, HWPX, PDF or UTF-8 text. The format comes from `-to`, or from the extension of `-o`. Without `-o` the output is the input path with the new extension; the output cannot be the input file itself. An existing output file is not overwritten unless `-force` is given. `-timeout` (default 120s) limits one conversion.
+Converts a document to HWP, HWPX, PDF or UTF-8 text. The format comes from `-to`, or from the extension of `-o`. Without `-o` the output is the input path with the new extension; the output cannot be the input file itself. An existing output file is not overwritten unless `-force` is given. `-timeout` limits one conversion (default 10m with the built-in engine, 120s with `-engine hancom`).
 
 By default (`-engine builtin`) the conversion is done by the engine built into why-hwp: [rhwp](https://github.com/edwardkim/rhwp) and resvg compiled to WebAssembly (WASI) and run with [wazero](https://wazero.io), so it works on every OS and starts no other program. It reads `.hwp` and `.hwpx`; `.docx` is refused with an error. The first run compiles the engine, which takes several seconds (about 10 seconds on an 8-core PC), and keeps the result in the user cache folder (`why-hwp/wazero`), so later runs start quickly. Only the current version's compiled engine is kept there: once it is in place, those of other why-hwp versions are deleted. `-timeout` covers the conversion and, for PDF output, font downloads. The first compile counts against `-timeout` too: a `-timeout` shorter than the compile fails when the limit is reached, and since the compile did not finish, the next run compiles again.
 

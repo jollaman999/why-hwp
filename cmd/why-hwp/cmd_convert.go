@@ -28,10 +28,10 @@ func runConvert(args []string, stdout, stderr io.Writer) int {
 	to := fs.String("to", "", "output format: hwp, hwpx, pdf or txt (default: from the -o extension)")
 	out := fs.String("o", "", "output path (default: input path with the -to extension)")
 	eng := fs.String("engine", "builtin", "converter: builtin (every OS) or hancom (Hancom Office, Windows only)")
-	timeout := fs.Duration("timeout", 120*time.Second, "time limit for one conversion, including the first engine compile and font downloads; with -engine hancom only the Hwp process started by this run is killed on timeout")
+	timeout := fs.Duration("timeout", 0, "time limit for one conversion, including the first engine compile and font downloads (default 10m with -engine builtin, 120s with -engine hancom); with -engine hancom only the Hwp process started by this run is killed on timeout")
 	force := fs.Bool("force", false, "overwrite an existing output file")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: why-hwp convert [-to hwp|hwpx|pdf|txt] [-o out] [-engine builtin|hancom] [-timeout 120s] [-force] <in.hwp|in.hwpx|in.docx>")
+		fmt.Fprintln(stderr, "Usage: why-hwp convert [-to hwp|hwpx|pdf|txt] [-o out] [-engine builtin|hancom] [-timeout 10m] [-force] <in.hwp|in.hwpx|in.docx>")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Converts with the built-in engine (rhwp), which reads .hwp and .hwpx on every OS.")
 		fmt.Fprintln(stderr, "-engine hancom uses the installed Hancom Office instead (Windows only; also reads .docx).")
@@ -53,7 +53,11 @@ func runConvert(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "why-hwp convert: unknown -engine %q (want builtin or hancom)\n", *eng)
 		return 2
 	}
-	if *timeout <= 0 {
+	timeoutSet := false
+	fs.Visit(func(f *flag.Flag) { timeoutSet = timeoutSet || f.Name == "timeout" })
+	if !timeoutSet {
+		*timeout = defaultTimeout(*eng)
+	} else if *timeout <= 0 {
 		fmt.Fprintln(stderr, "why-hwp convert: -timeout must be positive")
 		return 2
 	}
@@ -102,6 +106,16 @@ func runConvert(args []string, stdout, stderr io.Writer) int {
 // convertBuiltin converts in to dst with the built-in engine. The engine
 // writes into a temporary folder; the result is then copied to dst, which
 // must not exist unless force is set.
+// defaultTimeout is the -timeout used when none is given. The built-in
+// engine can take minutes on a long document, while Hancom Office that has
+// not finished in two minutes is usually stuck on a dialog.
+func defaultTimeout(engine string) time.Duration {
+	if engine == "hancom" {
+		return 120 * time.Second
+	}
+	return 10 * time.Minute
+}
+
 func convertBuiltin(in, dst string, f hancom.Format, timeout time.Duration, force bool) (res hancom.Result, err error) {
 	if !force {
 		if _, err := os.Lstat(dst); err == nil {

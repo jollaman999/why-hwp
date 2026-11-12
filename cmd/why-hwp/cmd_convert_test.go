@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func runCode(args ...string) (int, string, string) {
@@ -103,5 +104,17 @@ func TestConvertHancomNeedsWindows(t *testing.T) {
 	code, _, msg := runCode("convert", "-engine", "hancom", "-o", out, sampleHWP)
 	if want := "why-hwp convert: -engine hancom: convert needs Windows with Hancom Office\n"; code != 1 || msg != want {
 		t.Errorf("exit %d, stderr %q; want exit 1, %q", code, msg, want)
+	}
+}
+
+func TestConvertDefaultTimeout(t *testing.T) {
+	if got := defaultTimeout("builtin"); got != 10*time.Minute {
+		t.Errorf("builtin default = %v, want 10m", got)
+	}
+	if got := defaultTimeout("hancom"); got != 120*time.Second {
+		t.Errorf("hancom default = %v, want 120s", got)
+	}
+	if code, _, msg := runCode("convert", "-timeout", "0s", "-to", "txt", sampleHWP); code != 2 || !strings.Contains(msg, "-timeout must be positive") {
+		t.Errorf("-timeout 0s: exit %d, stderr %q", code, msg)
 	}
 }
