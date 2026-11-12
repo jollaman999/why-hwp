@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/jollaman999/why-hwp/internal/engine"
 	"github.com/jollaman999/why-hwp/internal/svgtool"
 )
 
@@ -14,11 +15,21 @@ func init() {
 	register("svgfont", "Embed the Korean font subset an SVG uses", runSVGFont)
 }
 
+// fontFinder returns the finder of svgfont and svgcheck: the OS font
+// folders, then the font cache that convert fills.
+func fontFinder() svgtool.FontFinder {
+	cache, err := engine.FontCachePath()
+	if err != nil {
+		cache = ""
+	}
+	return svgtool.FontFinder{GOOS: runtime.GOOS, Getenv: os.Getenv, CacheDir: cache}
+}
+
 func runSVGFont(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("svgfont", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	regular := fs.String("regular", "", "regular TrueType font (default: $"+svgtool.EnvFontRegular+", then a search of the OS font folders)")
-	bold := fs.String("bold", "", "bold TrueType font (default: $"+svgtool.EnvFontBold+", then a search of the OS font folders)")
+	regular := fs.String("regular", "", "regular TrueType font (default: $"+svgtool.EnvFontRegular+", then the OS font folders and the why-hwp font cache)")
+	bold := fs.String("bold", "", "bold TrueType font (default: $"+svgtool.EnvFontBold+", then the OS font folders and the why-hwp font cache)")
 	family := fs.String("family", svgtool.DefaultFamily, "font-family name of the embedded font")
 	out := fs.String("o", "", "output SVG path")
 	inPlace := fs.Bool("w", false, "overwrite the input SVG")
@@ -34,7 +45,9 @@ func runSVGFont(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Fonts must be TrueType (.ttf with glyf outlines); CFF (.otf), variable")
 		fmt.Fprintln(stderr, "and collection (.ttc) fonts are refused. Without a flag or environment")
 		fmt.Fprintln(stderr, "variable these are searched for: NotoSansKR-Regular/Bold.ttf,")
-		fmt.Fprintln(stderr, "NanumGothic.ttf/NanumGothicBold.ttf, NanumSquareR/B.ttf, malgun/malgunbd.ttf.")
+		fmt.Fprintln(stderr, "NanumGothic.ttf/NanumGothicBold.ttf, NanumSquareR/B.ttf, malgun/malgunbd.ttf")
+		fmt.Fprintln(stderr, "in the OS font folders, then the same families in the font cache that")
+		fmt.Fprintln(stderr, "why-hwp convert fills.")
 		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
 	}
@@ -72,7 +85,7 @@ func runSVGFont(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "why-hwp svgfont: %s: %v\n", in, err)
 		return 1
 	}
-	finder := svgtool.FontFinder{GOOS: runtime.GOOS, Getenv: os.Getenv}
+	finder := fontFinder()
 	explicit := map[svgtool.Weight]string{svgtool.Regular: *regular, svgtool.Bold: *bold}
 	var faces []svgtool.Face
 	for _, w := range []svgtool.Weight{svgtool.Regular, svgtool.Bold} {

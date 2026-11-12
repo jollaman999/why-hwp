@@ -133,14 +133,24 @@ func dlName(i int, rawURL string) string {
 	return name
 }
 
+// FontCachePath returns the font cache directory, why-hwp/fonts in the user
+// cache folder, without creating it. Fonts installed by Convert are kept
+// there in rhwp's cache layout.
+func FontCachePath() (string, error) {
+	base, err := userCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "why-hwp", "fonts"), nil
+}
+
 // fontCacheDir returns the font cache directory mounted as /fonts,
 // creating it if needed.
 func fontCacheDir() (string, error) {
-	base, err := userCacheDir()
+	dir, err := FontCachePath()
 	if err != nil {
 		return "", fmt.Errorf("engine: font cache: %w", err)
 	}
-	dir := filepath.Join(base, "why-hwp", "fonts")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("engine: font cache: %w", err)
 	}
