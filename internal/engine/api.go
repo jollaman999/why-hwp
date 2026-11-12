@@ -25,20 +25,17 @@ var fontMu sync.RWMutex
 var convertFormats = map[string]bool{"hwp": true, "hwpx": true, "pdf": true, "txt": true}
 
 // Convert converts the document at in to format to (hwp, hwpx, pdf or txt)
-// and writes it to out, replacing any existing file. Fonts the document
-// needs are downloaded into the font cache first unless WHY_HWP_OFFLINE=1,
-// in which case the missing fonts are reported through Warn. Fonts installed
-// on this computer (see EnvFontDirs and EnvSystemFonts) are used as they are
-// and not downloaded.
+// and writes it to out, replacing any existing file. Only pdf output draws
+// glyphs, so only then are fonts used: those the document needs are
+// downloaded into the font cache first unless WHY_HWP_OFFLINE=1, in which
+// case the missing fonts are reported through Warn. Fonts installed on this
+// computer (see EnvFontDirs and EnvSystemFonts) are used as they are and not
+// downloaded.
 func Convert(ctx context.Context, in, out, to string) error {
 	if !convertFormats[to] {
 		return fmt.Errorf("engine: unsupported output format %q", to)
 	}
-	e, err := get()
-	if err != nil {
-		return err
-	}
-	fontsDir, err := fontCacheDir()
+	e, err := loadRunner()
 	if err != nil {
 		return err
 	}
@@ -53,32 +50,48 @@ func Convert(ctx context.Context, in, out, to string) error {
 		return err
 	}
 	guestIn := "/in/" + inName
-	hostFonts := hostFontMounts(hostFontDirs())
-
-	fontMu.Lock()
-	miss, err := ensureFonts(ctx, e, httpClient, filepath.Join(work, "in"), guestIn,
-		filepath.Join(work, "dl"), fontsDir, hostFonts, os.Getenv(EnvOffline) == "1")
-	fontMu.Unlock()
-	if err != nil {
-		return err
+	mounts := []mount{
+		{host: filepath.Join(work, "in"), guest: "/in", readOnly: true},
+		{host: filepath.Join(work, "out"), guest: "/out"},
 	}
-	if len(miss) > 0 {
-		Warn(fmt.Sprintf("%s=1: at least %d font(s) not downloaded, output may use substitutes: %s",
-			EnvOffline, len(miss), strings.Join(miss, ", ")))
+
+	if to == "pdf" {
+		fontsDir, err := fontCacheDir()
+		if err != nil {
+			return err
+		}
+		hostFonts := hostFontMounts(hostFontDirs())
+		fontMu.Lock()
+		miss, err := ensureFonts(ctx, e, httpClient, filepath.Join(work, "in"), guestIn,
+			filepath.Join(work, "dl"), fontsDir, hostFonts, os.Getenv(EnvOffline) == "1")
+		fontMu.Unlock()
+		if err != nil {
+			return err
+		}
+		if len(miss) > 0 {
+			Warn(fmt.Sprintf("%s=1: at least %d font(s) not downloaded, output may use substitutes: %s",
+				EnvOffline, len(miss), strings.Join(miss, ", ")))
+		}
+		mounts = append(append(mounts, mount{host: fontsDir, guest: "/fonts", readOnly: true}), hostFonts...)
 	}
 
 	outName := "output." + to
 	fontMu.RLock()
-	_, err = e.run(ctx, []string{"convert", "--to", to, "--in", guestIn, "--out", "/out/" + outName}, append([]mount{
-		{host: filepath.Join(work, "in"), guest: "/in", readOnly: true},
-		{host: filepath.Join(work, "out"), guest: "/out"},
-		{host: fontsDir, guest: "/fonts", readOnly: true},
-	}, hostFonts...))
+	_, err = e.run(ctx, []string{"convert", "--to", to, "--in", guestIn, "--out", "/out/" + outName}, mounts)
 	fontMu.RUnlock()
 	if err != nil {
 		return err
 	}
 	return copyFile(filepath.Join(work, "out", outName), out)
+}
+
+// loadRunner returns the engine Convert runs. Tests replace it.
+var loadRunner = func() (runner, error) {
+	e, err := get()
+	if err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 // SVG2PNG renders svg on a white background using only the given font
