@@ -35,7 +35,7 @@ func Convert(ctx context.Context, in, out, to string) error {
 	if !convertFormats[to] {
 		return fmt.Errorf("engine: unsupported output format %q", to)
 	}
-	e, err := loadRunner()
+	e, err := loadRunner(ctx)
 	if err != nil {
 		return err
 	}
@@ -86,8 +86,8 @@ func Convert(ctx context.Context, in, out, to string) error {
 }
 
 // loadRunner returns the engine Convert runs. Tests replace it.
-var loadRunner = func() (runner, error) {
-	e, err := get()
+var loadRunner = func(ctx context.Context) (runner, error) {
+	e, err := get(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func SVG2PNG(ctx context.Context, svg []byte, fonts [][]byte, w, h int) ([]byte,
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("engine: bad size %dx%d", w, h)
 	}
-	e, err := get()
+	e, err := get(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func SVG2PNG(ctx context.Context, svg []byte, fonts [][]byte, w, h int) ([]byte,
 
 // Version returns the engine's version line.
 func Version(ctx context.Context) (string, error) {
-	e, err := get()
+	e, err := get(ctx)
 	if err != nil {
 		return "", err
 	}

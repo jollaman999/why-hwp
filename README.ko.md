@@ -82,7 +82,7 @@ why-hwp convert [-to hwp|hwpx|pdf|txt] [-o 출력] [-engine builtin|hancom] [-ti
 
 문서를 HWP, HWPX, PDF, UTF-8 텍스트로 변환합니다. 형식은 `-to` 로 주거나 `-o` 의 확장자에서 정합니다. `-o` 가 없으면 입력 경로에서 확장자만 바꿔 쓰고, 출력이 입력 파일 자신이면 거부합니다. 출력 파일이 이미 있으면 `-force` 없이는 덮어쓰지 않습니다. `-timeout`(기본 120s)은 변환 한 번의 시간 상한입니다.
 
-기본(`-engine builtin`)은 why-hwp 안에 든 엔진으로 변환합니다. [rhwp](https://github.com/edwardkim/rhwp) 와 resvg 를 WebAssembly(WASI)로 컴파일해 [wazero](https://wazero.io) 로 실행하므로 모든 OS 에서 되고 다른 프로그램을 띄우지 않습니다. `.hwp` 와 `.hwpx` 를 읽고, `.docx` 는 오류를 내고 거부합니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초(8코어 PC 에서 약 10초) 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. `-timeout` 은 변환과, PDF 출력이면 글꼴 내려받기의 시간 상한입니다. 첫 컴파일은 `-timeout` 으로 중간에 끊기지 않고 끝까지 돌며, 그 시간도 상한에 들어가므로 컴파일보다 짧은 `-timeout` 은 컴파일이 끝난 직후 실패합니다.
+기본(`-engine builtin`)은 why-hwp 안에 든 엔진으로 변환합니다. [rhwp](https://github.com/edwardkim/rhwp) 와 resvg 를 WebAssembly(WASI)로 컴파일해 [wazero](https://wazero.io) 로 실행하므로 모든 OS 에서 되고 다른 프로그램을 띄우지 않습니다. `.hwp` 와 `.hwpx` 를 읽고, `.docx` 는 오류를 내고 거부합니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초(8코어 PC 에서 약 10초) 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. `-timeout` 은 변환과, PDF 출력이면 글꼴 내려받기의 시간 상한입니다. 첫 컴파일 시간도 `-timeout` 에 들어가므로, 컴파일보다 짧은 `-timeout` 은 상한에 닿는 즉시 실패하고 컴파일이 끝나지 않았으니 다음 실행에서 다시 컴파일합니다.
 
 PDF 는 한글이 인쇄한 것과 똑같지 않은 근사입니다. 쪽 배치를 rhwp 가 직접 하므로 줄바꿈과 위치가 다를 수 있고, 문서의 글꼴이 없을 때 특히 그렇습니다. 문서가 쓰는 글꼴이 설치돼 있으면 더 가까워집니다. 한글 2024 와 18개 문서로 비교했을 때, 엔진이 쓴 HWP·HWPX 파일은 17개가 한글로 인쇄했을 때 원본과 같았습니다.
 
@@ -96,7 +96,7 @@ PDF 는 한글이 인쇄한 것과 똑같지 않은 근사입니다. 쪽 배치�
 why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-trim] [-timeout 2m] [-o out.png] <in.svg>
 ```
 
-SVG 를 문서에 들어갈 너비에 맞춘 PNG 로 만듭니다(기본 600 dpi, 높이는 SVG 비율대로). why-hwp 안에 든 resvg 로 그리므로 브라우저나 다른 프로그램이 필요 없고, 어느 PC 에서나 같은 PNG 가 나옵니다. 글자는 SVG 에 넣은 글꼴로만 그립니다. `<style>` 의 `@font-face` 에 `data:` URI 로 든 TrueType·OpenType 파일이 그것이고, `svgfont` 가 이렇게 넣습니다. 시스템에 설치된 글꼴은 쓰지 않으니 `svgfont` 를 먼저 돌립니다. `<text>` 가 있는데 넣은 글꼴이 없으면 글자 없이 그리고 stderr 에 경고를 냅니다. 풀 수 없거나 TrueType·OpenType 이 아닌(WOFF 등) 글꼴은 경고를 내고 건너뜁니다. `-trim` 은 흰 여백을 잘라냅니다. 너비를 주지 않으면 SVG 고유 크기(1인치 = 96px)를 씁니다. 출력은 한 변 20000px, 전체 1억 2천만 픽셀까지입니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. `-timeout`(기본 2m)은 렌더의 시간 상한입니다. 첫 컴파일은 `-timeout` 으로 중간에 끊기지 않고 끝까지 돌며, 그 시간도 상한에 들어갑니다.
+SVG 를 문서에 들어갈 너비에 맞춘 PNG 로 만듭니다(기본 600 dpi, 높이는 SVG 비율대로). why-hwp 안에 든 resvg 로 그리므로 브라우저나 다른 프로그램이 필요 없고, 어느 PC 에서나 같은 PNG 가 나옵니다. 글자는 SVG 에 넣은 글꼴로만 그립니다. `<style>` 의 `@font-face` 에 `data:` URI 로 든 TrueType·OpenType 파일이 그것이고, `svgfont` 가 이렇게 넣습니다. 시스템에 설치된 글꼴은 쓰지 않으니 `svgfont` 를 먼저 돌립니다. `<text>` 가 있는데 넣은 글꼴이 없으면 글자 없이 그리고 stderr 에 경고를 냅니다. 풀 수 없거나 TrueType·OpenType 이 아닌(WOFF 등) 글꼴은 경고를 내고 건너뜁니다. `-trim` 은 흰 여백을 잘라냅니다. 너비를 주지 않으면 SVG 고유 크기(1인치 = 96px)를 씁니다. 출력은 한 변 20000px, 전체 1억 2천만 픽셀까지입니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. `-timeout`(기본 2m)은 렌더의 시간 상한입니다. 첫 컴파일 시간도 `-timeout` 에 들어가므로, 컴파일보다 짧은 `-timeout` 은 상한에 닿는 즉시 실패하고 다음 실행에서 다시 컴파일합니다.
 
 ### svgfont
 

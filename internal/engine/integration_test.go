@@ -61,7 +61,7 @@ func TestEmbeddedVersion(t *testing.T) {
 
 func TestCompileCacheHit(t *testing.T) {
 	needEngine(t)
-	if _, err := get(); err != nil {
+	if _, err := get(testCtx(t)); err != nil {
 		t.Fatal(err)
 	}
 	dir := compileCacheDir()
@@ -177,7 +177,7 @@ func TestConvertOffline(t *testing.T) {
 // planURLs runs font-plan on in against the current font cache.
 func planURLs(t *testing.T, ctx context.Context, in string) []string {
 	t.Helper()
-	e, err := get()
+	e, err := get(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

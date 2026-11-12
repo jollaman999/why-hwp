@@ -60,7 +60,7 @@ func TestConvertFontsOnlyForPDF(t *testing.T) {
 	}
 	for _, tt := range tests {
 		r := &recordRunner{}
-		loadRunner = func() (runner, error) { return r, nil }
+		loadRunner = func(context.Context) (runner, error) { return r, nil }
 		out := filepath.Join(dir, "out."+tt.to)
 		if err := Convert(context.Background(), src, out, tt.to); err != nil {
 			t.Fatalf("to %s: %v", tt.to, err)

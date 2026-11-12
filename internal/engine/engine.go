@@ -56,23 +56,63 @@ type engine struct {
 // it at a temporary directory.
 var userCacheDir = os.UserCacheDir
 
-var (
-	loadOnce sync.Once
-	loaded   *engine
-	loadErr  error
-)
+// loader compiles the engine once, in the background, so that a caller
+// whose ctx ends first can return while the compilation goes on and fills
+// the compilation cache for the next caller.
+type loader struct {
+	compile func() (*engine, error)
+	once    sync.Once
+	done    chan struct{}
+	e       *engine
+	err     error
+}
 
-// get returns the process-wide engine, compiling it on first use.
-func get() (*engine, error) {
-	loadOnce.Do(func() {
-		wasm, err := unpack(engineGz, engineSum)
-		if err != nil {
-			loadErr = err
-			return
-		}
-		loaded, loadErr = newEngine(context.Background(), wasm, compileCacheDir())
+func newLoader(compile func() (*engine, error)) *loader {
+	return &loader{compile: compile, done: make(chan struct{})}
+}
+
+// get starts the compilation on first use and waits for it or for ctx,
+// whichever comes first. Every caller gets the result of the same single
+// compilation.
+func (l *loader) get(ctx context.Context) (*engine, error) {
+	l.once.Do(func() {
+		go func() {
+			defer close(l.done)
+			l.e, l.err = l.compile()
+		}()
 	})
-	return loaded, loadErr
+	select {
+	case <-l.done:
+		return l.e, l.err
+	case <-ctx.Done():
+		select {
+		case <-l.done:
+			return l.e, l.err
+		default:
+		}
+		return nil, fmt.Errorf("engine: compile: %w", ctx.Err())
+	}
+}
+
+// compileEmbedded unpacks and compiles the embedded module.
+func compileEmbedded() (*engine, error) {
+	wasm, err := unpack(engineGz, engineSum)
+	if err != nil {
+		return nil, err
+	}
+	dir := compileCacheDir()
+	if dir != "" {
+		removeStaleTemp(dir, time.Now())
+	}
+	return newEngine(context.Background(), wasm, dir)
+}
+
+var engineLoader = newLoader(compileEmbedded)
+
+// get returns the process-wide engine, compiling it on first use. A done
+// ctx returns ctx's error without waiting for the compilation to finish.
+func get(ctx context.Context) (*engine, error) {
+	return engineLoader.get(ctx)
 }
 
 // unpack checks gz against the sha256sum line sum and decompresses it.
@@ -123,6 +163,39 @@ func compileCacheDir() string {
 		return ""
 	}
 	return dir
+}
+
+// staleTempAge is how old a "*.tmp" file in the compilation cache must be
+// before removeStaleTemp deletes it. Younger ones may still be written by
+// another process.
+const staleTempAge = time.Hour
+
+// removeStaleTemp deletes "*.tmp" regular files older than staleTempAge in
+// dir and in its direct subdirectories (wazero writes its cache entries to
+// dir/wazero-<version>-<arch>-<os>/ through a temporary file and a rename,
+// and a process that exits mid-write leaves the temporary file behind).
+// Errors are ignored.
+func removeStaleTemp(dir string, now time.Time) {
+	dirs := []string{dir}
+	ents, _ := os.ReadDir(dir)
+	for _, ent := range ents {
+		if ent.IsDir() {
+			dirs = append(dirs, filepath.Join(dir, ent.Name()))
+		}
+	}
+	for _, d := range dirs {
+		ents, _ := os.ReadDir(d)
+		for _, ent := range ents {
+			if !ent.Type().IsRegular() || !strings.HasSuffix(ent.Name(), ".tmp") {
+				continue
+			}
+			info, err := ent.Info()
+			if err != nil || now.Sub(info.ModTime()) <= staleTempAge {
+				continue
+			}
+			os.Remove(filepath.Join(d, ent.Name()))
+		}
+	}
 }
 
 // newEngine compiles wasm once. cacheDir "" disables the compilation cache.
