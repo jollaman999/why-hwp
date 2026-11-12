@@ -129,6 +129,22 @@ three, 13 of 18 test documents pass.
 | When the PDF font database has no HyhwpEQ or HancomEQN, equation private-use characters of that face are drawn as the characters they stand for (`a`, `<`, `α`, ...) in the default equation fonts, as rhwp's Skia renderer already does | The private-use code points went to PDF font fallback, which picked whatever installed font covered them (on the Linux test computer: OpenSymbol, Font Awesome, Meslo, Adwaita) |
 | A Wingdings private-use character (U+F020-U+F0FF) that the run's font lacks is drawn as itself in Wingdings when a Wingdings font is found and has the glyph, as Hancom Office prints it. Without Wingdings the Unicode substitute (such as `✔`) is kept | The Unicode substitute was always drawn, in the run's font, so its width and position differed from Hancom Office's Wingdings glyph |
 
+`patches/rhwp-layout4.patch` is applied after `rhwp-layout3.patch`. With all
+four, 15 of 18 test documents pass: 13 have every word within 1 pt, and 2
+whose pages hold no words in Hancom Office's PDF (a chart and a watermark) are
+judged by comparing the page pictures. Counted the same way, the first three
+patches give 14.
+
+| Change | Before |
+|--------|--------|
+| Superscript and subscript characters are 0.64 em in size, raised 0.44 em or lowered 0.12 em, as Hancom Office 2024 prints them, in every document except HWP 3.0 ones | These values were used only with the 2024 layout generation; other documents got 0.7 em, raised 0.3 em, which left a superscript `*` 1.8 pt from Hancom Office's position |
+| A bold character of an HFT font that is not ASCII and is measured with a known original-font width advances 0.05 em more, as other bold HFT characters do (bold HCI Poppy `·`: 0.434 em). ASCII keeps its plain advance, as bold HCI Poppy `=` does in Hancom Office's print | The character had no bold advance, so the text after each bold `·` sat about 0.7 pt to the left |
+| The right quote `’` (U+2019) of the 필기 font advances 500/1000 em | It was measured with the substitute font's width |
+| Malgun Gothic arrows (U+2190-U+2199, U+21D2, U+21D4) advance 1946/2048 em, the width in the font's `hmtx` | They took a full em |
+| A document set to print two pages per sheet (print method 4) whose pages are all A4 portrait exports to PDF as landscape sheets with two pages side by side: scaled by 0.71, the left page at the left edge, the right page at half the sheet width, both at the top. Measured on a document without memos printed two-up by Hancom Office 2024. Links and named destinations move with their page. Other print methods and paper sizes stay one page per sheet | The PDF had one page per sheet (40 pages where Hancom Office prints 20) |
+| The 64 MiB limit on supplied (downloaded) fonts applies only when rhwp is built with Skia, whose font catalog it protects. Without Skia, as in this engine, every supplied font is kept | Host font folders were counted against the limit first, so with a large font folder downloaded fonts such as HCR Batang and HCR Dotum were dropped and text fell back to other fonts |
+| The invisible text drawn over a vector `·` is fitted to the same glyph width as visible characters | It took the substitute font's own width, so the word box read from the PDF ended about 2 pt short |
+
 The patches also add rhwp unit tests for these changes. They are zero-context
 diffs because the surrounding rhwp lines contain em dashes, which this
 repository's commit check refuses. The comment at the top of each file lists

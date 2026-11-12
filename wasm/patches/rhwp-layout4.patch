@@ -1,0 +1,981 @@
+# rhwp script, width and PDF sheet fixes for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch, rhwp-layout2.patch and rhwp-layout3.patch;
+# apply this after rhwp-layout3.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - script_metrics.rs: superscript and subscript size and shift use the Hangul
+#   2024 rule (0.64 em size, 0.44 em up, 0.12 em down) for every document but
+#   HWP 3.0 ones, which keep the older rule.
+# - layout/text_measurement.rs: a bold HFT character outside ASCII that is
+#   measured with a known original-font width also takes the HFT bold advance
+#   (bold HCI Poppy U+00B7). ASCII keeps its plain advance, as bold HCI Poppy
+#   `=` does in Hangul 2024 print.
+# - font_metrics_overlays.rs: the 필기 (Pilgi) U+2019 advances 500/1000 em.
+# - font_metrics_technical_symbols.rs: Malgun Gothic arrows (U+2190-U+2199,
+#   U+21D2, U+21D4) advance 1946/2048 em, as in the font's hmtx.
+# - pdf.rs, document_core/queries/rendering.rs, model/document.rs: a document
+#   whose print method is 4 (2 pages per sheet) and whose pages are all A4
+#   portrait exports to PDF with two pages side by side on a landscape sheet,
+#   scaled by 0.71, the left page at x 0, the right one at half the sheet width,
+#   both at the top. Links and named destinations move with their page.
+# - font_paths.rs, native_webfonts.rs: the 64 MiB font supply budget is kept
+#   only when the Skia catalog it is for is built; without Skia every supplied
+#   font is kept and host font folders do not use up the budget.
+# - svg.rs: the invisible text over a vector U+00B7 is fitted to the glyph-fit
+#   advance, as other characters are, instead of the substitute font's width.
+# - font_metrics_data.rs, layout/text_measurement.rs, script_metrics.rs,
+#   font_paths.rs, pdf.rs, document_core/queries/rendering.rs and svg/tests.rs
+#   cover these changes.
+diff --git a/src/document_core/queries/rendering.rs b/src/document_core/queries/rendering.rs
+index 430795f31..315c46b06 100644
+--- a/src/document_core/queries/rendering.rs
++++ b/src/document_core/queries/rendering.rs
+@@ -2004 +2004 @@ impl DocumentCore {
+-        crate::renderer::pdf::svgs_to_pdf_with_annotations(
++        crate::renderer::pdf::svgs_to_pdf_with_annotations_and_layout(
+@@ -2008,0 +2009,3 @@ impl DocumentCore {
++            crate::renderer::pdf::PdfSheetLayout::from_print_method(
++                self.document.doc_info.print_method,
++            ),
+@@ -10741,0 +10745,41 @@ mod tests {
++
++    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++    #[test]
++    fn pdf_export_gathers_two_pages_per_sheet_only_for_print_method_four() {
++        let mut core = DocumentCore::new_empty();
++        core.create_blank_document_native().expect("blank");
++        core.insert_text_native(0, 0, 0, "본문").expect("text");
++        for para in 1..3 {
++            core.insert_paragraph_native(0, para).expect("paragraph");
++            core.insert_page_break_native(0, para, 0)
++                .expect("page break");
++        }
++        assert_eq!(core.page_count(), 3);
++
++        let sheet_sizes = |core: &DocumentCore| -> Vec<(f32, f32)> {
++            let pdf = core.render_document_pdf_native().expect("pdf");
++            let text = String::from_utf8_lossy(&pdf);
++            text.match_indices("/MediaBox [")
++                .map(|(at, key)| {
++                    let rest = &text[at + key.len()..];
++                    let numbers: Vec<f32> = rest[..rest.find(']').unwrap()]
++                        .split_whitespace()
++                        .map(|number| number.parse().unwrap())
++                        .collect();
++                    (numbers[2], numbers[3])
++                })
++                .collect()
++        };
++
++        let one_page = sheet_sizes(&core);
++        assert_eq!(one_page.len(), 3);
++        let (width, height) = one_page[0];
++        assert!(width < height, "{one_page:?}");
++        for print_method in [Some(0), Some(1), Some(3), Some(5)] {
++            core.document_mut().doc_info.print_method = print_method;
++            assert_eq!(sheet_sizes(&core), one_page, "{print_method:?}");
++        }
++
++        core.document_mut().doc_info.print_method = Some(4);
++        assert_eq!(sheet_sizes(&core), vec![(height, width); 2]);
++    }
+diff --git a/src/model/document.rs b/src/model/document.rs
+index 78a327edd..270cb107f 100644
+--- a/src/model/document.rs
++++ b/src/model/document.rs
+@@ -239,0 +240,2 @@ pub struct DocInfo {
++    /// 예외: PDF 내보내기는 값 4(2쪽 모아 찍기)이고 모든 쪽이 A4 세로이면 한 장에 두 쪽을
++    /// 놓는다(`renderer::pdf::PdfSheetLayout`). SVG·PNG 출력과 그 밖의 값은 위와 같다.
+@@ -312 +314 @@ pub const HWP5_DOC_DATA_KEY_PRINT_METHOD: u32 = 0x0006_4006;
+-/// | **4** | **2쪽 841×595 가로** | 4쪽 세로 |
++/// | **4** | **2쪽 841×595 가로** | 4쪽 세로 (PDF 는 A4 세로 문서면 2쪽 가로) |
+diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
+index b1bec13ad..ead17c705 100644
+--- a/src/renderer/font_metrics_data.rs
++++ b/src/renderer/font_metrics_data.rs
+@@ -717,0 +718,30 @@ mod tests {
++    #[test]
++    fn pilgi_hft_right_quote_keeps_original_program_advance() {
++        assert_eq!(
++            original_glyph_advance_em("필기", false, false, '\u{2019}'),
++            Some(0.5)
++        );
++        assert_eq!(
++            original_glyph_advance_em("필기", false, false, '\u{2018}'),
++            None
++        );
++        assert_eq!(
++            original_glyph_advance_em("필기", true, false, '\u{2019}'),
++            None
++        );
++        assert!(has_declared_original_glyph_metrics("필기"));
++    }
++
++    #[test]
++    fn malgun_gothic_arrows_use_program_hmtx() {
++        let regular = find_metric("맑은 고딕", false, false).expect("Malgun Gothic regular");
++        for ch in ['\u{2190}', '\u{2192}', '\u{2199}', '\u{21D2}', '\u{21D4}'] {
++            assert_eq!(regular.metric.get_width(ch), Some(1946), "{ch:?}");
++            assert_eq!(verified_metric_has_glyph(regular.metric, ch), Some(true));
++        }
++        assert_eq!(regular.metric.get_width('\u{219A}'), None);
++        assert_eq!(regular.metric.get_width('\u{21D3}'), None);
++        let batang = find_metric("함초롬바탕", false, false).expect("HCR Batang regular");
++        assert_ne!(batang.metric.get_width('\u{2192}'), Some(1946));
++    }
++
+diff --git a/src/renderer/font_metrics_overlays.rs b/src/renderer/font_metrics_overlays.rs
+index 7ffe00d86..a6302808c 100644
+--- a/src/renderer/font_metrics_overlays.rs
++++ b/src/renderer/font_metrics_overlays.rs
+@@ -82,0 +83,12 @@ static ORIGINAL_GLYPH_METRICS: &[OriginalGlyphMetric] = &[
++    // fdi-2025q2 한컴2024 Print 3쪽 T9(Type3): ToUnicode 2019, Widths 500,
++    // FontMatrix.001. 16pt·장평 80%·자간 -8%에서 다음 원점이 49단위(600dpi)
++    // 뒤이고 0.5em × 0.8 × 0.92와 같다. 같은 런의 숫자는 대체 TrueType으로
++    // 출력되므로 확인한 이 글자만 원본 폭으로 재고 왼쪽 따옴표·굵게는 추정하지 않는다.
++    OriginalGlyphMetric {
++        face: "필기",
++        bold: false,
++        italic: false,
++        character: '\u{2019}',
++        advance_units: 500,
++        em_units: 1000,
++    },
+diff --git a/src/renderer/font_metrics_technical_symbols.rs b/src/renderer/font_metrics_technical_symbols.rs
+index 1da6c59c2..06d563710 100644
+--- a/src/renderer/font_metrics_technical_symbols.rs
++++ b/src/renderer/font_metrics_technical_symbols.rs
+@@ -84,0 +85,10 @@ fn verified_technical_symbol_entry(metric: &FontMetric, ch: char) -> Option<(boo
++    // malgun.ttf 7a183cf1…192f(Malgun Gothic Regular)의 Arrows cmap/hmtx:
++    // U+2190..U+2199, U+21D2, U+21D4만 있고 모두 1946/2048em이다.
++    // fdi-2025q2 한컴 2024 Print 2쪽은 10pt·자간 -12% `→`를 전각이 아닌 이 폭으로 놓는다.
++    // 블록의 나머지 글자는 이 프로그램에 없으므로 기존 처리에 맡긴다.
++    if matches!(ch as u32, 0x2190..=0x2199 | 0x21D2 | 0x21D4)
++        && (metric.name, metric.em_size, metric.bold, metric.italic)
++            == ("Malgun Gothic", 2048, false, false)
++    {
++        return Some((true, 1946));
++    }
+diff --git a/src/renderer/font_paths.rs b/src/renderer/font_paths.rs
+index 4cc65bfa2..78fafaa0a 100644
+--- a/src/renderer/font_paths.rs
++++ b/src/renderer/font_paths.rs
+@@ -34,0 +35,22 @@ pub(crate) const MAX_NATIVE_CUSTOM_FONT_BYTES: u64 = 64 * 1024 * 1024;
++/// Skia custom typeface 카탈로그가 메모리에 올리는 글꼴 바이트의 예산.
++///
++/// Skia 없이 빌드한 출력(SVG·PDF)은 이 카탈로그를 만들지 않으므로 예산이 없다.
++pub(crate) fn native_custom_font_budget() -> Option<u64> {
++    cfg!(feature = "native-skia").then_some(MAX_NATIVE_CUSTOM_FONT_BYTES)
++}
++
++/// 공급 글꼴 프로그램 하나가 남은 예산에 드는지 본다. 예산이 없으면 든다.
++pub(crate) fn fits_native_custom_font_budget(
++    budget: Option<u64>,
++    length: u64,
++    used: u64,
++    retained: u64,
++    files: usize,
++) -> bool {
++    budget.is_none_or(|limit| {
++        files < 256
++            && used.saturating_add(length) <= limit
++            && retained.saturating_add(length) <= limit
++    })
++}
++
+@@ -320,0 +343,39 @@ mod tests {
++
++    /// Skia 카탈로그 예산은 호출자 글꼴과 공급 글꼴이 나눠 쓴다. 카탈로그가
++    /// 없으면 큰 본문 글꼴이나 호출자 글꼴 폴더 때문에 공급 글꼴을 빼지 않는다.
++    #[test]
++    fn supply_budget_applies_only_with_skia_catalog() {
++        const MB: u64 = 1024 * 1024;
++        assert_eq!(
++            native_custom_font_budget(),
++            cfg!(feature = "native-skia").then_some(64 * MB)
++        );
++
++        let retained = |budget: Option<u64>, host: u64, host_files: usize, supply: &[u64]| {
++            let (mut used, mut files) = (host, host_files);
++            supply
++                .iter()
++                .map(|&length| {
++                    let fits = fits_native_custom_font_budget(budget, length, used, used, files);
++                    if fits {
++                        used += length;
++                        files += 1;
++                    }
++                    fits
++                })
++                .collect::<Vec<_>>()
++        };
++        // 대체 글꼴 셋, 함초롬돋움, 함초롬바탕 순서의 공급 크기.
++        let supply = [8_434_876, 8_439_348, 2_538_340, 22_244_940, 28_413_328];
++        assert_eq!(
++            retained(Some(64 * MB), 0, 0, &supply),
++            [true, true, true, true, false]
++        );
++        assert_eq!(retained(None, 0, 0, &supply), [true; 5]);
++        assert_eq!(
++            retained(Some(64 * MB), 60 * MB, 40, &supply),
++            [false, false, true, false, false]
++        );
++        assert_eq!(retained(Some(64 * MB), 0, 256, &supply), [false; 5]);
++        assert_eq!(retained(None, 60 * MB, 256, &supply), [true; 5]);
++    }
+diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
+index 77a11375f..36d55697b 100644
+--- a/src/renderer/layout/text_measurement.rs
++++ b/src/renderer/layout/text_measurement.rs
+@@ -2656,0 +2657,20 @@ fn char_width_decision_with_hft_tracking<'a>(
++                // 부분 표로 확인한 원본 HFT 글리프도 같은 굵기 전진을 쓴다.
++                // fdi-2025q2 한컴2024 Print 9쪽: 굵은 HCI Poppy U+00B7(T15,
++                // Widths 384, 글꼴 125단위)의 다음 원점은 48이 아니라 54단위 뒤다.
++                // 고정폭 ASCII face 등 기존 굵기 전진 계약은 그 소유자가 유지한다.
++                // ASCII 는 넣지 않는다: hwp3-sample16 한컴2024 Print 41쪽의 굵은
++                // HCI Poppy `=`(Widths 605)는 고유 폭만 전진한다.
++                || (width_source == "measuredOriginalGlyph"
++                    && !c.is_ascii()
++                    && latin.map_or(style.source_font_is_hft, |slot| slot.source_font_is_hft)
++                    && crate::renderer::legacy_font_advances::bold_advance(
++                        style,
++                        c,
++                        base_width_raw,
++                        font_size,
++                        latin
++                            .map_or(style.original_glyph_metric_family.as_deref(), |slot| {
++                                slot.original_glyph_metric_family.as_deref()
++                            })
++                            .map(String::as_str),
++                    ) == 0.0)
+@@ -4062,0 +4083,68 @@ mod tests {
++    #[test]
++    fn bold_hft_original_glyph_takes_hft_bold_tracking() {
++        let m = EmbeddedTextMeasurer;
++        let advance_of = |text: &str, bold: bool, source_font_is_hft: bool| {
++            let style = TextStyle {
++                font_family: "HCI Poppy".to_string(),
++                font_size: 20.0,
++                ratio: 1.0,
++                bold,
++                source_font_is_hft,
++                original_glyph_metric_family: Some(std::sync::Arc::new("HCI Poppy".to_string())),
++                ..Default::default()
++            };
++            let positions = m.compute_char_positions(text, &style);
++            positions[2] - positions[1]
++        };
++        let advance = |bold: bool, hft: bool| advance_of("가\u{00B7}나", bold, hft);
++        // 15pt는 375 장치 단위다. 0.384em은 144단위, 굵기 전진을 더한 0.434em은 163단위.
++        let unit = 4.0 / 75.0;
++        assert!((advance(false, true) - 144.0 * unit).abs() < 1e-6);
++        assert!((advance(true, true) - 163.0 * unit).abs() < 1e-6);
++        assert!((advance(true, false) - 144.0 * unit).abs() < 1e-6);
++        // 굵은 HCI Poppy 의 ASCII `=` 는 일반과 같은 605/1000em 만 전진한다.
++        let equals = advance_of("가=나", false, true);
++        assert!((equals - 0.605 * 20.0).abs() < 0.03, "{equals}");
++        assert!((advance_of("가=나", true, true) - equals).abs() < 1e-6);
++    }
++
++    #[test]
++    fn pilgi_hft_right_quote_advance_follows_ratio_and_spacing() {
++        let m = EmbeddedTextMeasurer;
++        let font_size = 1600.0 / 75.0;
++        let style = TextStyle {
++            font_family: "필기".to_string(),
++            font_size,
++            ratio: 0.8,
++            letter_spacing: -0.08 * font_size,
++            source_font_is_hft: true,
++            original_glyph_metric_family: Some(std::sync::Arc::new("필기".to_string())),
++            ..Default::default()
++        };
++        let positions = m.compute_char_positions("가\u{2019}나", &style);
++        // 한컴 2024 Print: 16pt(400단위)에서 49단위(600dpi) = 147단위(1800dpi).
++        let advance = positions[2] - positions[1];
++        assert!(
++            (advance - 147.0 * 4.0 / 75.0).abs() < 1e-6,
++            "U+2019 advance {advance:.4}"
++        );
++    }
++
++    #[test]
++    fn malgun_gothic_arrow_uses_program_advance() {
++        let m = EmbeddedTextMeasurer;
++        let style = TextStyle {
++            font_family: "맑은 고딕".to_string(),
++            font_size: 1000.0 / 75.0,
++            ratio: 1.0,
++            ..Default::default()
++        };
++        let positions = m.compute_char_positions("가\u{2192}나", &style);
++        // 10pt는 250 장치 단위다. 1946/2048em은 238단위로 전각 250단위보다 좁다.
++        let advance = positions[2] - positions[1];
++        assert!(
++            (advance - 238.0 * 4.0 / 75.0).abs() < 1e-6,
++            "U+2192 advance {advance:.4}"
++        );
++    }
++
+diff --git a/src/renderer/native_webfonts.rs b/src/renderer/native_webfonts.rs
+index 53320b313..f3de33b3e 100644
+--- a/src/renderer/native_webfonts.rs
++++ b/src/renderer/native_webfonts.rs
+@@ -548 +548,2 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
+-    let limit = super::font_paths::MAX_NATIVE_CUSTOM_FONT_BYTES;
++    let budget = super::font_paths::native_custom_font_budget();
++    let limit = budget.unwrap_or(0);
+@@ -553 +554,6 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
+-    for source in super::font_paths::custom_font_dirs(paths) {
++    let custom_dirs = if budget.is_some() {
++        super::font_paths::custom_font_dirs(paths)
++    } else {
++        Vec::new()
++    };
++    for source in custom_dirs {
+@@ -604,3 +610,8 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
+-        if file_count < 256
+-            && used.saturating_add(length) <= limit
+-            && retained_bytes.saturating_add(length) <= limit
++        if length <= MAX_FONT_BYTES as u64
++            && super::font_paths::fits_native_custom_font_budget(
++                budget,
++                length,
++                used,
++                retained_bytes,
++                file_count,
++            )
+diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
+index 2e7c351bd..0fd489dba 100644
+--- a/src/renderer/pdf.rs
++++ b/src/renderer/pdf.rs
+@@ -2313,0 +2314 @@ where
++        PdfSheetLayout::OnePage,
+@@ -2324 +2325,139 @@ pub fn svgs_to_pdf_with_annotations(
+-    svgs_to_pdf_annotations_impl(svg_pages, links, options, svg2pdf_to_chunk, destinations)
++    svgs_to_pdf_with_annotations_and_layout(
++        svg_pages,
++        links,
++        destinations,
++        options,
++        PdfSheetLayout::OnePage,
++    )
++}
++
++/// 링크·책갈피와 함께, 한 장에 페이지를 놓는 방식을 정해 PDF 로 만든다.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++pub fn svgs_to_pdf_with_annotations_and_layout(
++    svg_pages: &[String],
++    links: &[Vec<super::hyperlinks::PdfLink>],
++    destinations: &[Vec<super::hyperlinks::PdfNamedDestination>],
++    options: &PdfExportOptions,
++    layout: PdfSheetLayout,
++) -> Result<Vec<u8>, String> {
++    svgs_to_pdf_annotations_impl(
++        svg_pages,
++        links,
++        options,
++        svg2pdf_to_chunk,
++        destinations,
++        layout,
++    )
++}
++
++/// PDF 한 장에 페이지를 놓는 방식.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum PdfSheetLayout {
++    /// 한 장에 한 페이지.
++    #[default]
++    OnePage,
++    /// 한 장에 두 페이지 (한글 인쇄 방식 4, 2쪽 모아 찍기).
++    TwoUp,
++}
++
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++impl PdfSheetLayout {
++    /// 문서에 실린 인쇄 방식(`DocInfo::print_method`)이 뜻하는 배치.
++    ///
++    /// 한글 PDF 로 배치를 잰 것은 4(2쪽 모아 찍기)뿐이다. 그 밖의 값은 한 장에 한 페이지로 둔다.
++    pub fn from_print_method(print_method: Option<u32>) -> Self {
++        match print_method {
++            Some(4) => Self::TwoUp,
++            _ => Self::OnePage,
++        }
++    }
++}
++
++/// 장 안에 놓인 페이지 하나. `x`·`y` 는 장 왼쪽 아래에서 잰 페이지 왼쪽 아래 모서리(pt).
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++#[derive(Debug, Clone, Copy, PartialEq)]
++struct PdfSheetSlot {
++    /// 변환된 페이지 목록에서의 순번.
++    page: usize,
++    scale: f32,
++    x: f32,
++    y: f32,
++}
++
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++#[derive(Debug, Clone, PartialEq)]
++struct PdfSheet {
++    width: f32,
++    height: f32,
++    slots: Vec<PdfSheetSlot>,
++}
++
++/// 한글 2024 가 2쪽 모아 찍기에서 A4 세로 페이지를 줄이는 비율.
++///
++/// 메모 없는 문서를 한글 2024 로 모아 찍어 잰 값이다. 한 쪽씩 찍은 PDF 와 낱말 좌표를 맞추면
++/// 가로 0.7097, 세로 0.7104 배이고, 왼쪽 페이지는 장의 왼쪽 위에서, 오른쪽 페이지는 장 폭의
++/// 반에서 시작한다. 반쪽에 꼭 차는 비율(0.7071)보다 커서 페이지의 아래 끝과 오른쪽 끝이
++/// 반쪽을 조금 넘는다. 다른 용지에서의 값은 재지 못했다.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++const TWO_UP_A4_SCALE: f32 = 0.71;
++
++/// A4 세로 용지 크기(pt)와 허용 오차.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++const A4_PORTRAIT_PT: (f32, f32) = (595.28, 841.89);
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++const A4_TOLERANCE_PT: f32 = 1.0;
++
++/// 변환된 페이지 `(원래 순번, 폭 pt, 높이 pt)` 를 장으로 묶는다.
++///
++/// 2쪽 모아 찍기는 한글 2024 PDF 로 잰 배치다: 장은 용지를 옆으로 돌린 크기이고,
++/// 장을 좌우로 반 나눠 왼쪽 반에 앞 페이지, 오른쪽 반에 뒤 페이지를 놓는다.
++/// 페이지는 [`TWO_UP_A4_SCALE`] 로 줄여 반쪽의 왼쪽 위 모서리에 맞춘다.
++/// 짝은 원래 순번으로 정하므로 변환에서 빠진 페이지의 자리는 비워 둔다.
++/// 잰 문서는 모든 페이지가 A4 세로였다. 다른 용지가 섞인 문서는 한글의 배치를
++/// 모르므로 한 장에 한 페이지로 둔다.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++fn plan_pdf_sheets(pages: &[(usize, f32, f32)], layout: PdfSheetLayout) -> Vec<PdfSheet> {
++    let all_a4_portrait = pages.iter().all(|&(_, width, height)| {
++        (width - A4_PORTRAIT_PT.0).abs() < A4_TOLERANCE_PT
++            && (height - A4_PORTRAIT_PT.1).abs() < A4_TOLERANCE_PT
++    });
++    if layout != PdfSheetLayout::TwoUp || !all_a4_portrait {
++        return pages
++            .iter()
++            .enumerate()
++            .map(|(page, &(_, width, height))| PdfSheet {
++                width,
++                height,
++                slots: vec![PdfSheetSlot {
++                    page,
++                    scale: 1.0,
++                    x: 0.0,
++                    y: 0.0,
++                }],
++            })
++            .collect();
++    }
++
++    let mut sheets: Vec<(usize, PdfSheet)> = Vec::new();
++    for (page, &(source_index, width, height)) in pages.iter().enumerate() {
++        let sheet_index = source_index / 2;
++        let slot = PdfSheetSlot {
++            page,
++            scale: TWO_UP_A4_SCALE,
++            x: height / 2.0 * (source_index % 2) as f32,
++            y: width - height * TWO_UP_A4_SCALE,
++        };
++        match sheets.last_mut() {
++            Some((index, sheet)) if *index == sheet_index => sheet.slots.push(slot),
++            _ => sheets.push((
++                sheet_index,
++                PdfSheet {
++                    width: height,
++                    height: width,
++                    slots: vec![slot],
++                },
++            )),
++        }
++    }
++    sheets.into_iter().map(|(_, sheet)| sheet).collect()
+@@ -2333,0 +2473 @@ fn svgs_to_pdf_annotations_impl<F>(
++    layout: PdfSheetLayout,
+@@ -2419 +2559,9 @@ where
+-    // 각 chunk를 재번호화하고 페이지 참조 수집
++    let sheets = plan_pdf_sheets(
++        &page_datas
++            .iter()
++            .map(|pd| (pd.source_index, pd.width, pd.height))
++            .collect::<Vec<_>>(),
++        layout,
++    );
++
++    // 각 chunk를 재번호화하고 장 참조 수집
+@@ -2424 +2572 @@ where
+-    for pd in &page_datas {
++    for sheet in &sheets {
+@@ -2429,5 +2577,7 @@ where
+-        // chunk 재번호화
+-        let mut map = HashMap::new();
+-        let renumbered = pd
+-            .chunk
+-            .renumber(|old| *map.entry(old).or_insert_with(|| alloc.bump()));
++        for slot in &sheet.slots {
++            let pd = &page_datas[slot.page];
++            // chunk 재번호화
++            let mut map = HashMap::new();
++            let renumbered = pd
++                .chunk
++                .renumber(|old| *map.entry(old).or_insert_with(|| alloc.bump()));
+@@ -2435,3 +2585,4 @@ where
+-        let remapped_svg_ref = map.get(&pd.svg_ref).copied().unwrap_or(pd.svg_ref);
+-        svg_refs_remapped.push(remapped_svg_ref);
+-        renumbered_chunks.push(renumbered);
++            let remapped_svg_ref = map.get(&pd.svg_ref).copied().unwrap_or(pd.svg_ref);
++            svg_refs_remapped.push(remapped_svg_ref);
++            renumbered_chunks.push(renumbered);
++        }
+@@ -2449,16 +2600,20 @@ where
+-        for (index, page) in page_datas.iter().enumerate() {
+-            for destination in destinations.get(page.source_index).into_iter().flatten() {
+-                if destination.x.is_finite()
+-                    && destination.y.is_finite()
+-                    && names.insert(destination.name.as_str())
+-                {
+-                    named
+-                        .insert(pdf_writer::Name(
+-                            super::hyperlinks::pdf_destination_key(&destination.name).as_bytes(),
+-                        ))
+-                        .page(page_refs[index])
+-                        .xyz(
+-                            (destination.x * 0.75) as f32,
+-                            page.height - (destination.y * 0.75) as f32,
+-                            None,
+-                        );
++        for (index, sheet) in sheets.iter().enumerate() {
++            for slot in &sheet.slots {
++                let page = &page_datas[slot.page];
++                for destination in destinations.get(page.source_index).into_iter().flatten() {
++                    if destination.x.is_finite()
++                        && destination.y.is_finite()
++                        && names.insert(destination.name.as_str())
++                    {
++                        named
++                            .insert(pdf_writer::Name(
++                                super::hyperlinks::pdf_destination_key(&destination.name)
++                                    .as_bytes(),
++                            ))
++                            .page(page_refs[index])
++                            .xyz(
++                                slot.x + slot.scale * (destination.x * 0.75) as f32,
++                                slot.y + slot.scale * (page.height - (destination.y * 0.75) as f32),
++                                None,
++                            );
++                    }
+@@ -2474,2 +2629,2 @@ where
+-    // 각 페이지 생성
+-    let svg_name = pdf_writer::Name(b"S1");
++    // 각 장 생성
++    let mut svg_refs = svg_refs_remapped.iter().copied();
+@@ -2477 +2632 @@ where
+-    for (i, pd) in page_datas.iter().enumerate() {
++    for (i, sheet) in sheets.iter().enumerate() {
+@@ -2480 +2635 @@ where
+-        let svg_ref = svg_refs_remapped[i];
++        let svg_names: Vec<String> = (1..=sheet.slots.len()).map(|n| format!("S{n}")).collect();
+@@ -2482,6 +2637,15 @@ where
+-        let page_links = super::hyperlinks::page_links(
+-            &links[pd.source_index],
+-            f64::from(pd.width) / 0.75,
+-            f64::from(pd.height) / 0.75,
+-        );
+-        let annotation_refs: Vec<_> = page_links.iter().map(|_| alloc.bump()).collect();
++        let sheet_links: Vec<_> = sheet
++            .slots
++            .iter()
++            .flat_map(|slot| {
++                let pd = &page_datas[slot.page];
++                super::hyperlinks::page_links(
++                    &links[pd.source_index],
++                    f64::from(pd.width) / 0.75,
++                    f64::from(pd.height) / 0.75,
++                )
++                .into_iter()
++                .map(move |link| (*slot, pd.height, link))
++            })
++            .collect();
++        let annotation_refs: Vec<_> = sheet_links.iter().map(|_| alloc.bump()).collect();
+@@ -2489 +2653 @@ where
+-        page.media_box(pdf_writer::Rect::new(0.0, 0.0, pd.width, pd.height));
++        page.media_box(pdf_writer::Rect::new(0.0, 0.0, sheet.width, sheet.height));
+@@ -2497 +2661,9 @@ where
+-        resources.x_objects().pair(svg_name, svg_ref);
++        {
++            let mut x_objects = resources.x_objects();
++            for name in &svg_names {
++                let svg_ref = svg_refs
++                    .next()
++                    .ok_or("PDF 장과 페이지 수가 맞지 않습니다")?;
++                x_objects.pair(pdf_writer::Name(name.as_bytes()), svg_ref);
++            }
++        }
+@@ -2500 +2672 @@ where
+-        for (link, annotation_ref) in page_links.iter().zip(annotation_refs) {
++        for ((slot, page_height, link), annotation_ref) in sheet_links.iter().zip(annotation_refs) {
+@@ -2506,4 +2678,4 @@ where
+-                    (r.x * 0.75) as f32,
+-                    pd.height - ((r.y + r.height) * 0.75) as f32,
+-                    ((r.x + r.width) * 0.75) as f32,
+-                    pd.height - (r.y * 0.75) as f32,
++                    slot.x + slot.scale * (r.x * 0.75) as f32,
++                    slot.y + slot.scale * (page_height - ((r.y + r.height) * 0.75) as f32),
++                    slot.x + slot.scale * ((r.x + r.width) * 0.75) as f32,
++                    slot.y + slot.scale * (page_height - (r.y * 0.75) as f32),
+@@ -2545 +2717 @@ where
+-        // 컨텐츠 스트림: SVG XObject를 페이지 크기에 맞게 배치
++        // 컨텐츠 스트림: SVG XObject를 장 안의 제자리에 배치
+@@ -2547,2 +2719,19 @@ where
+-        content.transform([pd.width, 0.0, 0.0, pd.height, 0.0, 0.0]);
+-        content.x_object(svg_name);
++        for (slot, name) in sheet.slots.iter().zip(&svg_names) {
++            let pd = &page_datas[slot.page];
++            let together = sheet.slots.len() > 1;
++            if together {
++                content.save_state();
++            }
++            content.transform([
++                pd.width * slot.scale,
++                0.0,
++                0.0,
++                pd.height * slot.scale,
++                slot.x,
++                slot.y,
++            ]);
++            content.x_object(pdf_writer::Name(name.as_bytes()));
++            if together {
++                content.restore_state();
++            }
++        }
+@@ -2888,0 +3078,176 @@ endbfchar <DB80DEB1>";
++    #[test]
++    fn only_print_method_four_selects_two_up() {
++        assert_eq!(
++            PdfSheetLayout::from_print_method(Some(4)),
++            PdfSheetLayout::TwoUp
++        );
++        for other in [None, Some(0), Some(1), Some(3), Some(5)] {
++            assert_eq!(
++                PdfSheetLayout::from_print_method(other),
++                PdfSheetLayout::OnePage,
++                "{other:?}"
++            );
++        }
++    }
++
++    #[test]
++    fn two_up_puts_page_pairs_side_by_side_on_a_turned_sheet() {
++        let a4 = (595.28_f32, 841.89_f32);
++        let pages = [(0, a4.0, a4.1), (1, a4.0, a4.1), (2, a4.0, a4.1)];
++        let sheets = plan_pdf_sheets(&pages, PdfSheetLayout::TwoUp);
++        assert_eq!(sheets.len(), 2);
++        for sheet in &sheets {
++            assert_eq!((sheet.width, sheet.height), (a4.1, a4.0));
++        }
++        // 페이지는 0.71 배로 반쪽의 왼쪽 위에 놓인다: 595.28 - 841.89 * 0.71 = -2.46 pt 라
++        // 페이지 아래 끝이 장 밖으로 그만큼 나간다.
++        let slots: Vec<_> = sheets
++            .iter()
++            .map(|sheet| {
++                sheet
++                    .slots
++                    .iter()
++                    .map(|slot| (slot.page, slot.scale, slot.x.round(), slot.y.round()))
++                    .collect::<Vec<_>>()
++            })
++            .collect();
++        assert_eq!(
++            slots,
++            vec![
++                vec![(0, 0.71, 0.0, -2.0), (1, 0.71, 421.0, -2.0)],
++                vec![(2, 0.71, 0.0, -2.0)]
++            ]
++        );
++
++        // 변환에서 빠진 페이지(원래 순번 1)의 자리는 비우고 짝을 다시 맞추지 않는다.
++        let skipped = [(0, a4.0, a4.1), (2, a4.0, a4.1), (3, a4.0, a4.1)];
++        let sheets = plan_pdf_sheets(&skipped, PdfSheetLayout::TwoUp);
++        let placed: Vec<Vec<(usize, f32)>> = sheets
++            .iter()
++            .map(|sheet| {
++                sheet
++                    .slots
++                    .iter()
++                    .map(|slot| (slot.page, slot.x.round()))
++                    .collect()
++            })
++            .collect();
++        assert_eq!(placed, vec![vec![(0, 0.0)], vec![(1, 0.0), (2, 421.0)]]);
++    }
++
++    #[test]
++    fn one_page_layout_and_unmeasured_paper_keep_one_page_per_sheet() {
++        let a4 = [(0, 595.28_f32, 841.89_f32), (1, 595.28, 841.89)];
++        let a4_landscape = [(0, 841.89_f32, 595.28_f32), (1, 841.89, 595.28)];
++        let b5 = [(0, 515.91_f32, 728.50_f32), (1, 515.91, 728.50)];
++        let mixed = [(0, 595.28_f32, 841.89_f32), (1, 515.91, 728.50)];
++        for (pages, layout) in [
++            (&a4, PdfSheetLayout::OnePage),
++            (&a4_landscape, PdfSheetLayout::TwoUp),
++            (&b5, PdfSheetLayout::TwoUp),
++            (&mixed, PdfSheetLayout::TwoUp),
++        ] {
++            let sheets = plan_pdf_sheets(pages, layout);
++            assert_eq!(sheets.len(), pages.len());
++            for (index, (sheet, page)) in sheets.iter().zip(pages).enumerate() {
++                assert_eq!((sheet.width, sheet.height), (page.1, page.2));
++                assert_eq!(
++                    sheet.slots,
++                    vec![PdfSheetSlot {
++                        page: index,
++                        scale: 1.0,
++                        x: 0.0,
++                        y: 0.0,
++                    }]
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn two_up_pdf_has_turned_sheets_and_moves_links_with_their_page() {
++        use crate::renderer::hyperlinks::{PdfLink, PdfNamedDestination};
++        use crate::renderer::render_tree::BoundingBox;
++        // A4 세로(793.7x1122.52 px = 595.275x841.89 pt) 3쪽. 링크는 페이지 전체를 덮는다.
++        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="793.7" height="1122.52"><rect x="10" y="20" width="30" height="10"/></svg>"#.to_string();
++        let pages = vec![svg; 3];
++        let link = |uri: &str| {
++            vec![PdfLink {
++                uri: uri.into(),
++                rect: BoundingBox::new(0.0, 0.0, 793.7, 1122.52),
++            }]
++        };
++        let links = vec![
++            link("https://example.com/1"),
++            link("https://example.com/2"),
++            link("https://example.com/3"),
++        ];
++        // 둘째 페이지(오른쪽 반)의 왼쪽 위에서 (100, 200) px = (75, 150) pt 에 책갈피 하나.
++        let destinations = vec![
++            Vec::new(),
++            vec![PdfNamedDestination {
++                name: "mark".into(),
++                x: 100.0,
++                y: 200.0,
++            }],
++            Vec::new(),
++        ];
++        let export = |layout| {
++            let pdf = svgs_to_pdf_with_annotations_and_layout(
++                &pages,
++                &links,
++                &destinations,
++                &PdfExportOptions::default(),
++                layout,
++            )
++            .unwrap();
++            String::from_utf8_lossy(&pdf).into_owned()
++        };
++        let destination = |text: &str| -> Vec<f32> {
++            let rest = &text[text.find("/XYZ ").expect("named destination") + 5..];
++            rest.split_whitespace()
++                .take(2)
++                .map(|number| (number.parse::<f32>().unwrap() * 10.0).round() / 10.0)
++                .collect()
++        };
++        let boxes = |text: &str, key: &str| -> Vec<Vec<f32>> {
++            text.match_indices(key)
++                .map(|(at, _)| {
++                    let rest = &text[at + key.len()..];
++                    rest[..rest.find(']').unwrap()]
++                        .split_whitespace()
++                        .map(|number| (number.parse::<f32>().unwrap() * 10.0).round() / 10.0)
++                        .collect()
++                })
++                .collect()
++        };
++
++        let two_up = export(PdfSheetLayout::TwoUp);
++        assert_eq!(
++            boxes(&two_up, "/MediaBox ["),
++            vec![vec![0.0, 0.0, 841.9, 595.3]; 2]
++        );
++        assert_eq!(
++            boxes(&two_up, "/Rect ["),
++            vec![
++                vec![0.0, -2.5, 422.6, 595.3],
++                vec![420.9, -2.5, 843.6, 595.3],
++                vec![0.0, -2.5, 422.6, 595.3],
++            ]
++        );
++        assert_eq!(two_up.matches("/S2 Do").count(), 1);
++        assert_eq!(destination(&two_up), vec![474.2, 488.8]);
++
++        let one_page = export(PdfSheetLayout::OnePage);
++        assert_eq!(
++            boxes(&one_page, "/MediaBox ["),
++            vec![vec![0.0, 0.0, 595.3, 841.9]; 3]
++        );
++        assert_eq!(
++            boxes(&one_page, "/Rect ["),
++            vec![vec![0.0, 0.0, 595.3, 841.9]; 3]
++        );
++        assert_eq!(one_page.matches("/S2 Do").count(), 0);
++        assert_eq!(destination(&one_page), vec![75.0, 691.9]);
++    }
++
+diff --git a/src/renderer/script_metrics.rs b/src/renderer/script_metrics.rs
+index 201a37908..049b57d5a 100644
+--- a/src/renderer/script_metrics.rs
++++ b/src/renderer/script_metrics.rs
+@@ -22,3 +22 @@ impl ScriptMetricsContract {
+-        if profile.hangul2024_layout() && !profile.hwp3_layout() {
+-            Self::Hangul2024
+-        } else {
++        if profile.hwp3_layout() {
+@@ -25,0 +24,2 @@ impl ScriptMetricsContract {
++        } else {
++            Self::Hangul2024
+@@ -101,0 +102,35 @@ impl TextStyle {
++
++#[cfg(test)]
++mod tests {
++    use super::ScriptMetricsContract;
++    use crate::model::provenance::LayoutCompatibilityProfile;
++
++    fn profile(hwp3: bool) -> LayoutCompatibilityProfile {
++        LayoutCompatibilityProfile::new(hwp3, hwp3, false, false, false, !hwp3)
++    }
++
++    #[test]
++    fn default_generation_uses_hangul_2024_script_metrics() {
++        for generation_2024 in [false, true] {
++            let contract = ScriptMetricsContract::for_profile(
++                profile(false).with_hangul2024_layout(generation_2024),
++            );
++            assert_eq!(contract, ScriptMetricsContract::Hangul2024);
++            assert!((contract.font_size(15.0, true, false) - 9.6).abs() < 1e-9);
++            assert!((contract.baseline_shift(15.0, true, false) + 6.6).abs() < 1e-9);
++            assert!((contract.baseline_shift(15.0, false, true) - 1.8).abs() < 1e-9);
++        }
++    }
++
++    #[test]
++    fn hwp3_documents_keep_legacy_script_metrics() {
++        for generation_2024 in [false, true] {
++            let contract = ScriptMetricsContract::for_profile(
++                profile(true).with_hangul2024_layout(generation_2024),
++            );
++            assert_eq!(contract, ScriptMetricsContract::Legacy);
++            assert!((contract.font_size(15.0, true, false) - 10.5).abs() < 1e-9);
++            assert!((contract.baseline_shift(15.0, true, false) + 4.5).abs() < 1e-9);
++        }
++    }
++}
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index 17a5db419..1ac6e162a 100644
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -3889 +3889 @@ impl Renderer for SvgRenderer {
+-                        svg_cluster_text_length_attrs(
++                        svg_hidden_middle_dot_length_attrs(
+@@ -3891 +3891 @@ impl Renderer for SvgRenderer {
+-                            adv,
++                            glyph_advance(*char_idx, cluster_str),
+@@ -4463,0 +4464,22 @@ fn svg_cluster_text_length_attrs(
++/// 벡터로 그린 `·` 위에 겹치는 보이지 않는 글자를 다른 글자처럼 글리프 맞춤 폭에 맞춘다.
++///
++/// 이 글자는 대체 글꼴의 제 폭으로 놓이므로, 맞추지 않으면 PDF 에서 뽑은 낱말 상자의
++/// 오른쪽 끝이 원본 글꼴의 폭과 어긋난다. 보이는 점은 원으로 따로 그리므로 모양은 그대로다.
++fn svg_hidden_middle_dot_length_attrs(
++    cluster_str: &str,
++    layout_cluster_advance: f64,
++    style: &TextStyle,
++    script_advance_scale: f64,
++    scale_x: f64,
++) -> String {
++    match style.glyph_fit_advance(layout_cluster_advance) {
++        Some(glyph_advance) => svg_text_length_attrs(
++            cluster_str,
++            glyph_advance * script_advance_scale,
++            scale_x,
++            true,
++        ),
++        None => String::new(),
++    }
++}
++
+diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+index 1126265dc..bc731ec40 100644
+--- a/src/renderer/svg/tests.rs
++++ b/src/renderer/svg/tests.rs
+@@ -1498,0 +1499,65 @@ fn test_svg_hidden_middle_dot_text_uses_run_font_family() {
++#[test]
++fn test_svg_hidden_middle_dot_text_is_fitted_to_glyph_advance() {
++    let style = |letter_spacing: f64| TextStyle {
++        font_size: 13.333,
++        font_family: "맑은 고딕".to_string(),
++        letter_spacing,
++        ..Default::default()
++    };
++    // (조판 칸의 폭, 숨은 글자의 textLength). 원은 조판 칸의 가운데에 놓이므로
++    // 칸의 폭은 원 중심과 글자 원점 사이의 두 배다.
++    let measure = |style: &TextStyle| -> (f64, f64) {
++        let mut renderer = SvgRenderer::new();
++        renderer.begin_page(800.0, 600.0);
++        renderer.draw_text("가\u{00B7}나", 10.0, 20.0, style);
++        let output = renderer.output();
++        let number = |tag: &str, name: &str| -> f64 {
++            let at = tag.find(&format!(" {name}=\"")).expect(name) + name.len() + 3;
++            let end = tag[at..].find('"').unwrap();
++            tag[at..at + end].parse().unwrap()
++        };
++        let close = output
++            .find(">\u{00B7}</text>")
++            .expect("hidden middle-dot text");
++        let hidden = &output[output[..close].rfind("<text").unwrap()..close];
++        let circle_at = output.find("<circle").expect("vector middle dot");
++        let circle = &output[circle_at..circle_at + output[circle_at..].find("/>").unwrap()];
++        assert!(
++            hidden.contains(" lengthAdjust=\"spacingAndGlyphs\""),
++            "{output}"
++        );
++        assert!(hidden.contains(" fill-opacity=\"0\""), "{output}");
++        (
++            2.0 * (number(circle, "cx") - number(hidden, "x")),
++            number(hidden, "textLength"),
++        )
++    };
++    // 보이는 글자가 textLength 로 받는 폭: 원본 자간을 뺀 글리프 맞춤 경계.
++    let glyph_advance = |style: &TextStyle| -> f64 {
++        let positions = crate::renderer::layout::compute_char_positions("가\u{00B7}나", style);
++        let fit = crate::renderer::glyph_fit_positions("가\u{00B7}나", style, None, &positions);
++        fit[2] - fit[1]
++    };
++
++    let plain = style(0.0);
++    let (cell, fitted) = measure(&plain);
++    assert!(fitted > 1.0);
++    assert!(
++        (fitted - glyph_advance(&plain)).abs() < 0.001,
++        "{fitted} {cell}"
++    );
++
++    // 음수 자간은 조판 칸만 좁힌다. 숨은 글자의 폭은 자간이 없을 때와 같다.
++    let narrow = style(-1.0);
++    let (narrow_cell, narrow_fitted) = measure(&narrow);
++    assert!(narrow_cell < cell - 0.1, "{narrow_cell} {cell}");
++    assert!(
++        (narrow_fitted - glyph_advance(&narrow)).abs() < 0.001,
++        "{narrow_fitted}"
++    );
++    assert!(
++        (narrow_fitted - fitted).abs() < 0.001,
++        "{narrow_fitted} {fitted}"
++    );
++}
++
