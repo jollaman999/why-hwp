@@ -27,7 +27,8 @@ const (
 
 // AllowList is the set of locations a writer may change. A pattern that
 // ends in "*" matches every location starting with the part before it; any
-// other pattern matches one location exactly.
+// other pattern matches one location exactly, and a pattern that names a
+// table cell also matches the paragraphs of that cell (cell/pN).
 type AllowList struct {
 	patterns []string
 }
@@ -57,11 +58,22 @@ func (a *AllowList) Match(loc string) bool {
 			if strings.HasPrefix(loc, prefix) {
 				return true
 			}
-		} else if p == loc {
+		} else if p == loc || isCellPara(p, loc) {
 			return true
 		}
 	}
 	return false
+}
+
+var (
+	cellLocRe  = regexp.MustCompile(`/c\d+$`)
+	paraStepRe = regexp.MustCompile(`^/p\d+$`)
+)
+
+// isCellPara reports whether loc is a paragraph of the cell at cell.
+func isCellPara(cell, loc string) bool {
+	rest, ok := strings.CutPrefix(loc, cell)
+	return ok && cellLocRe.MatchString(cell) && paraStepRe.MatchString(rest)
 }
 
 // Pattern is one banned word or expression.

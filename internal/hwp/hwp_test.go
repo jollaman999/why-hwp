@@ -174,13 +174,74 @@ func TestParaText(t *testing.T) {
 		{record: record{tag: tagCtrlHeader, level: 1, data: field}},
 	}}
 	w := &walker{doc: &model.Document{}}
-	if got, want := w.para(para, "s0/p0"), "A\tB\nC- DE\U0001F600"; got != want {
-		t.Errorf("para = %q, want %q", got, want)
+	if got, box := w.para(para, "s0/p0"); got != "A\tB\nC- DE\U0001F600" || box != "" {
+		t.Errorf("para = %q, box = %q", got, box)
 	}
 	if len(w.memoAnchors) != 1 || w.memoAnchors[0].num != 7 || w.doc.Summary.Memos[0].Loc != "s0/p0" {
 		t.Errorf("memo anchors = %+v, memos = %+v", w.memoAnchors, w.doc.Summary.Memos)
 	}
 	if got := plainText(para); got != "A\tB\nC- DE\U0001F600" {
 		t.Errorf("plainText = %q", got)
+	}
+}
+
+// textPara builds a paragraph record tree from UTF-16 units and the
+// control records its extended characters point at.
+func textPara(u []uint16, ctrls ...*node) *node {
+	var data []byte
+	for _, c := range u {
+		data = binary.LittleEndian.AppendUint16(data, c)
+	}
+	kids := []*node{{record: record{tag: tagParaText, data: data}}}
+	return &node{record: record{tag: tagParaHeader}, kids: append(kids, ctrls...)}
+}
+
+func units(s string) []uint16 {
+	var u []uint16
+	for _, r := range s {
+		u = append(u, uint16(r))
+	}
+	return append(u, 13)
+}
+
+// A cell with one paragraph is one block; a cell with more is one block
+// per paragraph. Text-box text is a block of its own after its anchor.
+func TestCellParagraphsAndTextBox(t *testing.T) {
+	gso := binary.LittleEndian.AppendUint32(nil, ctrlShape)
+	box := &node{record: record{tag: tagCtrlHeader, data: gso}, kids: []*node{
+		{record: record{tag: tagShapeComp}, kids: []*node{
+			{record: record{tag: tagListHeader}},
+			textPara(units("box one")),
+			textPara(units("box two")),
+		}},
+	}}
+	anchor := append([]uint16{'A', 11, 0, 0, 0, 0, 0, 0, 11}, units("B")...)
+	addr := func(row, col uint16) *node {
+		d := make([]byte, 12)
+		binary.LittleEndian.PutUint16(d[8:], col)
+		binary.LittleEndian.PutUint16(d[10:], row)
+		return &node{record: record{tag: tagListHeader, data: d}}
+	}
+	w := &walker{doc: &model.Document{}}
+	w.section(0, []*node{textPara(anchor, box)})
+	w.cell(addr(0, 0), []*node{textPara(units("")), textPara(units("second")), textPara(anchor, box)}, "s0/p1/t0")
+	w.cell(addr(0, 1), []*node{textPara(anchor, box)}, "s0/p1/t0")
+
+	var got []string
+	for _, b := range w.doc.Blocks {
+		got = append(got, string(b.Kind)+" "+b.Loc+" "+b.Text)
+	}
+	want := []string{
+		"para s0/p0 AB",
+		"box s0/p0#box box one\nbox two",
+		"cell s0/p1/t0/r0/c0/p0 ",
+		"cell s0/p1/t0/r0/c0/p1 second",
+		"cell s0/p1/t0/r0/c0/p2 AB",
+		"box s0/p1/t0/r0/c0/p2#box box one\nbox two",
+		"cell s0/p1/t0/r0/c1 AB",
+		"box s0/p1/t0/r0/c1#box box one\nbox two",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("blocks:\n got %q\nwant %q", got, want)
 	}
 }

@@ -113,10 +113,12 @@ func TestBlocks(t *testing.T) {
 	want := []string{
 		"para s0/p0 제목",
 		"para s0/p1 그림 앞 그림 뒤",
-		"para s0/p2 앞 \n상자 글\n뒤",
+		"para s0/p2 앞 뒤",
+		"box s0/p2#box 상자 글",
 		"para s0/p3 가\t나\n다",
 		"para s0/p4 넣음",
-		"cell s0/p5/t0/r0/c0 합친 칸\n둘째 줄",
+		"cell s0/p5/t0/r0/c0/p0 합친 칸",
+		"cell s0/p5/t0/r0/c0/p1 둘째 줄",
 		"cell s0/p5/t0/r0/c2 (A)",
 		"cell s0/p5/t0/r1/c0 a",
 		"cell s0/p5/t0/r1/c1 b",
@@ -214,7 +216,7 @@ func TestTrackedChanges(t *testing.T) {
 			"s0/p1 새 글",
 			"s0/p2 넣은 문단",
 			"s0/p4 앞",
-			"s0/p5/t0/r0/c0 가나",
+			"s0/p5/t0/r0/c0/p0 가나",
 			"s0/p6 끝",
 		}},
 		{model.ViewOriginal, []string{
@@ -222,7 +224,8 @@ func TestTrackedChanges(t *testing.T) {
 			"s0/p1 옛 글",
 			"s0/p3 지운 문단",
 			"s0/p4 앞옮긴 글",
-			"s0/p5/t0/r0/c0 가\n나",
+			"s0/p5/t0/r0/c0/p0 가",
+			"s0/p5/t0/r0/c0/p1 나",
 			"s0/p6 끝",
 		}},
 		{model.ViewMarkup, []string{
@@ -231,7 +234,8 @@ func TestTrackedChanges(t *testing.T) {
 			"s0/p2 [+넣은 문단\n+]",
 			"s0/p3 [-지운 문단\n-]",
 			"s0/p4 앞[-옮긴 글-]",
-			"s0/p5/t0/r0/c0 가[-\n-]나",
+			"s0/p5/t0/r0/c0/p0 가[-\n-]",
+			"s0/p5/t0/r0/c0/p1 나",
 			"s0/p6 끝",
 		}},
 	} {

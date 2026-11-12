@@ -180,7 +180,7 @@ type walker struct {
 	dec        *xml.Decoder
 	doc        *model.Document
 	commentLoc map[string]string // comment id -> loc of its anchor
-	boxEnded   bool              // a text-box paragraph was just appended
+	box        *model.Spans      // text-box text of the current body or cell paragraph
 
 	ins, del int          // open w:ins (w:moveTo) and w:del (w:moveFrom) elements
 	rPr      int          // open w:rPr elements
@@ -272,6 +272,7 @@ func (w *walker) piece() model.Change {
 // paraText is the text of one w:p.
 type paraText struct {
 	spans model.Spans
+	box   model.Spans  // text of the text boxes anchored in it, one line per paragraph
 	brk   model.Change // change of the paragraph mark
 	whole model.Change // change that covers the whole paragraph, mark included
 }
@@ -281,12 +282,31 @@ func (w *walker) paragraph(loc string) (paraText, error) {
 	saveMark, saveCover := w.mark, w.cover
 	w.mark, w.cover = 0, model.Inserted|model.Deleted
 	defer func() { w.mark, w.cover = saveMark, saveCover }()
-	var sp model.Spans
-	w.boxEnded = false
+	saveBox := w.box
+	defer func() { w.box = saveBox }()
+	var sp, box model.Spans
+	w.box = &box
 	if err := w.content(&sp, loc); err != nil {
 		return paraText{}, err
 	}
-	return paraText{spans: sp, brk: w.mark, whole: w.cover & w.mark}, nil
+	return paraText{spans: sp, box: box, brk: w.mark, whole: w.cover & w.mark}, nil
+}
+
+// block turns the text of one w:p into its block at loc, followed by a
+// text-box block when the paragraph anchors text boxes.
+func (w *walker) block(loc string, kind model.Kind, pt paraText) {
+	b := model.Block{Loc: loc, Kind: kind, Text: pt.spans.Text(model.ViewAccepted), Break: pt.brk, Whole: pt.whole}
+	if pt.spans.Changed() {
+		b.Spans = pt.spans
+	}
+	w.doc.Blocks = append(w.doc.Blocks, b)
+	if pt.box.Len() > 0 {
+		box := model.Block{Loc: loc + model.BoxSuffix, Kind: model.KindBox, Text: pt.box.Text(model.ViewAccepted)}
+		if pt.box.Changed() {
+			box.Spans = pt.box
+		}
+		w.doc.Blocks = append(w.doc.Blocks, box)
+	}
 }
 
 func (w *walker) readBody(f *zip.File) error {
@@ -320,11 +340,7 @@ func (w *walker) readBody(f *zip.File) error {
 			if err != nil {
 				return err
 			}
-			b := model.Block{Loc: loc, Kind: model.KindPara, Text: pt.spans.Text(model.ViewAccepted), Break: pt.brk, Whole: pt.whole}
-			if pt.spans.Changed() {
-				b.Spans = pt.spans
-			}
-			w.doc.Blocks = append(w.doc.Blocks, b)
+			w.block(loc, model.KindPara, pt)
 		case "tbl":
 			loc := fmt.Sprintf("s0/p%d/t0", p)
 			p++
@@ -337,7 +353,8 @@ func (w *walker) readBody(f *zip.File) error {
 
 // content appends the text inside the current element (a paragraph, a
 // mc:Choice, a text box) to sp and returns after its end tag. Paragraphs
-// nested in it (text boxes) are appended as new lines.
+// nested in it (text boxes) go to the text-box text of the body or cell
+// paragraph being read, one line each.
 func (w *walker) content(sp *model.Spans, loc string) error {
 	depth := 0
 	for {
@@ -355,12 +372,7 @@ func (w *walker) content(sp *model.Spans, loc string) error {
 						return err
 					}
 					if tb.Len() > 0 {
-						c := w.piece()
-						if w.boxEnded {
-							sp.Add("\n", c)
-							w.boxEnded = false
-						}
-						sp.Add(tb.String(), c)
+						sp.Add(tb.String(), w.piece())
 					}
 					continue
 				case "tabs":
@@ -382,19 +394,23 @@ func (w *walker) content(sp *model.Spans, loc string) error {
 				case "p":
 					c := w.change()
 					var inner model.Spans
-					w.boxEnded = false
 					mark := w.mark
 					err := w.content(&inner, loc)
 					w.mark = mark
 					if err != nil {
 						return err
 					}
+					// Paragraphs of a comment body have no anchor paragraph
+					// and stay in sp.
+					dst := w.box
+					if dst == nil {
+						dst = sp
+					}
 					if inner.Len() > 0 {
-						if sp.Len() > 0 {
-							sp.Add("\n", c)
+						if dst.Len() > 0 {
+							dst.Add("\n", c)
 						}
-						sp.Append(inner)
-						w.boxEnded = true
+						dst.Append(inner)
 					}
 					continue
 				case "tbl":
@@ -518,13 +534,13 @@ func (w *walker) table(loc string) error {
 	}
 }
 
-// cell reads one w:tc and returns how many grid columns it spans.
+// cell reads one w:tc and returns how many grid columns it spans. A cell
+// with one paragraph is one block at the cell's location; a cell with
+// more is one block per paragraph at loc/pN.
 func (w *walker) cell(tblLoc string, row, col int) (int, error) {
 	loc := fmt.Sprintf("%s/r%d/c%d", tblLoc, row, col)
-	bi := len(w.doc.Blocks)
-	w.doc.Blocks = append(w.doc.Blocks, model.Block{Loc: loc, Kind: model.KindCell})
 	span := 1
-	var texts []paraText
+	var blocks []int // index of each paragraph's block
 	p := 0
 	depth := 0
 	for {
@@ -541,12 +557,14 @@ func (w *walker) cell(tblLoc string, row, col int) (int, error) {
 						span = v
 					}
 				case "p":
-					pt, err := w.paragraph(fmt.Sprintf("%s/p%d", loc, p))
+					ploc := fmt.Sprintf("%s/p%d", loc, p)
+					pt, err := w.paragraph(ploc)
 					if err != nil {
 						return 0, err
 					}
 					p++
-					texts = append(texts, pt)
+					blocks = append(blocks, len(w.doc.Blocks))
+					w.block(ploc, model.KindCell, pt)
 					continue
 				case "tbl":
 					if err := w.table(fmt.Sprintf("%s/p%d/t0", loc, p)); err != nil {
@@ -559,16 +577,13 @@ func (w *walker) cell(tblLoc string, row, col int) (int, error) {
 			depth++
 		case xml.EndElement:
 			if depth == 0 {
-				var sp model.Spans
-				for i, pt := range texts {
-					if i > 0 {
-						sp.Add("\n", texts[i-1].brk)
+				if len(blocks) == 1 {
+					bs := w.doc.Blocks
+					i := blocks[0]
+					bs[i].Loc = loc
+					if i+1 < len(bs) && bs[i+1].Kind == model.KindBox {
+						bs[i+1].Loc = loc + model.BoxSuffix
 					}
-					sp.Append(pt.spans)
-				}
-				w.doc.Blocks[bi].Text = sp.Text(model.ViewAccepted)
-				if sp.Changed() {
-					w.doc.Blocks[bi].Spans = sp
 				}
 				return span, nil
 			}

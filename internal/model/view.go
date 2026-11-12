@@ -146,11 +146,12 @@ func (b Block) spans() Spans {
 //
 // In the markup view every block stays. In the accepted and original
 // views a paragraph whose break the view leaves out is joined to the next
-// paragraph of the same section, as the editor would show it. The joined
-// text keeps the location of the first of those paragraphs that the view
-// still has, so a paragraph that only exists in the other view (all of it,
-// break included, inside an insertion or deletion) gives up its block and
-// no location is reused for a different paragraph.
+// paragraph of the same section or the same table cell, as the editor
+// would show it. The joined text keeps the location of the first of those
+// paragraphs that the view still has, so a paragraph that only exists in
+// the other view (all of it, break included, inside an insertion or
+// deletion) gives up its block and no location is reused for a different
+// paragraph.
 func (d *Document) InView(v View) *Document {
 	if !d.Tracked {
 		return d
@@ -159,10 +160,11 @@ func (d *Document) InView(v View) *Document {
 	out.Summary.View = v
 	out.Blocks = make([]Block, 0, len(d.Blocks))
 	bs := d.Blocks
-	for i := 0; i < len(bs); i++ {
-		b := bs[i]
-		if b.Kind != KindPara || v == ViewMarkup || !v.hides(b.Break) {
-			out.Blocks = append(out.Blocks, b.render(v))
+	joined := make([]*string, len(bs)) // text of a block that took in other paragraphs
+	gone := make([]bool, len(bs))      // paragraph joined into another block
+	seen := make([]bool, len(bs))
+	for i := range bs {
+		if v == ViewMarkup || seen[i] || !bs[i].isPara() || !v.hides(bs[i].Break) {
 			continue
 		}
 		members := []int{i}
@@ -185,25 +187,36 @@ func (d *Document) InView(v View) *Document {
 				break
 			}
 		}
-		last := members[len(members)-1]
-		for k := i; k <= last; k++ {
-			switch {
-			case k == keep:
-				out.Blocks = append(out.Blocks, Block{Loc: bs[k].Loc, Kind: KindPara, Text: text.String()})
-			case bs[k].Kind != KindPara:
-				out.Blocks = append(out.Blocks, bs[k].render(v))
-			}
+		for _, m := range members {
+			seen[m] = true
+			gone[m] = m != keep
 		}
-		i = last
+		t := text.String()
+		joined[keep] = &t
+	}
+	for i, b := range bs {
+		switch {
+		case gone[i]:
+		case joined[i] != nil:
+			out.Blocks = append(out.Blocks, Block{Loc: b.Loc, Kind: b.Kind, Text: *joined[i]})
+		default:
+			out.Blocks = append(out.Blocks, b.render(v))
+		}
 	}
 	out.Summary.OwnerMarks = FindOwnerMarks(out.Blocks)
 	return &out
 }
 
+// isPara reports whether b is one paragraph: a top-level paragraph, a
+// cell with one paragraph or one paragraph of a cell.
+func (b Block) isPara() bool {
+	return b.Kind == KindPara || b.Kind == KindCell
+}
+
 // render returns b alone in view v.
 func (b Block) render(v View) Block {
 	sp := b.spans()
-	if v == ViewMarkup && b.Kind == KindPara && b.Break != 0 {
+	if v == ViewMarkup && b.isPara() && b.Break != 0 {
 		sp = append(Spans(nil), sp...)
 		sp.Add("\n", b.Break)
 	}
@@ -211,19 +224,45 @@ func (b Block) render(v View) Block {
 }
 
 // nextPara returns the index of the paragraph after bs[i] in the same
-// section, or -1.
+// section or the same cell, or -1.
 func nextPara(bs []Block, i int) int {
-	sec := section(bs[i].Loc)
+	list := paraList(bs[i])
 	for k := i + 1; k < len(bs); k++ {
-		if bs[k].Kind != KindPara {
-			continue
-		}
-		if section(bs[k].Loc) != sec {
+		if !strings.HasPrefix(bs[k].Loc, list+"/") {
 			return -1
 		}
-		return k
+		if bs[k].Kind == bs[i].Kind && paraList(bs[k]) == list {
+			return k
+		}
 	}
 	return -1
+}
+
+// paraList names the paragraph list b is in: the section of a top-level
+// paragraph, the cell of a cell paragraph. A cell with one paragraph is a
+// list of its own.
+func paraList(b Block) string {
+	if b.Kind == KindPara {
+		return section(b.Loc)
+	}
+	if i := strings.LastIndexByte(b.Loc, '/'); i >= 0 && isParaPart(b.Loc[i+1:]) {
+		return b.Loc[:i]
+	}
+	return b.Loc
+}
+
+// isParaPart reports whether part is a paragraph step of a location, "p"
+// and a number.
+func isParaPart(part string) bool {
+	if len(part) < 2 || part[0] != 'p' {
+		return false
+	}
+	for _, c := range part[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func section(loc string) string {

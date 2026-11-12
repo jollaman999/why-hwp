@@ -357,7 +357,7 @@ func TestAlignPairsSimilarBlocks(t *testing.T) {
 }
 
 func TestAllowMatch(t *testing.T) {
-	a, err := ParseAllow(strings.NewReader("s0/p4/t0/*\ns0/p7\n"))
+	a, err := ParseAllow(strings.NewReader("s0/p4/t0/*\ns0/p7\ns0/p9/t0/r0/c1\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,6 +368,15 @@ func TestAllowMatch(t *testing.T) {
 		"s0/p7":          true,
 		"s0/p70":         false,
 		"":               false,
+		// A listed cell covers its paragraphs, nothing nested or beside it.
+		"s0/p9/t0/r0/c1":             true,
+		"s0/p9/t0/r0/c1/p2":          true,
+		"s0/p9/t0/r0/c1/p2/t0/r0/c0": false,
+		"s0/p9/t0/r0/c1#box":         false,
+		"s0/p9/t0/r0/c1/p2#box":      false,
+		"s0/p9/t0/r0/c10":            false,
+		"s0/p7/p1":                   false,
+		"s0/p7#box":                  false,
 	} {
 		if got := a.Match(loc); got != want {
 			t.Errorf("Match(%q) = %v, want %v", loc, got, want)

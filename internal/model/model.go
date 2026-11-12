@@ -4,17 +4,22 @@
 //
 // # Blocks
 //
-// A document is a flat list of Blocks in reading order. A Block is either
-// a top-level paragraph (KindPara) or a table cell (KindCell). Every
+// A document is a flat list of Blocks in reading order. A Block is a
+// top-level paragraph (KindPara), the text of a table cell (KindCell) or
+// the text of the text boxes anchored in one paragraph (KindBox). Every
 // top-level paragraph gets a Block, empty ones included, so paragraph
 // numbers stay stable. A paragraph that holds a table is followed by the
-// Blocks of that table's cells. A cell's text is the text of its
-// paragraphs joined with "\n"; text of tables nested in the cell is not
-// repeated there but appears in the nested cells' own Blocks.
+// Blocks of that table's cells. A cell with one paragraph is one Block; a
+// cell with more is one Block per paragraph, so every Block of a cell is
+// text that apply can address. Text of tables nested in a cell is not
+// repeated in the cell's Blocks but appears in the nested cells' own
+// Blocks.
 //
 // Tab characters are "\t" and forced line breaks are "\n". Memo bodies,
 // headers, footers, footnotes and picture captions are not part of the
-// text. Text-box text is appended to the paragraph that anchors it.
+// text. Text-box text is not part of the paragraph that anchors it: it
+// follows that paragraph, and any table cells of it, as one KindBox Block
+// with one line per text-box paragraph.
 //
 // # Locations
 //
@@ -23,11 +28,18 @@
 //
 //	s0/p12                       section 0, top-level paragraph 12
 //	s0/p3/t0/r1/c2               table 0 anchored in paragraph 3, row 1, column 2
+//	s0/p3/t0/r1/c2/p1            paragraph 1 of that cell, when the cell has several
 //	s0/p3/t0/r1/c2/p0/t0/r0/c1   table nested in paragraph 0 of that cell
+//	s0/p12#box                   text boxes anchored in paragraph 12 (read-only)
 //
 // Rows and columns are grid addresses: a cell that spans columns keeps
 // the address of its top-left grid slot. In docx a body-level table takes
-// a paragraph number of its own (s0/p5/t0/...), and every block is in s0.
+// a paragraph number of its own (s0/p5/t0/...), a table nested in a cell
+// takes a paragraph number of that cell, and every block is in s0.
+//
+// A KindBox location is the anchor's location followed by BoxSuffix. It
+// tells where the text is but is not an address apply takes: text-box
+// text cannot be edited.
 //
 // # Tracked changes
 //
@@ -48,8 +60,12 @@ type Kind string
 
 const (
 	KindPara Kind = "para" // top-level paragraph
-	KindCell Kind = "cell" // table cell
+	KindCell Kind = "cell" // table cell, or one paragraph of a cell that has several
+	KindBox  Kind = "box"  // text of the text boxes anchored in one paragraph
 )
+
+// BoxSuffix ends the location of a KindBox block.
+const BoxSuffix = "#box"
 
 // Block is one addressable run of text.
 type Block struct {
@@ -58,11 +74,11 @@ type Block struct {
 	Text string `json:"text"`
 
 	// Tracked changes, set only on blocks that have any. Spans is the
-	// block's text split by change; in a cell the paragraph breaks are
-	// "\n" spans that carry the change of that break.
+	// block's text split by change. Break and Whole are for KindPara and
+	// KindCell blocks, which are each one paragraph.
 	Spans Spans  `json:"-"`
-	Break Change `json:"-"` // KindPara: change that covers the paragraph break
-	Whole Change `json:"-"` // KindPara: change that covers all of the paragraph, break included
+	Break Change `json:"-"` // change that covers the paragraph break
+	Whole Change `json:"-"` // change that covers all of the paragraph, break included
 }
 
 // Document is what a reader returns.

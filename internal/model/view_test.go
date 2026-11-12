@@ -117,3 +117,50 @@ func TestParseView(t *testing.T) {
 		t.Error("final: want error")
 	}
 }
+
+// Cell paragraphs join like top-level ones, inside their own cell only:
+// blocks of a nested table and text-box blocks between them stay.
+func TestInViewJoinsCellParagraphs(t *testing.T) {
+	d := &Document{Tracked: true, Blocks: []Block{
+		{Loc: "s0/p0", Kind: KindPara, Text: ""},
+		{Loc: "s0/p0/t0/r0/c0/p0", Kind: KindCell, Text: "가", Break: Deleted},
+		{Loc: "s0/p0/t0/r0/c0/p0/t0/r0/c0/p0", Kind: KindCell, Text: "안1", Break: Deleted},
+		{Loc: "s0/p0/t0/r0/c0/p0/t0/r0/c0/p1", Kind: KindCell, Text: "안2"},
+		{Loc: "s0/p0/t0/r0/c0/p0#box", Kind: KindBox, Text: "상자"},
+		{Loc: "s0/p0/t0/r0/c0/p1", Kind: KindCell, Text: "", Spans: Spans{{"나", Deleted}}, Break: Deleted, Whole: Deleted},
+		{Loc: "s0/p0/t0/r0/c0/p2", Kind: KindCell, Text: "다", Break: Deleted},
+		{Loc: "s0/p0/t0/r0/c1", Kind: KindCell, Text: "라", Break: Deleted},
+		{Loc: "s0/p0/t0/r0/c2/p0", Kind: KindCell, Text: "마"},
+		{Loc: "s0/p1", Kind: KindPara, Text: "끝"},
+	}}
+	want := []string{
+		"s0/p0 ",
+		"s0/p0/t0/r0/c0/p0 가다",
+		"s0/p0/t0/r0/c0/p0/t0/r0/c0/p0 안1안2",
+		"s0/p0/t0/r0/c0/p0#box 상자",
+		"s0/p0/t0/r0/c1 라",
+		"s0/p0/t0/r0/c2/p0 마",
+		"s0/p1 끝",
+	}
+	if got := blockTexts(d.InView(ViewAccepted)); !reflect.DeepEqual(got, want) {
+		t.Errorf("accepted:\n got %q\nwant %q", got, want)
+	}
+	want = []string{
+		"s0/p0 ",
+		"s0/p0/t0/r0/c0/p0 가",
+		"s0/p0/t0/r0/c0/p0/t0/r0/c0/p0 안1",
+		"s0/p0/t0/r0/c0/p0/t0/r0/c0/p1 안2",
+		"s0/p0/t0/r0/c0/p0#box 상자",
+		"s0/p0/t0/r0/c0/p1 나",
+		"s0/p0/t0/r0/c0/p2 다",
+		"s0/p0/t0/r0/c1 라",
+		"s0/p0/t0/r0/c2/p0 마",
+		"s0/p1 끝",
+	}
+	if got := blockTexts(d.InView(ViewOriginal)); !reflect.DeepEqual(got, want) {
+		t.Errorf("original:\n got %q\nwant %q", got, want)
+	}
+	if got := blockTexts(d.InView(ViewMarkup)); got[1] != "s0/p0/t0/r0/c0/p0 가[-\n-]" || got[5] != "s0/p0/t0/r0/c0/p1 [-나\n-]" || got[4] != "s0/p0/t0/r0/c0/p0#box 상자" {
+		t.Errorf("markup: %q", got)
+	}
+}

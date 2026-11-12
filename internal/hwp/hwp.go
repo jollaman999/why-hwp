@@ -487,6 +487,19 @@ type memoBody struct {
 	text string
 }
 
+// block adds the block of one paragraph at loc. The cell blocks of its
+// tables, named under inner, follow it, then a text-box block when it
+// anchors text boxes.
+func (w *walker) block(n *node, loc, inner string, kind model.Kind) {
+	bi := len(w.doc.Blocks)
+	w.doc.Blocks = append(w.doc.Blocks, model.Block{Loc: loc, Kind: kind})
+	text, box := w.para(n, inner)
+	w.doc.Blocks[bi].Text = text
+	if box != "" {
+		w.doc.Blocks = append(w.doc.Blocks, model.Block{Loc: loc + model.BoxSuffix, Kind: model.KindBox, Text: box})
+	}
+}
+
 func (w *walker) section(sec int, roots []*node) {
 	p := 0
 	for i := 0; i < len(roots); i++ {
@@ -495,9 +508,7 @@ func (w *walker) section(sec int, roots []*node) {
 		case tagParaHeader:
 			loc := fmt.Sprintf("s%d/p%d", sec, p)
 			p++
-			bi := len(w.doc.Blocks)
-			w.doc.Blocks = append(w.doc.Blocks, model.Block{Loc: loc, Kind: model.KindPara})
-			w.doc.Blocks[bi].Text = w.para(n, loc)
+			w.block(n, loc, loc, model.KindPara)
 			w.memoLists(n.kids)
 		case tagMemoList:
 			i = w.memoList(roots, i)
@@ -648,10 +659,11 @@ func (t *textBuilder) String() string {
 	return t.sb.String()
 }
 
-// para returns the text of one paragraph. Tables in it are added to the
-// document as cell blocks under loc/tN, pictures and memo anchors to the
-// summary, and text-box text is appended on its own line.
-func (w *walker) para(n *node, loc string) string {
+// para returns the text of one paragraph and, apart from it, the text of
+// the text boxes anchored in it, one line per text-box paragraph. Tables
+// in it are added to the document as cell blocks under loc/tN, pictures
+// and memo anchors to the summary.
+func (w *walker) para(n *node, loc string) (text, box string) {
 	var ctrls []*node
 	for _, k := range n.kids {
 		if k.tag == tagCtrlHeader {
@@ -659,20 +671,13 @@ func (w *walker) para(n *node, loc string) string {
 		}
 	}
 	var t textBuilder
-	afterBox := false
-	write := func(f func()) {
-		if afterBox {
-			t.str("\n")
-			afterBox = false
-		}
-		f()
-	}
+	var boxes []string
 	u := paraText(n)
 	tables, ci := 0, 0
 	for i := 0; i < len(u); {
 		c := u[i]
 		if c >= 32 {
-			write(func() { t.unit(c) })
+			t.unit(c)
 			i++
 			continue
 		}
@@ -683,12 +688,12 @@ func (w *walker) para(n *node, loc string) string {
 				continue
 			}
 			if c == 10 || c == 24 || c == 30 || c == 31 {
-				write(func() { t.char(c) })
+				t.char(c)
 			}
 			i++
 		case ctrlInline:
 			if c == 9 {
-				write(func() { t.str("\t") })
+				t.str("\t")
 			}
 			i += 8
 		case ctrlExtended:
@@ -712,13 +717,8 @@ func (w *walker) para(n *node, loc string) string {
 				w.table(ctrl, fmt.Sprintf("%s/t%d", loc, tables))
 				tables++
 			case c == 11 && ctrlHeaderID(ctrl) == ctrlShape:
-				box := w.shape(ctrl, loc)
-				if box != "" {
-					if t.Len() > 0 {
-						t.str("\n")
-					}
-					t.str(box)
-					afterBox = true
+				if b := w.shape(ctrl, loc); b != "" {
+					boxes = append(boxes, b)
 				}
 			}
 			// Headers, footers, footnotes, endnotes, hidden comments and
@@ -726,7 +726,7 @@ func (w *walker) para(n *node, loc string) string {
 			// of the paragraph text.
 		}
 	}
-	return t.String()
+	return t.String(), strings.Join(boxes, "\n")
 }
 
 func ctrlHeaderID(n *node) uint32 {
@@ -782,7 +782,9 @@ func (w *walker) table(ctrl *node, loc string) {
 	}
 }
 
-// cell adds the block for one table cell. The list header (table 65) is
+// cell adds the blocks of one table cell: one block at the cell's
+// location when it has one paragraph, one block per paragraph at loc/pN
+// when it has more. The list header (table 65) is
 // followed by the cell properties (table 80) whose first fields are the
 // column and row address. The spec gives the list header as 6 bytes, but
 // Hwp writes 8 (the paragraph count is 4 bytes), so the address starts
@@ -794,13 +796,14 @@ func (w *walker) cell(lh *node, paras []*node, tblLoc string) {
 		row = int(binary.LittleEndian.Uint16(lh.data[10:]))
 	}
 	loc := fmt.Sprintf("%s/r%d/c%d", tblLoc, row, col)
-	bi := len(w.doc.Blocks)
-	w.doc.Blocks = append(w.doc.Blocks, model.Block{Loc: loc, Kind: model.KindCell})
-	texts := make([]string, len(paras))
 	for i, p := range paras {
-		texts[i] = w.para(p, fmt.Sprintf("%s/p%d", loc, i))
+		inner := fmt.Sprintf("%s/p%d", loc, i)
+		if len(paras) == 1 {
+			w.block(p, loc, inner, model.KindCell)
+		} else {
+			w.block(p, inner, inner, model.KindCell)
+		}
 	}
-	w.doc.Blocks[bi].Text = strings.Join(texts, "\n")
 }
 
 // shape reads a 'gso ' control. Every picture inside it (groups

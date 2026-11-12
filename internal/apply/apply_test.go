@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -132,14 +133,22 @@ func TestIndexMatchesReader(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// A cell with one paragraph is one block at the cell's loc, a cell
+		// with more is one block per paragraph.
 		var got []string
 		for loc := range s.byLoc {
 			if strings.Count(loc, "/t") == 0 {
 				got = append(got, loc)
 			}
 		}
-		for loc := range s.cells {
-			got = append(got, loc)
+		for loc, c := range s.cells {
+			if len(c.paras) == 1 {
+				got = append(got, loc)
+				continue
+			}
+			for _, p := range c.paras {
+				got = append(got, p.loc)
+			}
 		}
 		var want []string
 		for _, b := range parse(t, src).Blocks {
@@ -320,7 +329,7 @@ func TestInsert(t *testing.T) {
 		want := map[string]string{
 			"s0/p1": "1. 개요", "s0/p2": "가", "s0/p3": "나", "s0/p4": "이 문서는 why-hwp 시험용으로 만든 가짜 문서다. 실제 내용은 없다.",
 			"s0/p5": "라", "s0/p6": "다", "s0/p7": "2. 추진 일정 및 담당",
-			"s0/p8/t0/r2/c1": "핵심 기능 구현\n셀 둘째 줄",
+			"s0/p8/t0/r2/c1/p0": "핵심 기능 구현", "s0/p8/t0/r2/c1/p1": "셀 둘째 줄",
 		}
 		for loc, w := range want {
 			if got[loc] != w {
@@ -673,7 +682,186 @@ func TestInsertAfterLast(t *testing.T) {
 	if x := paraXML(t, res.Data, "s0/p4/t0/r0/c0/p1"); !strings.Contains(x, `셀<hp:insertEnd Id="3" TcId="1" paraend="0"/>`) {
 		t.Errorf("cell p1: %s", x)
 	}
-	if got := texts(t, res.Data)["s0/p4/t0/r0/c0"]; got != "항목\n셀" {
-		t.Errorf("cell = %q", got)
+	got := texts(t, res.Data)
+	if got["s0/p4/t0/r0/c0/p0"] != "항목" || got["s0/p4/t0/r0/c0/p1"] != "셀" {
+		t.Errorf("cell = %q, %q", got["s0/p4/t0/r0/c0/p0"], got["s0/p4/t0/r0/c0/p1"])
+	}
+}
+
+// boxDoc adds two paragraphs to the end of the sample: s0/p10 with a text
+// box, own text and a 1x2 table whose first cell has three paragraphs
+// (the first one empty) and whose second has one, and s0/p11 whose only
+// text is in a text box.
+func boxDoc(t *testing.T) []byte {
+	t.Helper()
+	src := readSample(t)
+	raw := part(t, src, "Contents/section0.xml")
+	const pOpen = `<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`
+	p := func(body string) string {
+		return pOpen + `<hp:run charPrIDRef="0">` + body + `</hp:run></hp:p>`
+	}
+	text := func(s string) string { return `<hp:t>` + s + `</hp:t>` }
+	box := func(paras ...string) string {
+		return `<hp:rect id="900"><hp:drawText><hp:subList>` + strings.Join(paras, "") + `</hp:subList></hp:drawText></hp:rect>`
+	}
+	cell := func(col int, paras ...string) string {
+		return `<hp:tc><hp:subList>` + strings.Join(paras, "") + `</hp:subList><hp:cellAddr colAddr="` + strconv.Itoa(col) + `" rowAddr="0"/></hp:tc>`
+	}
+	added := p(box(p(text("상자 첫째")), p(text("상자 둘째")))+
+		`<hp:tbl id="901" rowCnt="1" colCnt="2"><hp:tr>`+
+		cell(0, pOpen+`<hp:run charPrIDRef="0"/></hp:p>`, p(text("둘째 문단 글")), p(text("셋째 문단 글")+box(p(text("칸 안 상자")))))+
+		cell(1, p(text("홑문단 칸")+box(p(text("홑칸 상자")))))+
+		`</hp:tr></hp:tbl>`+text("닻 문단 글")) +
+		p(box(p(text("상자만 있는 글")))+`<hp:t/>`)
+	i := strings.LastIndex(raw, "</hs:sec>")
+	if i < 0 {
+		t.Fatal("no section end tag")
+	}
+	return withSection(t, src, raw[:i]+added+raw[i:])
+}
+
+// What the reader lists for boxDoc after the sample's own blocks.
+var boxDocBlocks = []string{
+	"para s0/p10 닻 문단 글",
+	"cell s0/p10/t0/r0/c0/p0 ",
+	"cell s0/p10/t0/r0/c0/p1 둘째 문단 글",
+	"cell s0/p10/t0/r0/c0/p2 셋째 문단 글",
+	"box s0/p10/t0/r0/c0/p2#box 칸 안 상자",
+	"cell s0/p10/t0/r0/c1 홑문단 칸",
+	"box s0/p10/t0/r0/c1#box 홑칸 상자",
+	"box s0/p10#box 상자 첫째\n상자 둘째",
+	"para s0/p11 ",
+	"box s0/p11#box 상자만 있는 글",
+}
+
+func TestBoxDocBlocks(t *testing.T) {
+	var got []string
+	for _, b := range parse(t, boxDoc(t)).Blocks {
+		got = append(got, string(b.Kind)+" "+b.Loc+" "+b.Text)
+	}
+	n := len(parse(t, readSample(t)).Blocks)
+	if len(got) != n+len(boxDocBlocks) || strings.Join(got[n:], "|") != strings.Join(boxDocBlocks, "|") {
+		t.Errorf("blocks:\n got %q\nwant %q", got[min(n, len(got)):], boxDocBlocks)
+	}
+}
+
+// A cell with several paragraphs is listed by paragraph, and each of
+// those locations edits its own paragraph. The bare cell loc still names
+// the first paragraph and says so when the text is in another one.
+func TestCellParagraphLocs(t *testing.T) {
+	src := boxDoc(t)
+	const cell = "s0/p10/t0/r0/c0"
+	err := runErr(t, src, false, Op{Op: "replace", Loc: cell, Find: "둘째", With: str("고친")})
+	if !strings.Contains(err.Error(), `"둘째" not found in ""`) || !strings.Contains(err.Error(), "address the others as "+cell+"/pN") {
+		t.Errorf("bare cell loc: %v", err)
+	}
+	for _, track := range []bool{false, true} {
+		res := applyOps(t, src, track,
+			Op{Op: "replace", Loc: cell + "/p1", Find: "둘째", With: str("고친")},
+			Op{Op: "set_text", Loc: cell + "/p0", Text: str("채운 글")},
+		)
+		got := viewTexts(t, res.Data, model.ViewAccepted)
+		want := map[string]string{
+			cell + "/p0": "채운 글", cell + "/p1": "고친 문단 글", cell + "/p2": "셋째 문단 글",
+			cell + "/p2#box": "칸 안 상자", "s0/p10/t0/r0/c1": "홑문단 칸",
+		}
+		for loc, w := range want {
+			if got[loc] != w {
+				t.Errorf("track=%v %s = %q, want %q", track, loc, got[loc], w)
+			}
+		}
+		if _, ok := got[cell]; ok {
+			t.Errorf("track=%v: cell with three paragraphs is also listed as one block", track)
+		}
+	}
+}
+
+// Text-box text is listed apart from its anchor paragraph and no op takes
+// its location; the anchor's own text stays editable and the box is kept.
+func TestTextBoxReadOnly(t *testing.T) {
+	src := boxDoc(t)
+	for _, op := range []Op{
+		{Op: "replace", Loc: "s0/p11#box", Find: "상자만", With: str("x")},
+		{Op: "set_text", Loc: "s0/p10#box", Text: str("x")},
+		{Op: "insert_after", Loc: "s0/p10/t0/r0/c1#box", Paras: []NewPara{{Text: "x"}}},
+		{Op: "insert_before", Loc: "s0/p10/t0/r0/c0/p2#box", Paras: []NewPara{{Text: "x"}}},
+		{Op: "delete", Loc: "s0/p11#box"},
+		{Op: "image", Loc: "s0/p11#box", Src: "figure.png", WidthMM: 10},
+		{Op: "insert_after", Loc: "s0/p1", Paras: []NewPara{{Text: "x", Like: "s0/p11#box"}}},
+	} {
+		if err := runErr(t, src, false, op); !strings.Contains(err.Error(), "is text-box text, which apply cannot edit") {
+			t.Errorf("%+v: %v", op, err)
+		}
+	}
+	// The box text is not part of the anchor paragraph.
+	if err := runErr(t, src, false, Op{Op: "replace", Loc: "s0/p11", Find: "상자만", With: str("x")}); !strings.Contains(err.Error(), `not found in ""`) {
+		t.Errorf("box text through its anchor: %v", err)
+	}
+	for _, track := range []bool{false, true} {
+		res := applyOps(t, src, track,
+			Op{Op: "set_text", Loc: "s0/p11", Text: str("새 글")},
+			Op{Op: "replace", Loc: "s0/p10", Find: "닻", With: str("바뀐")},
+			Op{Op: "replace", Loc: "s0/p10/t0/r0/c1", Find: "홑문단", With: str("고친")},
+		)
+		got := viewTexts(t, res.Data, model.ViewAccepted)
+		want := map[string]string{
+			"s0/p11": "새 글", "s0/p11#box": "상자만 있는 글",
+			"s0/p10": "바뀐 문단 글", "s0/p10#box": "상자 첫째\n상자 둘째",
+			"s0/p10/t0/r0/c1": "고친 칸", "s0/p10/t0/r0/c1#box": "홑칸 상자",
+		}
+		for loc, w := range want {
+			if got[loc] != w {
+				t.Errorf("track=%v %s = %q, want %q", track, loc, got[loc], w)
+			}
+		}
+	}
+}
+
+// Every location the reader lists is one apply takes: an edit at it
+// changes that block and no other. Text-box blocks are the exception and
+// are refused.
+func TestReaderLocsAreApplyLocs(t *testing.T) {
+	src := boxDoc(t)
+	blocks := parse(t, src).Blocks
+	edited, refused := 0, 0
+	for _, track := range []bool{false, true} {
+		for _, b := range blocks {
+			op := Op{Op: "set_text", Loc: b.Loc, Text: str("채움")}
+			want := "채움"
+			if f := strings.Fields(b.Text); len(f) > 0 {
+				op = Op{Op: "replace", Loc: b.Loc, Find: f[0], With: str("바뀜"), All: true}
+				want = strings.ReplaceAll(b.Text, f[0], "바뀜")
+			}
+			if b.Kind == model.KindBox {
+				if err := runErr(t, src, track, op); !strings.Contains(err.Error(), "text-box text") {
+					t.Errorf("track=%v %s: %v", track, b.Loc, err)
+				}
+				refused++
+				continue
+			}
+			res, err := Apply(src, &Spec{Ops: []Op{op}}, Options{Track: track, Author: "Tester", Date: testDate})
+			if err != nil {
+				t.Errorf("track=%v %s: %v", track, b.Loc, err)
+				continue
+			}
+			edited++
+			after := parse(t, res.Data).InView(model.ViewAccepted).Blocks
+			if len(after) != len(blocks) {
+				t.Errorf("track=%v %s: %d blocks, want %d", track, b.Loc, len(after), len(blocks))
+				continue
+			}
+			for i, a := range after {
+				w := blocks[i].Text
+				if blocks[i].Loc == b.Loc {
+					w = want
+				}
+				if a.Loc != blocks[i].Loc || a.Text != w {
+					t.Errorf("track=%v edit at %s: %s = %q, want %s = %q", track, b.Loc, a.Loc, a.Text, blocks[i].Loc, w)
+				}
+			}
+		}
+	}
+	if refused != 2*4 || edited != 2*(len(blocks)-4) {
+		t.Errorf("edited %d, refused %d of %d blocks", edited, refused, len(blocks))
 	}
 }

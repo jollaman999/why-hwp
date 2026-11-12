@@ -239,19 +239,36 @@ func readSection(f *zip.File, sec int, doc *model.Document) error {
 		}
 		loc := fmt.Sprintf("s%d/p%d", sec, p)
 		p++
-		i := len(doc.Blocks)
-		doc.Blocks = append(doc.Blocks, model.Block{Loc: loc, Kind: model.KindPara})
-		pt, err := w.para(loc)
-		if err != nil {
+		if err := w.block(loc, model.KindPara); err != nil {
 			return err
 		}
-		b := &doc.Blocks[i]
-		b.Text = pt.spans.Text(model.ViewAccepted)
-		if pt.spans.Changed() {
-			b.Spans = pt.spans
-		}
-		b.Break, b.Whole = pt.brk, pt.whole
 	}
+}
+
+// block reads one hp:p into a block of its own at loc. The cell blocks of
+// its tables follow it, then a text-box block when it anchors text boxes.
+func (w *walker) block(loc string, kind model.Kind) error {
+	doc := w.doc
+	i := len(doc.Blocks)
+	doc.Blocks = append(doc.Blocks, model.Block{Loc: loc, Kind: kind})
+	pt, err := w.para(loc)
+	if err != nil {
+		return err
+	}
+	b := &doc.Blocks[i]
+	b.Text = pt.spans.Text(model.ViewAccepted)
+	if pt.spans.Changed() {
+		b.Spans = pt.spans
+	}
+	b.Break, b.Whole = pt.brk, pt.whole
+	if pt.box.Len() > 0 {
+		box := model.Block{Loc: loc + model.BoxSuffix, Kind: model.KindBox, Text: pt.box.Text(model.ViewAccepted)}
+		if pt.box.Changed() {
+			box.Spans = pt.box
+		}
+		doc.Blocks = append(doc.Blocks, box)
+	}
+	return nil
 }
 
 // walker turns section XML into blocks. Each method is called right after
@@ -275,6 +292,7 @@ type walker struct {
 // paraText is the text of one hp:p.
 type paraText struct {
 	spans model.Spans
+	box   model.Spans  // text of the text boxes anchored in it, one line per paragraph
 	brk   model.Change // change that covers the paragraph break
 	whole model.Change // change that covers the whole paragraph, break included
 }
@@ -327,18 +345,17 @@ func (w *walker) content() model.Change {
 	return c
 }
 
-// para reads one hp:p and returns its own text. Tables found in it are
-// added to the document as cell blocks under loc/tN.
+// para reads one hp:p and returns its own text and, apart from it, the
+// text of its text boxes. Tables found in it are added to the document as
+// cell blocks under loc/tN.
 func (w *walker) para(loc string) (paraText, error) {
 	saveBrk, saveCover := w.brk, w.cover
 	w.brk, w.cover = 0, model.Inserted|model.Deleted
 	defer func() { w.brk, w.cover = saveBrk, saveCover }()
 
-	var sp model.Spans
+	var sp, box model.Spans
 	tables := 0
 	depth := 0
-	afterBox := false
-	var boxEnd model.Change
 	for {
 		tok, err := w.dec.Token()
 		if err != nil {
@@ -357,16 +374,8 @@ func (w *walker) para(loc string) (paraText, error) {
 			}
 			switch t.Name.Local {
 			case "t":
-				var tb model.Spans
-				if err := w.text(&tb); err != nil {
+				if err := w.text(&sp); err != nil {
 					return paraText{}, err
-				}
-				if tb.Len() > 0 {
-					if afterBox {
-						sp.Add("\n", boxEnd)
-						afterBox = false
-					}
-					sp.Append(tb)
 				}
 				continue
 			case "tbl":
@@ -398,12 +407,10 @@ func (w *walker) para(loc string) (paraText, error) {
 					return paraText{}, err
 				}
 				if text.Len() > 0 {
-					if sp.Len() > 0 {
-						sp.Add("\n", c)
+					if box.Len() > 0 {
+						box.Add("\n", c)
 					}
-					sp.Append(text)
-					afterBox = true
-					boxEnd = w.change()
+					box.Append(text)
 				}
 				continue
 			case "subList":
@@ -418,7 +425,7 @@ func (w *walker) para(loc string) (paraText, error) {
 		case xml.EndElement:
 			if depth == 0 {
 				brk := w.brk | w.change()
-				return paraText{spans: sp, brk: brk, whole: w.cover & brk}, nil
+				return paraText{spans: sp, box: box, brk: brk, whole: w.cover & brk}, nil
 			}
 			depth--
 		}
@@ -591,18 +598,18 @@ func (w *walker) table(loc string, start xml.StartElement) error {
 	}
 }
 
-// cell reads one hp:tc. The grid address (hp:cellAddr) comes after the
-// cell's paragraphs, so nested content is first recorded under a
-// placeholder location that is replaced once the address is known.
+// cell reads one hp:tc. A cell with one paragraph is one block at the
+// cell's location; a cell with more is one block per paragraph at
+// loc/pN. The grid address (hp:cellAddr) comes after the cell's
+// paragraphs, so everything is first recorded under a placeholder
+// location that is replaced once the address is known.
 func (w *walker) cell(tblLoc string, row, col int) error {
 	w.cells++
 	ph := fmt.Sprintf("\x00c%d", w.cells)
 	doc := w.doc
 	bi := len(doc.Blocks)
 	ti, mi, pi := len(doc.Summary.Tables), len(doc.Summary.Memos), len(doc.Summary.Pictures)
-	doc.Blocks = append(doc.Blocks, model.Block{Kind: model.KindCell})
 
-	var texts []paraText
 	paras := 0
 	depth := 0
 	for {
@@ -620,12 +627,10 @@ func (w *walker) cell(tblLoc string, row, col int) error {
 			}
 			switch t.Name.Local {
 			case "p":
-				text, err := w.para(fmt.Sprintf("%s/p%d", ph, paras))
-				if err != nil {
+				if err := w.block(fmt.Sprintf("%s/p%d", ph, paras), model.KindCell); err != nil {
 					return err
 				}
 				paras++
-				texts = append(texts, text)
 				continue
 			case "cellAddr":
 				if v, err := strconv.Atoi(attr(t, "rowAddr")); err == nil {
@@ -647,8 +652,13 @@ func (w *walker) cell(tblLoc string, row, col int) error {
 					*s = loc + strings.TrimPrefix(*s, ph)
 				}
 			}
-			for i := bi + 1; i < len(doc.Blocks); i++ {
-				fix(&doc.Blocks[i].Loc)
+			only := ph + "/p0"
+			for i := bi; i < len(doc.Blocks); i++ {
+				b := &doc.Blocks[i]
+				if paras == 1 && (b.Loc == only || b.Loc == only+model.BoxSuffix) {
+					b.Loc = ph + strings.TrimPrefix(b.Loc, only)
+				}
+				fix(&b.Loc)
 			}
 			for i := ti; i < len(doc.Summary.Tables); i++ {
 				fix(&doc.Summary.Tables[i].Loc)
@@ -658,18 +668,6 @@ func (w *walker) cell(tblLoc string, row, col int) error {
 			}
 			for i := pi; i < len(doc.Summary.Pictures); i++ {
 				fix(&doc.Summary.Pictures[i].Loc)
-			}
-			doc.Blocks[bi].Loc = loc
-			var sp model.Spans
-			for i, pt := range texts {
-				if i > 0 {
-					sp.Add("\n", texts[i-1].brk)
-				}
-				sp.Append(pt.spans)
-			}
-			doc.Blocks[bi].Text = sp.Text(model.ViewAccepted)
-			if sp.Changed() {
-				doc.Blocks[bi].Spans = sp
 			}
 			return nil
 		}

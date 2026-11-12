@@ -8,7 +8,10 @@ import (
 
 // Spec is the edit list read from JSON. Every loc in it names a block of
 // the input document as 'why-hwp text' prints it, so earlier operations do
-// not shift the numbers seen by later ones.
+// not shift the numbers seen by later ones. A cell with several paragraphs
+// is printed as one block per paragraph (.../c2/p0, .../c2/p1); the bare
+// cell loc still names its first paragraph. Text-box blocks (loc ending in
+// "#box") are read-only and every op refuses them.
 type Spec struct {
 	Ops []Op `json:"ops"`
 }

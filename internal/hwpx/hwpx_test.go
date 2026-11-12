@@ -170,14 +170,17 @@ func TestStructure(t *testing.T) {
 		"para s0/p1 가\t나\n다",
 		"para s0/p2 넣음",
 		"para s0/p3 ",
-		"cell s0/p3/t0/r0/c0 병합\n둘째 줄",
-		"cell s0/p3/t0/r0/c2 바깥 (A)\n",
+		"cell s0/p3/t0/r0/c0/p0 병합",
+		"cell s0/p3/t0/r0/c0/p1 둘째 줄",
+		"cell s0/p3/t0/r0/c2/p0 바깥 (A)",
+		"cell s0/p3/t0/r0/c2/p1 ",
 		"cell s0/p3/t0/r0/c2/p1/t0/r0/c0 안1",
 		"cell s0/p3/t0/r0/c2/p1/t0/r0/c1 안2 (B)",
 		"cell s0/p3/t0/r1/c0 a",
 		"cell s0/p3/t0/r1/c1 b",
 		"cell s0/p3/t0/r1/c2 c",
-		"para s0/p4 상자 1\n상자 2\n본문",
+		"para s0/p4 본문",
+		"box s0/p4#box 상자 1\n상자 2",
 		"para s1/p0 둘째 구역",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -269,7 +272,8 @@ func TestTrackedChanges(t *testing.T) {
 			"s0/p1 새 글 (B)",
 			"s0/p2 넣은 문단",
 			"s0/p4 ",
-			"s0/p4/t0/r0/c0 가\n다",
+			"s0/p4/t0/r0/c0/p0 가",
+			"s0/p4/t0/r0/c0/p2 다",
 			"s0/p5 ",
 			"s0/p6 끝 글",
 		}},
@@ -278,7 +282,9 @@ func TestTrackedChanges(t *testing.T) {
 			"s0/p1 옛 글 (A)",
 			"s0/p3 지운 문단",
 			"s0/p4 ",
-			"s0/p4/t0/r0/c0 가\n나\n다",
+			"s0/p4/t0/r0/c0/p0 가",
+			"s0/p4/t0/r0/c0/p1 나",
+			"s0/p4/t0/r0/c0/p2 다",
 			"s0/p5 ",
 		}},
 		{model.ViewMarkup, []string{
@@ -287,7 +293,9 @@ func TestTrackedChanges(t *testing.T) {
 			"s0/p2 [+넣은 문단\n+]",
 			"s0/p3 [-지운 문단\n-]",
 			"s0/p4 ",
-			"s0/p4/t0/r0/c0 가\n[-나\n-]다",
+			"s0/p4/t0/r0/c0/p0 가",
+			"s0/p4/t0/r0/c0/p1 [-나\n-]",
+			"s0/p4/t0/r0/c0/p2 다",
 			"s0/p5 [+\n+]",
 			"s0/p6 [+끝 글+]",
 		}},
@@ -307,7 +315,10 @@ func TestTrackedChanges(t *testing.T) {
 	if b := doc.Blocks[3]; b.Text != "" || b.Break != model.Deleted || b.Whole != model.Deleted {
 		t.Errorf("raw s0/p3 = %+v", b)
 	}
-	if b := doc.Blocks[6]; b.Break != model.Inserted || b.Whole != 0 {
+	if b := doc.Blocks[6]; b.Loc != "s0/p4/t0/r0/c0/p1" || b.Text != "" || b.Break != model.Deleted || b.Whole != model.Deleted {
+		t.Errorf("raw cell paragraph = %+v", b)
+	}
+	if b := doc.Blocks[8]; b.Break != model.Inserted || b.Whole != 0 {
 		t.Errorf("raw s0/p5 = %+v", b)
 	}
 	if len(doc.Summary.Pictures) != 1 || doc.Summary.Pictures[0].Loc != "s0/p5" {

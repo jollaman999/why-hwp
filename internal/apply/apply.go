@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jollaman999/why-hwp/internal/hwpx"
+	"github.com/jollaman999/why-hwp/internal/model"
 )
 
 // Options controls how edits are recorded.
@@ -277,8 +278,12 @@ func atoi(b []byte) int {
 var locRe = regexp.MustCompile(`^s(\d+)/p\d+(?:/t\d+/r\d+/c\d+(?:/p\d+)?)*$`)
 
 // resolve finds the paragraph a loc names. A cell loc names the cell's
-// first paragraph; cell is then the cell.
+// first paragraph; cell is then the cell. The location of text-box text
+// names no paragraph that can be edited.
 func (ed *editor) resolve(loc string) (p *para, cell *container, err error) {
+	if strings.HasSuffix(loc, model.BoxSuffix) {
+		return nil, nil, fmt.Errorf("loc %q is text-box text, which apply cannot edit", loc)
+	}
 	m := locRe.FindStringSubmatch(loc)
 	if m == nil {
 		return nil, nil, fmt.Errorf("bad loc %q (want e.g. s0/p3 or s0/p3/t0/r1/c2)", loc)
@@ -531,7 +536,7 @@ func (ed *editor) run(o *Op) error {
 		return nil
 
 	case "replace":
-		p, _, err := ed.resolve(o.Loc)
+		p, cell, err := ed.resolve(o.Loc)
 		if err != nil {
 			return err
 		}
@@ -554,6 +559,9 @@ func (ed *editor) run(o *Op) error {
 			i++
 		}
 		switch {
+		case len(hits) == 0 && cell != nil && len(cell.paras) > 1:
+			return fmt.Errorf("%s: %q not found in %q; cell %s has %d paragraphs and its loc names the first, address the others as %s/pN",
+				p.loc, o.Find, string(text), o.Loc, len(cell.paras), o.Loc)
 		case len(hits) == 0:
 			return fmt.Errorf("%s: %q not found in %q", p.loc, o.Find, string(text))
 		case len(hits) > 1 && !o.All:
