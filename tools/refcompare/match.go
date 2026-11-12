@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -206,7 +208,7 @@ type pdfResult struct {
 	RefWords, CandWords int
 	Matched             int // reference words whose every character has a partner
 	Substituted         int // characters paired by position only (different code points)
-	Reordered           int // words paired by text and position, outside reading order
+	Reordered           int // reference words paired with other words than reading order alone pairs them with (see pairByPlace)
 	PageMoves           int // reference words paired with text on another page number
 	RefOnly, CandOnly   int // words with a character that has no partner
 	MemoSkipped         int
@@ -365,29 +367,13 @@ func pairChars(a, b *charSeq) (pairs, subst [][2]int) {
 	gap := func(ea, eb int) {
 		ca0, ca1 := a.start[pa], a.start[ea]
 		cb0, cb1 := b.start[pb], b.start[eb]
-		inner := lcsPairs(a.text[ca0:ca1], b.text[cb0:cb1])
-		prevA, prevB := ca0, cb0
-		flush := func(na, nb int) {
-			n := na - prevA
-			if n <= 0 || n > maxSubst || nb-prevB != n {
-				return
-			}
-			for k := 0; k < n; k++ {
-				if !symbolSubst(a.text[prevA+k], b.text[prevB+k]) {
-					return
-				}
-			}
-			for k := 0; k < n; k++ {
-				subst = append(subst, [2]int{prevA + k, prevB + k})
-			}
+		p, s := alignChars(a.text[ca0:ca1], b.text[cb0:cb1])
+		for _, x := range p {
+			pairs = append(pairs, [2]int{x[0] + ca0, x[1] + cb0})
 		}
-		for _, p := range inner {
-			ia, ib := p[0]+ca0, p[1]+cb0
-			flush(ia, ib)
-			pairs = append(pairs, [2]int{ia, ib})
-			prevA, prevB = ia+1, ib+1
+		for _, x := range s {
+			subst = append(subst, [2]int{x[0] + ca0, x[1] + cb0})
 		}
-		flush(ca1, cb1)
 	}
 	for _, an := range anchors {
 		gap(an[0], an[1])
@@ -398,6 +384,503 @@ func pairChars(a, b *charSeq) (pairs, subst [][2]int) {
 	}
 	gap(len(a.words), len(b.words))
 	return pairs, subst
+}
+
+// alignChars pairs two runs of characters: the characters of their longest
+// common subsequence, and a run of up to maxSubst characters left between two
+// of them, equal in length on both sides, as substitutions when every
+// character of it may be a symbol reported differently (see symbolSubst).
+// The indexes are into at and bt.
+func alignChars(at, bt []string) (pairs, subst [][2]int) {
+	prevA, prevB := 0, 0
+	flush := func(na, nb int) {
+		n := na - prevA
+		if n <= 0 || n > maxSubst || nb-prevB != n {
+			return
+		}
+		for k := 0; k < n; k++ {
+			if !symbolSubst(at[prevA+k], bt[prevB+k]) {
+				return
+			}
+		}
+		for k := 0; k < n; k++ {
+			subst = append(subst, [2]int{prevA + k, prevB + k})
+		}
+	}
+	for _, p := range lcsPairs(at, bt) {
+		flush(p[0], p[1])
+		pairs = append(pairs, p)
+		prevA, prevB = p[0]+1, p[1]+1
+	}
+	flush(len(at), len(bt))
+	return pairs, subst
+}
+
+// pairByPlace pairs the characters of a and b by where their words are on
+// the page, and falls back on reading order (see pairChars) only for the
+// words that are not at the same place as a partner. Reading order alone
+// pairs a repeated word ("-" in hundreds of table cells, "x" in a formula)
+// with whichever instance comes next in the other PDF's order, and the two
+// orders differ wherever a line is grouped differently (a fraction a point
+// lower) or table cells interleave differently; such a pair measures the
+// distance between two different words.
+//
+// The steps, each on the words that the steps before left without a paired
+// character, and pages with their own page number only:
+//
+//  1. A first fit of every page (see firstFits).
+//  2. Words with the same text at the same place (see samePlace) are
+//     paired, nearest first.
+//  3. Words at the same place with different text are grouped and paired
+//     character by character, with substitutions (see alignChars), when
+//     the group is one word split differently: every character of the
+//     shorter side is paired and it is at least half as long as the other.
+//     "5)" on top of "7)" is not such a group.
+//  4. Words with the same text anywhere on the page are paired so that the
+//     sum of their distances is smallest (see assign). These are words that
+//     moved; the distance to their own new place is measured, not that to
+//     an instance of the same text far away.
+//  5. The pairs that reading order gives for the whole document are kept
+//     where both characters are still free. This pairs what the steps
+//     before cannot: a split word that also moved, and words that went to
+//     another page (see pairLeftovers for the rest of those).
+//
+// Pairing is one to one, so a moved word does not hide behind another
+// instance of its text: that instance has its own partner. When it has
+// not, because a block of lines moved by exactly the distance between two
+// instances, the instance left over at the end of the block is paired far
+// away, and the largest deviation is never below the move of the block.
+//
+// order and orderSubst are what pairChars gives for the whole of a and b.
+func pairByPlace(ref, cand *pdfWords, a, b *charSeq, order, orderSubst [][2]int, mode string) (pairs, subst [][2]int) {
+	f0 := firstFits(ref, cand, a, b, order, mode)
+	pairedA := make([]bool, len(a.text))
+	pairedB := make([]bool, len(b.text))
+	add := func(i, j int, s bool) {
+		pairedA[i], pairedB[j] = true, true
+		if s {
+			subst = append(subst, [2]int{i, j})
+		} else {
+			pairs = append(pairs, [2]int{i, j})
+		}
+	}
+	free := func(c *charSeq, paired []bool, pos int) bool {
+		for k := c.start[pos]; k < c.start[pos+1]; k++ {
+			if paired[k] {
+				return false
+			}
+		}
+		return c.start[pos+1] > c.start[pos]
+	}
+	byPage := func(d *pdfWords, c *charSeq, paired []bool) map[int][]int {
+		m := map[int][]int{}
+		for pos, wi := range c.order {
+			if free(c, paired, pos) {
+				m[d.Words[wi].Page] = append(m[d.Words[wi].Page], pos)
+			}
+		}
+		return m
+	}
+	// Pages are taken in order so that the pairs, and so the sums of the
+	// fits, come out the same on every run.
+	pages := func(m map[int][]int) []int {
+		return slices.Sorted(maps.Keys(m))
+	}
+
+	// Steps 2 and 4: words with the same text on the same page. With gate
+	// only words at the same place are paired, nearest first; without it
+	// the words are paired so that the sum of the distances is smallest
+	// (see assign), so that a block of lines moved as a whole keeps its
+	// words together instead of a word taking a nearer stranger.
+	sameText := func(gate bool) {
+		refPos, candPos := byPage(ref, a, pairedA), byPage(cand, b, pairedB)
+		for _, page := range pages(refPos) {
+			f, ok := f0[page]
+			if !ok {
+				continue
+			}
+			byText := map[string][]int{}
+			for _, cp := range candPos[page] {
+				byText[b.words[cp]] = append(byText[b.words[cp]], cp)
+			}
+			pairWords := func(rp, cp int) {
+				for k := 0; k < a.start[rp+1]-a.start[rp]; k++ {
+					add(a.start[rp]+k, b.start[cp]+k, false)
+				}
+			}
+			if !gate {
+				refByText := map[string][]int{}
+				for _, rp := range refPos[page] {
+					refByText[a.words[rp]] = append(refByText[a.words[rp]], rp)
+				}
+				for _, t := range slices.Sorted(maps.Keys(refByText)) {
+					rps, cps := refByText[t], byText[t]
+					if len(cps) == 0 {
+						continue
+					}
+					cost := make([][]float64, len(rps))
+					for i, rp := range rps {
+						cost[i] = make([]float64, len(cps))
+						for j, cp := range cps {
+							cost[i][j], _ = samePlace(ref, cand, a.order[rp], b.order[cp], f)
+						}
+					}
+					for i, j := range assign(cost) {
+						if j >= 0 {
+							pairWords(rps[i], cps[j])
+						}
+					}
+				}
+				continue
+			}
+			type near struct {
+				rp, cp int
+				d      float64
+			}
+			var ns []near
+			for _, rp := range refPos[page] {
+				for _, cp := range byText[a.words[rp]] {
+					if d, same := samePlace(ref, cand, a.order[rp], b.order[cp], f); same {
+						ns = append(ns, near{rp, cp, d})
+					}
+				}
+			}
+			sort.SliceStable(ns, func(i, j int) bool {
+				if ns[i].d != ns[j].d {
+					return ns[i].d < ns[j].d
+				}
+				if ns[i].rp != ns[j].rp {
+					return ns[i].rp < ns[j].rp
+				}
+				return ns[i].cp < ns[j].cp
+			})
+			for _, n := range ns {
+				if free(a, pairedA, n.rp) && free(b, pairedB, n.cp) {
+					pairWords(n.rp, n.cp)
+				}
+			}
+		}
+	}
+	sameText(true)
+
+	// Step 3: different text at the same place.
+	refPos, candPos := byPage(ref, a, pairedA), byPage(cand, b, pairedB)
+	for _, page := range pages(refPos) {
+		rps := refPos[page]
+		f, ok := f0[page]
+		if !ok {
+			continue
+		}
+		cps := candPos[page]
+		parent := make([]int, len(rps)+len(cps))
+		for i := range parent {
+			parent[i] = i
+		}
+		var root func(int) int
+		root = func(i int) int {
+			for parent[i] != i {
+				parent[i] = parent[parent[i]]
+				i = parent[i]
+			}
+			return i
+		}
+		for i, rp := range rps {
+			for j, cp := range cps {
+				if _, ok := samePlace(ref, cand, a.order[rp], b.order[cp], f); ok {
+					parent[root(i)] = root(len(rps) + j)
+				}
+			}
+		}
+		groups := map[int][2][]int{}
+		for i, rp := range rps {
+			g := groups[root(i)]
+			g[0] = append(g[0], rp)
+			groups[root(i)] = g
+		}
+		for j, cp := range cps {
+			g := groups[root(len(rps)+j)]
+			g[1] = append(g[1], cp)
+			groups[root(len(rps)+j)] = g
+		}
+		keys := make([]int, 0, len(groups))
+		for k := range groups {
+			keys = append(keys, k)
+		}
+		sort.Ints(keys)
+		for _, k := range keys {
+			g := groups[k]
+			if len(g[0]) == 0 || len(g[1]) == 0 {
+				continue
+			}
+			ga, ia := groupChars(a, g[0])
+			gb, ib := groupChars(b, g[1])
+			p, s := alignChars(ga, gb)
+			short, long := min(len(ga), len(gb)), max(len(ga), len(gb))
+			if len(p)+len(s) < short || 2*short < long {
+				continue
+			}
+			for _, x := range p {
+				add(ia[x[0]], ib[x[1]], false)
+			}
+			for _, x := range s {
+				add(ia[x[0]], ib[x[1]], true)
+			}
+		}
+	}
+
+	// Step 4: same text anywhere on the page.
+	sameText(false)
+
+	// Step 5: reading order, where both characters are still free.
+	for _, x := range order {
+		if !pairedA[x[0]] && !pairedB[x[1]] {
+			add(x[0], x[1], false)
+		}
+	}
+	for _, x := range orderSubst {
+		if !pairedA[x[0]] && !pairedB[x[1]] {
+			add(x[0], x[1], true)
+		}
+	}
+	byRef := func(x, y [2]int) int { return x[0] - y[0] }
+	slices.SortFunc(pairs, byRef)
+	slices.SortFunc(subst, byRef)
+	return pairs, subst
+}
+
+// groupChars returns the characters of the words at the order positions ps
+// (sorted, so in reading order) and their indexes in c.
+func groupChars(c *charSeq, ps []int) ([]string, []int) {
+	sort.Ints(ps)
+	var text []string
+	var idx []int
+	for _, pos := range ps {
+		for k := c.start[pos]; k < c.start[pos+1]; k++ {
+			text = append(text, c.text[k])
+			idx = append(idx, k)
+		}
+	}
+	return text, idx
+}
+
+// assign pairs rows with columns of cost one to one so that the sum of the
+// costs of the pairs is smallest (the Hungarian method). It returns the
+// column of every row, -1 for a row left over when there are more rows than
+// columns.
+func assign(cost [][]float64) []int {
+	n, m := len(cost), 0
+	if n > 0 {
+		m = len(cost[0])
+	}
+	if n > m {
+		t := make([][]float64, m)
+		for j := range t {
+			t[j] = make([]float64, n)
+			for i := range n {
+				t[j][i] = cost[i][j]
+			}
+		}
+		out := make([]int, n)
+		for i := range out {
+			out[i] = -1
+		}
+		for j, i := range assign(t) {
+			out[i] = j
+		}
+		return out
+	}
+	// u and v are the potentials of rows and columns, p[j] the row (from
+	// 1) given column j, and column 0 is the free row being placed.
+	u := make([]float64, n+1)
+	v := make([]float64, m+1)
+	p := make([]int, m+1)
+	way := make([]int, m+1)
+	minv := make([]float64, m+1)
+	used := make([]bool, m+1)
+	for i := 1; i <= n; i++ {
+		p[0] = i
+		j0 := 0
+		for j := range minv {
+			minv[j], used[j] = math.Inf(1), false
+		}
+		for {
+			used[j0] = true
+			i0, delta, j1 := p[j0], math.Inf(1), 0
+			for j := 1; j <= m; j++ {
+				if used[j] {
+					continue
+				}
+				if c := cost[i0-1][j-1] - u[i0] - v[j]; c < minv[j] {
+					minv[j], way[j] = c, j0
+				}
+				if minv[j] < delta {
+					delta, j1 = minv[j], j
+				}
+			}
+			for j := 0; j <= m; j++ {
+				if used[j] {
+					u[p[j]] += delta
+					v[j] -= delta
+				} else {
+					minv[j] -= delta
+				}
+			}
+			j0 = j1
+			if p[j0] == 0 {
+				break
+			}
+		}
+		for j0 != 0 {
+			j1 := way[j0]
+			p[j0] = p[j1]
+			j0 = j1
+		}
+	}
+	out := make([]int, n)
+	for j := 1; j <= m; j++ {
+		if p[j] != 0 {
+			out[p[j]-1] = j - 1
+		}
+	}
+	return out
+}
+
+// samePlace reports whether reference word i, moved by the page fit f, and
+// candidate word j are at the same place: their boxes overlap horizontally
+// and their vertical positions (see pairY) are less than half the height of
+// the shorter box apart. It also returns the distance
+// between the middles of the two words, whether or not they are at the same
+// place.
+func samePlace(ref, cand *pdfWords, i, j int, f affine) (float64, bool) {
+	rw, cw := ref.Words[i], cand.Words[j]
+	ry, cy, _ := pairY(ref, cand, i, j)
+	x0, y := f.apply(rw.X0, ry)
+	x1, _ := f.apply(rw.X1, ry)
+	h := math.Min(f.S*(rw.Y1-rw.Y0), cw.Y1-cw.Y0)
+	dy := math.Abs(y - cy)
+	d := math.Hypot((x0+x1)/2-(cw.X0+cw.X1)/2, dy)
+	return d, math.Min(x1, cw.X1)-math.Max(x0, cw.X0) > 0 && dy < h/2
+}
+
+// firstFits returns a fit for every page number that both PDFs have and
+// that has a word on both sides. It is made, with fitPoints, from the edges
+// of the words whose text occurs once on the reference page and once on the
+// candidate page, as no repetition can make such a pair wrong. A page with
+// fewer than minScalePoints such edges is fitted from the reading-order
+// pairs (order) instead; with -fit scale and fewer than minScalePoints of
+// those, by translation only.
+func firstFits(ref, cand *pdfWords, a, b *charSeq, order [][2]int, mode string) map[int]affine {
+	count := func(d *pdfWords, c *charSeq) map[int]map[string]int {
+		m := map[int]map[string]int{}
+		for pos, wi := range c.order {
+			if c.words[pos] == "" {
+				continue
+			}
+			p := d.Words[wi].Page
+			if m[p] == nil {
+				m[p] = map[string]int{}
+			}
+			m[p][c.words[pos]]++
+		}
+		return m
+	}
+	rc, cc := count(ref, a), count(cand, b)
+	candAt := map[int]map[string]int{} // page -> text -> candidate word
+	for pos, wi := range b.order {
+		p := cand.Words[wi].Page
+		if cc[p][b.words[pos]] == 1 {
+			if candAt[p] == nil {
+				candAt[p] = map[string]int{}
+			}
+			candAt[p][b.words[pos]] = wi
+		}
+	}
+	type pts struct{ r, c []point }
+	uniq := map[int]*pts{}
+	for pos, wi := range a.order {
+		w := ref.Words[wi]
+		t := a.words[pos]
+		if t == "" || rc[w.Page][t] != 1 || cc[w.Page][t] != 1 {
+			continue
+		}
+		cj := candAt[w.Page][t]
+		cw := cand.Words[cj]
+		ry, cy, _ := pairY(ref, cand, wi, cj)
+		if uniq[w.Page] == nil {
+			uniq[w.Page] = &pts{}
+		}
+		u := uniq[w.Page]
+		u.r = append(u.r, point{w.X0, ry}, point{w.X1, ry})
+		u.c = append(u.c, point{cw.X0, cy}, point{cw.X1, cy})
+	}
+	inOrder := map[int]*pts{}
+	for _, e := range charEdges(ref, cand, a, b, order) {
+		if e.key.rp != e.key.cp {
+			continue
+		}
+		if inOrder[e.key.rp] == nil {
+			inOrder[e.key.rp] = &pts{}
+		}
+		u := inOrder[e.key.rp]
+		u.r = append(u.r, e.ref)
+		u.c = append(u.c, e.cand)
+	}
+	fits := map[int]affine{}
+	for p := range rc {
+		if _, ok := cc[p]; !ok {
+			continue
+		}
+		var u *pts
+		switch {
+		case uniq[p] != nil && len(uniq[p].r) >= minScalePoints:
+			u = uniq[p]
+		case inOrder[p] != nil:
+			u = inOrder[p]
+		default:
+			fits[p] = affine{S: 1}
+			continue
+		}
+		m := mode
+		if m == fitScale && len(u.r) < minScalePoints {
+			m = fitShift
+		}
+		fits[p] = fitPoints(u.r, u.c, m)
+	}
+	return fits
+}
+
+// charEdges returns the word edges of the paired characters (see edge).
+func charEdges(ref, cand *pdfWords, a, b *charSeq, pairs [][2]int) []edge {
+	var out []edge
+	for _, p := range pairs {
+		i, j := p[0], p[1]
+		wa, wb := ref.Words[a.word[i]], cand.Words[b.word[j]]
+		k := pageKey{wa.Page, wb.Page}
+		ry, cy, how := pairY(ref, cand, a.word[i], b.word[j])
+		if a.first[i] && b.first[j] {
+			out = append(out, edge{k, point{wa.X0, ry}, point{wb.X0, cy}, a.word[i], how})
+		}
+		if a.last[i] && b.last[j] {
+			out = append(out, edge{k, point{wa.X1, ry}, point{wb.X1, cy}, a.word[i], how})
+		}
+	}
+	return out
+}
+
+// partners returns, for every reference word, the candidate words its
+// characters are paired with.
+func partners(a, b *charSeq, sets ...[][2]int) map[int]map[int]bool {
+	m := map[int]map[int]bool{}
+	for _, s := range sets {
+		for _, p := range s {
+			wi := a.word[p[0]]
+			if m[wi] == nil {
+				m[wi] = map[int]bool{}
+			}
+			m[wi][b.word[p[1]]] = true
+		}
+	}
+	return m
 }
 
 // cp1252High holds the characters that Windows code page 1252 puts at
@@ -476,17 +959,17 @@ func pairY(ref, cand *pdfWords, i, j int) (ry, cy float64, how int) {
 // comparePDF pairs the text of ref and cand, fits each pair of pages and
 // measures how far the paired word edges are apart.
 //
-// Text is paired in reading order first (see pairChars). Words left over on
-// both sides with the same text are then paired by nearest position, which
-// catches words whose reading order differs (table cells whose lines
-// interleave differently) and words that moved to another page.
+// Text is paired by place first, and in reading order only where place does
+// not decide (see pairByPlace). Words left over on both sides with the same
+// text are then paired by nearest position, which catches words that moved
+// to another page.
 //
 // A word edge is compared where both PDFs have a word boundary at the same
 // character: the left edges of words that start with paired characters and
 // the right edges of words that end with paired characters. Each edge is the
 // point (x, vertical position of the word); pairY tells which position. The deviation is the larger of the
 // horizontal and vertical distance after the fit, in candidate points. Fits
-// are made from the reading-order pairs only. Words on another page number
+// are made from the pairs of pairByPlace only. Words on another page number
 // are counted in PageMoves and left out of the deviation.
 func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 	r := pdfResult{
@@ -515,7 +998,8 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 		p.Picture = p.RefWords == 0
 	}
 	a, b := explode(ref), explode(cand)
-	pairs, subst := pairChars(a, b)
+	order, orderSubst := pairChars(a, b)
+	pairs, subst := pairByPlace(ref, cand, a, b, order, orderSubst, o.Fit)
 	r.Substituted = len(subst)
 	for _, s := range subst {
 		if len(r.SubstSample) < sampleWords {
@@ -527,20 +1011,14 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 	pairedB := make([]bool, len(b.text))
 	moved := map[int]bool{}
 	var edges []edge
+	var all [][2]int
 	addPair := func(i, j int) {
 		pairedA[i], pairedB[j] = true, true
-		wa, wb := ref.Words[a.word[i]], cand.Words[b.word[j]]
-		k := pageKey{wa.Page, wb.Page}
-		if k.rp != k.cp {
+		all = append(all, [2]int{i, j})
+		if ref.Words[a.word[i]].Page != cand.Words[b.word[j]].Page {
 			moved[a.word[i]] = true
 		}
-		ry, cy, how := pairY(ref, cand, a.word[i], b.word[j])
-		if a.first[i] && b.first[j] {
-			edges = append(edges, edge{k, point{wa.X0, ry}, point{wb.X0, cy}, a.word[i], how})
-		}
-		if a.last[i] && b.last[j] {
-			edges = append(edges, edge{k, point{wa.X1, ry}, point{wb.X1, cy}, a.word[i], how})
-		}
+		edges = append(edges, charEdges(ref, cand, a, b, [][2]int{{i, j}})...)
 	}
 	for _, p := range pairs {
 		addPair(p[0], p[1])
@@ -591,7 +1069,13 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 		return affine{S: 1}
 	}
 
-	r.Reordered = pairLeftovers(ref, cand, a, b, pairedA, pairedB, fitFor, addPair)
+	pairLeftovers(ref, cand, a, b, pairedA, pairedB, fitFor, addPair)
+	inOrder := partners(a, b, order, orderSubst)
+	for wi, ps := range partners(a, b, all) {
+		if !maps.Equal(ps, inOrder[wi]) {
+			r.Reordered++
+		}
+	}
 	r.PageMoves = len(moved)
 	r.Edges = len(edges)
 
@@ -675,9 +1159,9 @@ const pagePenalty = 1e5
 
 // pairLeftovers pairs reference words that have no paired character with
 // candidate words of the same text that have none either, nearest first
-// after the fit. It returns the number of words paired.
+// after the fit.
 func pairLeftovers(ref, cand *pdfWords, a, b *charSeq, pairedA, pairedB []bool,
-	fitFor func(pageKey) affine, addPair func(i, j int)) int {
+	fitFor func(pageKey) affine, addPair func(i, j int)) {
 	free := func(c *charSeq, paired []bool, pos int) bool {
 		for k := c.start[pos]; k < c.start[pos+1]; k++ {
 			if paired[k] {
@@ -692,7 +1176,6 @@ func pairLeftovers(ref, cand *pdfWords, a, b *charSeq, pairedA, pairedB []bool,
 			pool[b.words[pos]] = append(pool[b.words[pos]], pos)
 		}
 	}
-	n := 0
 	for pos, wi := range a.order {
 		if !free(a, pairedA, pos) {
 			continue
@@ -717,9 +1200,7 @@ func pairLeftovers(ref, cand *pdfWords, a, b *charSeq, pairedA, pairedB []bool,
 		for k := 0; k < a.start[pos+1]-a.start[pos]; k++ {
 			addPair(a.start[pos]+k, b.start[cpos]+k)
 		}
-		n++
 	}
-	return n
 }
 
 // memoScale is the smallest page fit scale taken as a sign that Hancom

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"os"
@@ -480,5 +481,414 @@ func TestComparePDFLongSymbolRunIsUnmatched(t *testing.T) {
 	cand = testDoc(595, [][]string{{"a", "••", "b"}})
 	if r := comparePDF(ref, cand, opt); r.Substituted != 2 || r.RefOnly != 0 || r.CandOnly != 0 {
 		t.Errorf("got %s, want two substitutions", r)
+	}
+}
+
+// tableDoc is one page with a header line of words that occur once and a
+// table of cells: rows from y 200, 14pt apart, columns from x 100, 60pt
+// apart. A cell word is 6pt wide and 10pt high; cell gives its text, ""
+// for an empty cell.
+func tableDoc(rows, cols int, cell func(r, c int) string) *pdfWords {
+	d := &pdfWords{Pages: []pageSize{{595, 842}}}
+	for i, s := range []string{"표", "제목", "가나", "다라마", "바사"} {
+		x := 100 + 60*float64(i)
+		d.Words = append(d.Words, word{s, 0, x, 100, x + 20, 110})
+	}
+	for r := range rows {
+		for c := range cols {
+			if s := cell(r, c); s != "" {
+				x, y := 100+60*float64(c), 200+14*float64(r)
+				d.Words = append(d.Words, word{s, 0, x, y, x + 6, y + 10})
+			}
+		}
+	}
+	return d
+}
+
+// moveWords returns d with the words for which sel is true moved by dx, dy.
+func moveWords(d *pdfWords, sel func(w word) bool, dx, dy float64) *pdfWords {
+	out := &pdfWords{Pages: d.Pages}
+	for _, w := range d.Words {
+		if sel(w) {
+			w.X0, w.X1, w.Y0, w.Y1 = w.X0+dx, w.X1+dx, w.Y0+dy, w.Y1+dy
+		}
+		out.Words = append(out.Words, w)
+	}
+	return out
+}
+
+func dashes(r, c int) string { return "-" }
+
+func dashesAndZeros(r, c int) string {
+	if (r+c)%3 == 0 {
+		return "0"
+	}
+	return "-"
+}
+
+// cellAt selects the word of table cell (r, c) of tableDoc.
+func cellAt(r, c int) func(w word) bool {
+	x, y := 100+60*float64(c), 200+14*float64(r)
+	return func(w word) bool { return w.X0 == x && w.Y0 == y }
+}
+
+func rowAt(r int) func(w word) bool {
+	y := 200 + 14*float64(r)
+	return func(w word) bool { return w.Y0 == y }
+}
+
+func TestComparePDFRepeatedWordsMoved(t *testing.T) {
+	for _, fill := range []struct {
+		name string
+		cell func(r, c int) string
+	}{{"dashes", dashes}, {"dashes and zeros", dashesAndZeros}} {
+		ref := tableDoc(8, 5, fill.cell)
+		for _, fit := range []string{fitScale, fitShift, fitNone} {
+			opt := cmpOptions{Tol: 1, Fit: fit}
+			name := fill.name + ", -fit " + fit
+			if r := comparePDF(ref, ref, opt); !r.pass(opt) || r.MaxDev != 0 {
+				t.Errorf("%s: same table: %s", name, r)
+			}
+			// One cell 3pt to the right: it still overlaps its own
+			// place and no other cell is near.
+			r := comparePDF(ref, moveWords(ref, cellAt(3, 2), 3, 0), opt)
+			if r.pass(opt) || math.Abs(r.MaxDev-3) > 1e-9 || r.RefOnly != 0 || r.CandOnly != 0 {
+				t.Errorf("%s: one cell 3pt right: %s, want a failure with 3pt", name, r)
+			}
+			// One row a row lower, on top of the next row: one of the two
+			// rows there is 14pt from where it should be.
+			r = comparePDF(ref, moveWords(ref, rowAt(3), 0, 14), opt)
+			if r.pass(opt) || math.Abs(r.MaxDev-14) > 1e-9 || r.RefOnly != 0 || r.CandOnly != 0 {
+				t.Errorf("%s: one row a row lower: %s, want a failure with 14pt", name, r)
+			}
+			// Rows 3 on a row lower, as if a row had been put in: the
+			// words cannot all be paired with words at their places.
+			from3 := func(w word) bool { return w.Y0 >= 200+14*3 }
+			r = comparePDF(ref, moveWords(ref, from3, 0, 14), opt)
+			if r.pass(opt) || r.MaxDev < 14 || r.RefOnly != 0 || r.CandOnly != 0 {
+				t.Errorf("%s: rows from 3 a row lower: %s, want a failure with 14pt or more", name, r)
+			}
+			// One cell missing.
+			cand := &pdfWords{Pages: ref.Pages}
+			for _, w := range ref.Words {
+				if !cellAt(2, 1)(w) {
+					cand.Words = append(cand.Words, w)
+				}
+			}
+			r = comparePDF(ref, cand, opt)
+			if r.pass(opt) || r.RefOnly != 1 || r.CandOnly != 0 || r.RefOnlySample[0].Text != fill.cell(2, 1) {
+				t.Errorf("%s: one cell missing: %s %v, want it unmatched", name, r, r.RefOnlySample)
+			}
+		}
+	}
+}
+
+func TestComparePDFRepeatedWordMovedFarFromItsPlace(t *testing.T) {
+	// The candidate puts the dash of some cells 6.5pt to the left, off
+	// its place; every other cell holds a dash too. The deviation is the
+	// 6.5pt to the dash's own new place, not the distance to a dash in a
+	// cell far away.
+	ref := tableDoc(8, 5, dashes)
+	moved := func(w word) bool { return w.X0 == 100+60*2 && w.Y0 >= 200+14*5 }
+	cand := transform(moveWords(ref, moved, -6.5, 0), 1.27, 3, -8)
+	opt := cmpOptions{Tol: 1, Fit: fitScale}
+	r := comparePDF(ref, cand, opt)
+	if r.pass(opt) || math.Abs(r.MaxDev-6.5*1.27) > 1e-6 || r.RefOnly != 0 || r.CandOnly != 0 {
+		t.Errorf("got %s, want a failure with %.3fpt", r, 6.5*1.27)
+	}
+	if math.Abs(r.Page[0].Fit.S-1.27) > 1e-9 {
+		t.Errorf("fit scale %.6f, want 1.27", r.Page[0].Fit.S)
+	}
+	// The candidate repeats the header words once more at the foot of the
+	// page, where the reference has nothing. They are not once on both
+	// pages, so the first fit does not take them: it comes from the
+	// reading-order pairs, and the result is the same.
+	foot := &pdfWords{Pages: cand.Pages, Words: append([]word(nil), cand.Words...)}
+	for _, w := range cand.Words[:5] {
+		w.Y0, w.Y1 = w.Y0+600, w.Y1+600
+		foot.Words = append(foot.Words, w)
+	}
+	r = comparePDF(ref, foot, opt)
+	if math.Abs(r.MaxDev-6.5*1.27) > 1e-6 || r.RefOnly != 0 || r.CandOnly != 5 {
+		t.Errorf("header repeated at the foot: got %s, want %.3fpt and the five words unmatched", r, 6.5*1.27)
+	}
+}
+
+func TestComparePDFRepeatedWordsInAnotherReadingOrder(t *testing.T) {
+	// A fraction: two dashes sit 6pt above the others on the line. In the
+	// reference a tall word (a Type 3 box) holds the line together; the
+	// candidate's box for that word is short, so its reading order puts
+	// the raised dashes on a line of their own, before the rest. Paired in
+	// reading order, every dash would take another dash's partner.
+	line := func(tall float64) *pdfWords {
+		d := tableDoc(0, 0, nil)
+		d.Words = append(d.Words, word{"함수", 0, 100, 305 - tall/2, 130, 305 + tall/2})
+		for _, x := range []float64{140, 160, 180} {
+			d.Words = append(d.Words, word{"-", 0, x, 300, x + 6, 310})
+		}
+		for _, x := range []float64{200, 220} {
+			d.Words = append(d.Words, word{"-", 0, x, 294, x + 6, 304})
+		}
+		return d
+	}
+	ref, cand := line(30), line(10)
+	var order []string
+	for _, i := range readingOrder(cand) {
+		if cand.Words[i].Y0 > 200 {
+			order = append(order, fmt.Sprintf("%s@%.0f", cand.Words[i].Text, cand.Words[i].X0))
+		}
+	}
+	if got := strings.Join(order, " "); got != "-@200 -@220 함수@100 -@140 -@160 -@180" {
+		t.Fatalf("candidate reading order %s: the case below tests nothing", got)
+	}
+	for _, fit := range []string{fitScale, fitNone} {
+		opt := cmpOptions{Tol: 1, Fit: fit}
+		r := comparePDF(ref, transform(cand, 1, 0, 0), opt)
+		if !r.pass(opt) || r.MaxDev > 1e-9 {
+			t.Errorf("-fit %s: got %s, want every dash at its place", fit, r)
+		}
+	}
+}
+
+func TestComparePDFSplitWordAtItsPlace(t *testing.T) {
+	// The reference has "fx=" as one word, the candidate "f", "x" and "="
+	// (one PDF starts a word where a font changes), and the reading orders
+	// differ as in TestComparePDFRepeatedWordsInAnotherReadingOrder.
+	ref := tableDoc(0, 0, nil)
+	cand := tableDoc(0, 0, nil)
+	ref.Words = append(ref.Words, word{"함수", 0, 60, 290, 90, 320}, word{"fx=", 0, 100, 300, 130, 310}, word{"x", 0, 140, 300, 146, 310},
+		word{"-", 0, 200, 294, 206, 304})
+	cand.Words = append(cand.Words, word{"함수", 0, 60, 300, 90, 310}, word{"f", 0, 100, 300, 106, 310}, word{"x", 0, 110, 300, 116, 310},
+		word{"=", 0, 120, 300, 130, 310}, word{"x", 0, 140, 300, 146, 310}, word{"-", 0, 200, 294, 206, 304})
+	opt := cmpOptions{Tol: 1, Fit: fitNone}
+	r := comparePDF(ref, cand, opt)
+	if !r.pass(opt) || r.MaxDev > 1e-9 || r.Matched != len(ref.Words) {
+		t.Errorf("got %s, want every word paired at its place", r)
+	}
+	// Different words that only overlap are not a split word: "5)" on top
+	// of "7)" shares the ")" but is not paired by place.
+	ref = tableDoc(0, 0, nil)
+	cand = tableDoc(0, 0, nil)
+	ref.Words = append(ref.Words, word{"5)", 0, 100, 300, 112, 310}, word{"7)", 0, 100, 312, 112, 322})
+	cand.Words = append(cand.Words, word{"7)", 0, 100, 300, 112, 310})
+	r = comparePDF(ref, cand, opt)
+	if r.RefOnly != 1 || r.RefOnlySample[0].Text != "5)" || math.Abs(r.MaxDev-12) > 1e-9 {
+		t.Errorf("got %s %v, want 5) unmatched and 7) 12pt off", r, r.RefOnlySample)
+	}
+}
+
+func TestComparePDFBlockOfRepeatedWordsMoved(t *testing.T) {
+	// Footnotes two lines higher: every line moves by 25pt. A word that
+	// repeats from line to line may land on the place of another instance
+	// of itself and be paired with it, but the pairing is one to one, so
+	// the instances left over show the move: when every instance moves by
+	// the same distance, the pairs move by that much on average, and the
+	// largest deviation is never below it.
+	lines := [][]string{{"5)", "여기서의", "기대효과"}, {"6)", "다양한", "대한", "제품의"}, {"7)", "업체에서", "대한", "제품의"}, {"8)", "재정", "대한"}}
+	ref := tableDoc(0, 0, nil)
+	for i := range 16 {
+		for k := range 6 {
+			x, y := 60+50*float64(k), 300+20*float64(i)
+			ref.Words = append(ref.Words, word{fmt.Sprintf("본문%d", 6*i+k), 0, x, y, x + 30, y + 10})
+		}
+	}
+	for i, l := range lines {
+		for k, s := range l {
+			x, y := 60+50*float64(k), 700+12.5*float64(i)
+			ref.Words = append(ref.Words, word{s, 0, x, y, x + 30, y + 10})
+		}
+	}
+	notes := func(w word) bool { return w.Y0 >= 700 }
+	cand := moveWords(ref, notes, 0, -25)
+	for _, fit := range []string{fitScale, fitShift, fitNone} {
+		opt := cmpOptions{Tol: 1, Fit: fit}
+		r := comparePDF(ref, cand, opt)
+		if r.pass(opt) || r.MaxDev < 25-1e-6 || r.RefOnly != 0 || r.CandOnly != 0 {
+			t.Errorf("-fit %s: got %s, want a failure with 25pt or more and every word paired", fit, r)
+		}
+	}
+}
+
+func TestComparePDFSubstitutionAtItsPlace(t *testing.T) {
+	// A symbol font code against a plain minus at the same place, with the
+	// reading orders as in TestComparePDFRepeatedWordsInAnotherReadingOrder.
+	ref := tableDoc(0, 0, nil)
+	cand := tableDoc(0, 0, nil)
+	ref.Words = append(ref.Words, word{"함수", 0, 60, 290, 90, 320}, word{"a", 0, 100, 300, 106, 310}, word{"", 0, 110, 300, 116, 310},
+		word{"b", 0, 200, 294, 206, 304})
+	cand.Words = append(cand.Words, word{"함수", 0, 60, 300, 90, 310}, word{"a", 0, 100, 300, 106, 310}, word{"-", 0, 110, 300, 116, 310},
+		word{"b", 0, 200, 294, 206, 304})
+	opt := cmpOptions{Tol: 1, Fit: fitNone}
+	r := comparePDF(ref, cand, opt)
+	if !r.pass(opt) || r.Substituted != 1 || r.MaxDev > 1e-9 {
+		t.Errorf("got %s, want one substitution at its place", r)
+	}
+}
+
+func TestAssignIsCheapest(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	var best func(cost [][]float64, row int, used []bool) float64
+	best = func(cost [][]float64, row int, used []bool) float64 {
+		if row == len(cost) {
+			return 0
+		}
+		b := math.Inf(1)
+		for j := range cost[row] {
+			if !used[j] {
+				used[j] = true
+				b = math.Min(b, cost[row][j]+best(cost, row+1, used))
+				used[j] = false
+			}
+		}
+		return b
+	}
+	for n := 1; n <= 5; n++ {
+		for m := 1; m <= 5; m++ {
+			for range 20 {
+				cost := make([][]float64, n)
+				for i := range cost {
+					cost[i] = make([]float64, m)
+					for j := range cost[i] {
+						cost[i][j] = float64(rng.Intn(20))
+					}
+				}
+				got := assign(cost)
+				sum, seen, given := 0.0, map[int]bool{}, 0
+				for i, j := range got {
+					if j < 0 {
+						continue
+					}
+					if seen[j] {
+						t.Fatalf("%dx%d: column %d given twice: %v", n, m, j, got)
+					}
+					seen[j] = true
+					sum += cost[i][j]
+					given++
+				}
+				if given != min(n, m) {
+					t.Fatalf("%dx%d: %d rows given a column, want %d", n, m, given, min(n, m))
+				}
+				var want float64
+				if n <= m {
+					want = best(cost, 0, make([]bool, m))
+				} else {
+					tr := make([][]float64, m)
+					for j := range tr {
+						tr[j] = make([]float64, n)
+						for i := range n {
+							tr[j][i] = cost[i][j]
+						}
+					}
+					want = best(tr, 0, make([]bool, n))
+				}
+				if sum != want {
+					t.Fatalf("%dx%d %v: sum %v, want %v", n, m, cost, sum, want)
+				}
+			}
+		}
+	}
+}
+
+func TestComparePDFRepeatedWordsMovedTogether(t *testing.T) {
+	ref := tableDoc(8, 5, dashes)
+	from3 := func(w word) bool { return w.Y0 >= 200+14*3 }
+	row3 := rowAt(3)
+	cases := []struct {
+		name   string
+		cand   *pdfWords
+		maxDev float64
+	}{
+		// Each dash of the row lands between its own place and the
+		// next cell's: it is 40pt from its own place and 20pt from the
+		// next cell's. Taking the nearer stranger first would leave the
+		// first dash 160pt from the last free one.
+		{"row 3 40pt to the right", moveWords(ref, row3, 40, 0), 40},
+		// Rows from 3 down by 0.6 of a row: every dash is 8.4pt below its
+		// place and 5.6pt above the place of the dash below it.
+		{"rows from 3 8.4pt lower", moveWords(ref, from3, 0, 8.4), 8.4},
+	}
+	for _, c := range cases {
+		opt := cmpOptions{Tol: 1, Fit: fitNone}
+		r := comparePDF(ref, c.cand, opt)
+		if r.pass(opt) || math.Abs(r.MaxDev-c.maxDev) > 1e-9 || r.RefOnly != 0 || r.CandOnly != 0 {
+			t.Errorf("%s: got %s, want a failure with %.1fpt", c.name, r, c.maxDev)
+		}
+	}
+}
+
+func TestComparePDFOverlappingRepeatedWords(t *testing.T) {
+	// Two "1" whose boxes overlap: each also overlaps the other's partner,
+	// and the nearer is its own.
+	ref := tableDoc(0, 0, nil)
+	ref.Words = append(ref.Words, word{"1", 0, 100, 300, 106, 310}, word{"1", 0, 104, 300, 110, 310})
+	opt := cmpOptions{Tol: 1, Fit: fitNone}
+	if r := comparePDF(ref, ref, opt); !r.pass(opt) || r.MaxDev != 0 {
+		t.Errorf("got %s, want both at their places", r)
+	}
+	// The candidate puts the first 3pt lower and the second 2pt higher,
+	// so its reading order has the second first. Each is still nearest
+	// its own place: 3pt and 2pt off, not 4pt across.
+	cand := tableDoc(0, 0, nil)
+	cand.Words = append(cand.Words, word{"1", 0, 100, 303, 106, 313}, word{"1", 0, 104, 298, 110, 308})
+	if r := comparePDF(ref, cand, opt); math.Abs(r.MaxDev-3) > 1e-9 || r.RefOnly != 0 || r.CandOnly != 0 {
+		t.Errorf("got %s, want 3pt", r)
+	}
+}
+
+func TestComparePDFRepeatedWordsPairedByDistanceBothWays(t *testing.T) {
+	// Two dashes off their places: the first 10pt to the right, the second
+	// 10pt to the left and 10pt down. Across alone, each would be at the
+	// other's place.
+	ref := tableDoc(0, 0, nil)
+	ref.Words = append(ref.Words, word{"-", 0, 100, 300, 106, 310}, word{"-", 0, 110, 330, 116, 340})
+	cand := tableDoc(0, 0, nil)
+	cand.Words = append(cand.Words, word{"-", 0, 110, 300, 116, 310}, word{"-", 0, 100, 340, 106, 350})
+	opt := cmpOptions{Tol: 1, Fit: fitNone}
+	if r := comparePDF(ref, cand, opt); math.Abs(r.MaxDev-10) > 1e-9 || r.RefOnly != 0 || r.CandOnly != 0 {
+		t.Errorf("got %s, want 10pt", r)
+	}
+}
+
+func TestComparePDFShortWordOnALongOne(t *testing.T) {
+	// A one-letter word on top of a long different word is not that word
+	// split. It stays free for the reference's own "의", 40pt lower, and
+	// that move is measured.
+	ref := tableDoc(0, 0, nil)
+	ref.Words = append(ref.Words, word{"주사부위의통증,", 0, 100, 300, 180, 310}, word{"의", 0, 140, 340, 150, 350})
+	cand := tableDoc(0, 0, nil)
+	cand.Words = append(cand.Words, word{"의", 0, 140, 300, 150, 310})
+	opt := cmpOptions{Tol: 1, Fit: fitNone}
+	r := comparePDF(ref, cand, opt)
+	if r.RefOnly != 1 || r.RefOnlySample[0].Text != "주사부위의통증," || r.CandOnly != 0 || math.Abs(r.MaxDev-40) > 1e-9 {
+		t.Errorf("got %s %v, want the long word unmatched and 의 40pt off", r, r.RefOnlySample)
+	}
+}
+
+func TestComparePDFSplitWordMoved(t *testing.T) {
+	// The candidate splits the word and puts it 40pt lower, off its place:
+	// reading order pairs it, and its move is measured.
+	ref := tableDoc(0, 0, nil)
+	cand := tableDoc(0, 0, nil)
+	ref.Words = append(ref.Words, word{"온·오프라인", 0, 100, 300, 160, 310}, word{"끝", 0, 100, 400, 110, 410})
+	cand.Words = append(cand.Words, word{"온·", 0, 100, 340, 120, 350}, word{"오프라인", 0, 120, 340, 160, 350}, word{"끝", 0, 100, 400, 110, 410})
+	opt := cmpOptions{Tol: 1, Fit: fitNone}
+	r := comparePDF(ref, cand, opt)
+	if r.pass(opt) || r.RefOnly != 0 || r.CandOnly != 0 || math.Abs(r.MaxDev-40) > 1e-9 {
+		t.Errorf("got %s, want every word paired and a failure with 40pt", r)
+	}
+}
+
+func TestComparePDFWorstOfEqualDeviationsInReadingOrder(t *testing.T) {
+	// "a" (narrow, off its place) and "b" (wide, still at its place) both
+	// move by 3pt. The first in reading order is reported, whichever way
+	// each was paired.
+	ref := tableDoc(0, 0, nil)
+	ref.Words = append(ref.Words, word{"a", 0, 100, 300, 102, 310}, word{"b", 0, 200, 300, 230, 310})
+	cand := moveWords(ref, func(w word) bool { return w.Text == "a" }, 3, 0)
+	cand = moveWords(cand, func(w word) bool { return w.Text == "b" }, 0, 3)
+	opt := cmpOptions{Tol: 1, Fit: fitNone}
+	r := comparePDF(ref, cand, opt)
+	if math.Abs(r.MaxDev-3) > 1e-9 || r.Worst.Text != "a" {
+		t.Errorf("got %s at %q, want 3pt at a", r, r.Worst.Text)
 	}
 }

@@ -99,27 +99,65 @@ passes, 1 when one fails or cannot be compared, 2 for bad usage.
 2. Words are put in reading order (page, line from the top, left to right).
    The two PDFs write text in different orders, so the content stream order is
    not used.
-3. Same words are paired in order (longest common subsequence). Between two
-   paired words the remaining text is paired character by character, so a word
-   that one PDF splits (`온·오` against `온·` + `오`) still pairs. Words left over
-   on both sides with the same text are then paired by nearest position; these
-   are words whose reading order differs (table cells) or that moved to another
-   page.
-4. A short run (up to 2) of different characters at the same place is a
+3. Every page gets a first fit of the `-fit` kind, used only to pair words.
+   It is made from the words whose text occurs once on the reference page and
+   once on the candidate page, because no repetition can pair those wrongly.
+   A page with fewer than 3 such words takes it from the words paired in
+   reading order (see the last step of 4).
+4. Words are paired one to one, in these steps. Each step takes the words
+   that the steps before left without a partner, and the first four pair
+   words on the same page number only.
+   1. Same text at the same place, nearest first. Two words are at the same
+      place when, after the first fit, their boxes overlap sideways and their
+      vertical positions are less than half the height of the shorter box
+      apart.
+   2. Different text at the same place, when it is one word split differently
+      (`온·오` against `온·` + `오`): the words that overlap are paired
+      character by character, provided every character of the shorter side
+      pairs and that side is at least half as long as the other. `5)` on top
+      of `7)` is not paired.
+   3. Same text anywhere on the page, so that the sum of the distances is
+      smallest. These are words that moved, and the distance to their own new
+      place is what is measured.
+   4. Reading order: same words are paired in order (longest common
+      subsequence), and between two paired words the remaining text is paired
+      character by character. This is done for the whole document and kept
+      where both characters are still free. It pairs a split word that also
+      moved.
+   5. Words left over on both sides with the same text are paired by nearest
+      position on any page; these are words that moved to another page.
+
+   Reading order alone is not enough. It pairs a repeated word (`-` in
+   hundreds of table cells, `x` in a formula) with whichever instance comes
+   next in the other PDF's order, and the two orders differ wherever a line is
+   grouped differently or table cells interleave differently. Such a pair
+   measures the distance between two different words: 20 pt in a formula
+   whose word edges are all within 1.5 pt, and 169 pt on a page whose picture
+   differed by 0.07 %. The report tells how many reference words were paired
+   with other words than reading order alone gives (`out of reading order`).
+
+   A word that moved does not hide behind another instance of its text,
+   because that instance has its own partner. When a block of lines moves
+   by exactly the distance between two instances, an instance may be paired
+   with the one that now sits at its place; the instance left over at the end
+   of the block is then paired far away, so the document still fails, with
+   the largest deviation at another word than the one that moved first.
+5. A short run (up to 2) of different characters at the same place is a
    *substitution* when the reference character is a symbol-font code (private
    use area, or a code page 1252 byte such as `Ÿ` for a Wingdings bullet) and
    the candidate character is not a letter or digit. A changed letter or digit
    is never a substitution.
-5. Word edges are measured where both PDFs have a word boundary at the same
+6. Word edges are measured where both PDFs have a word boundary at the same
    character: left edges of words that start with paired characters, right
    edges of words that end with them. An edge is the point (x, vertical middle
    of the word box), or (x, baseline) for the words told under *Type 3 fonts*.
-6. For each pair of pages a fit of the `-fit` kind is made from the edges
-   (least squares, then once more without edges far from the first fit). Pages
-   with fewer than 6 edges get translation only. Hancom Office shrinks the body
-   to make room for memo balloons, so the scale is needed there.
-7. The deviation of an edge is the larger of its horizontal and vertical
-   distance after the fit, in candidate points.
+7. For each pair of pages a fit of the `-fit` kind is made from the edges of
+   the pairs (those of step 4.5 left out; least squares, then once more
+   without edges far from the first result). Pages with fewer than 6 edges get
+   translation only. Hancom Office shrinks the body to make room for memo
+   balloons, so the scale is needed there.
+8. The deviation of an edge is the larger of its horizontal and vertical
+   distance after the fit of 7, in candidate points.
 
 With `-skip-memo` a reference word with no partner is ignored when its page was
 shrunk (fit scale above 1.01) and, after the fit, it lands right of every
@@ -133,8 +171,8 @@ by the same amount, one fit of the sheet holds both pages and nothing else is
 needed. When they do not, each page is scaled about the corner of its own half
 of the sheet and no single fit holds both. Hancom Office shrinks every page
 once more for memo balloons: in one document of 20 sheets the candidate's
-pages were 1.27 times the reference's, so the two halves needed fits 114 pt
-apart, and compared sheet by sheet the document read 600 pt off with 69 words
+pages were 1.29 times the reference's, so the two halves needed fits 122 pt
+apart, and compared sheet by sheet the document read 609 pt off with 88 words
 on another page.
 
 Such a document is compared half by half. The left and the right half of
@@ -168,10 +206,9 @@ is compared as before, one page to a sheet, which is the stricter test:
   the sheet too. A word that goes to the other half is then not `moved`; it
   is hundreds of points off.
 
-In the document above 18 of the 20 sheets met 3 (corners 0.3 to 1.0 pt from
-half a sheet apart, 114 to 115 pt from one fit). The other two have a left
-half with three words and a left half whose fit was pulled off by words
-paired with the wrong partner.
+In the document above 19 of the 20 sheets met 3 (corners 0.4 to 0.8 pt from
+half a sheet apart, 122 to 123 pt from one fit). The other one has a left
+half of three words, and its corners are 2.8 pt off.
 
 In the report such a document has `two-up: left <scales>, right <scales>` in
 the `scale` column, `pages` counts sheets, and a page is named by its sheet
