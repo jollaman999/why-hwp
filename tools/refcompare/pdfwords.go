@@ -25,6 +25,27 @@ type pageSize struct{ W, H float64 }
 type pdfWords struct {
 	Pages []pageSize
 	Words []word
+	// Base is parallel to Words and is set by attachBaselines, which is run
+	// only for a document that has Type 3 fonts. It is nil otherwise.
+	Base []wordBase
+}
+
+// wordBase is the baseline of a word. OK is false when the word's first
+// glyph was not found; Type3 tells that the word holds a glyph of a Type 3
+// font.
+type wordBase struct {
+	Y     float64
+	OK    bool
+	Type3 bool
+}
+
+// base returns the wordBase of word i, the zero value when baselines were
+// not attached.
+func (d *pdfWords) base(i int) wordBase {
+	if i < len(d.Base) {
+		return d.Base[i]
+	}
+	return wordBase{}
 }
 
 // readPDFWords runs pdftotext -bbox on a PDF file.

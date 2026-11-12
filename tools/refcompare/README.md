@@ -14,7 +14,8 @@ Hancom Office (Hwp). It is not part of the `why-hwp` binary.
 | Where | What |
 |-------|------|
 | Remote Windows PC | Hancom Office (checked with Hwp 2024), WSL with Windows interop on (`/proc/sys/fs/binfmt_misc/WSLInterop`), an ssh server in WSL |
-| This machine | Go, `ssh` and `scp` with key login to the remote (`BatchMode=yes` is used, so no password prompt), `pdftotext` from poppler-utils |
+| This machine | Go, `ssh` and `scp` with key login to the remote (`BatchMode=yes` is used, so no password prompt), `pdftotext`, `pdffonts` and `pdftoppm` from poppler-utils |
+| This machine, optional | `mutool` from MuPDF (checked with 1.27), used only for documents with Type 3 fonts (see below) |
 
 The remote is given only through environment variables:
 
@@ -77,7 +78,7 @@ in name order.
 ## cmp: compare
 
 ```sh
-/tmp/refcompare cmp -out OUT -cand CAND [-tol 1.0] [-fit scale] [-skip-memo] [-reconvert]
+/tmp/refcompare cmp -out OUT -cand CAND [-tol 1.0] [-fit scale] [-skip-memo] [-ink 1.0] [-ink-all] [-reconvert]
 ```
 
 The table goes to stdout and `OUT/report.md`. Exit code 0 when every document
@@ -88,6 +89,8 @@ passes, 1 when one fails or cannot be compared, 2 for bad usage.
 | `-tol` | largest allowed word-edge deviation in points (default 1.0) |
 | `-fit` | how each reference page is fitted to the candidate page before measuring: `scale` (uniform scale and translation, default), `shift` (translation only), `none` |
 | `-skip-memo` | ignore reference words in Hancom's memo area (see below) |
+| `-ink` | largest allowed picture difference, in percent, of a page that is judged by its picture (default 1.0, see below) |
+| `-ink-all` | also measure the picture difference of every other page and list it under `## Picture difference of every page`; it does not change a verdict |
 | `-reconvert` | also print the candidate HWP/HWPX to PDF with Hancom Office on the remote PC (`OUT/reconv/`, cached like `ref`) and compare that PDF with the reference PDF; needs the same environment as `ref`. `-exe`, `-force` and `-timeout` work as in `ref` |
 
 ### How PDFs are compared
@@ -110,7 +113,7 @@ passes, 1 when one fails or cannot be compared, 2 for bad usage.
 5. Word edges are measured where both PDFs have a word boundary at the same
    character: left edges of words that start with paired characters, right
    edges of words that end with them. An edge is the point (x, vertical middle
-   of the word box).
+   of the word box), or (x, baseline) for the words told under *Type 3 fonts*.
 6. For each pair of pages a fit of the `-fit` kind is made from the edges
    (least squares, then once more without edges far from the first fit). Pages
    with fewer than 6 edges get translation only. Hancom Office shrinks the body
@@ -122,14 +125,101 @@ With `-skip-memo` a reference word with no partner is ignored when its page was
 shrunk (fit scale above 1.01) and, after the fit, it lands right of every
 candidate word on the page. That is where Hancom Office prints memos.
 
+### Type 3 fonts
+
+Hancom Office writes some fonts into the PDF as Type 3 fonts. Such a font
+states no ascent and descent, and `pdftotext` makes up a word box from a font
+size it guesses: for one 11 pt line it gave boxes 30 pt and 7 pt high. The
+middle of such a box is not where the glyphs are, although the left and right
+edges are right: words whose baselines are within 1 pt were reported 3.4 to
+4.7 pt off.
+
+When `pdffonts` lists a Type 3 font in the reference or the candidate PDF,
+`mutool draw -F stext` is run on both PDFs. It gives the origin of every
+glyph, which is a point on the baseline, and the font of every glyph. A word
+takes the baseline of its first glyph: the glyph with the word's first
+character at the left edge of the word box. A tall Type 3 box can hold that
+character on the line above too, so the place of the baseline in the box is
+learned for each font from the words with one such glyph, and the other
+words take the glyph nearest to it.
+
+Two kinds of pairs are then compared at the baselines and not at the box
+middles. The horizontal position and the fit are as for every other pair.
+
+- One of the two words holds a Type 3 glyph.
+- The two words are not the same run of characters. `pdftotext` starts a new
+  word where a Type 3 font begins, so the reference has `(` and `abc` where
+  the candidate has `(abc`; the two boxes then come from different fonts.
+
+Every other pair is compared at the box middles. In a document without Type 3
+fonts that is every pair, and `mutool` is not run. The `type 3` column of the
+report tells how many edges were measured at the baseline.
+
+Without `mutool`, or when `mutool` shows no text in the Type 3 fonts that
+`pdffonts` lists, the Type 3 words are compared at the box middles too and
+the `type 3` column says `box middle:` and why. Expect vertical deviations of
+several points in such a document that are not real.
+
+### Picture pages
+
+Hancom Office draws the text of a chart as outlines, so its PDF has no words
+there. A page where the reference PDF has no word at all (a chart, a picture,
+an empty page) is a *picture page*. The candidate's words on it cannot be
+paired; they are not counted as unmatched, and the page is judged by drawing
+it. A page where only the candidate has no word is not a picture page: the
+candidate lost the text, and the reference words are unmatched.
+
+1. `pdftoppm` draws the page of both PDFs in color at 4 pixels per point.
+2. The *outline* of a drawn page is the darker side of every edge: the pixels
+   that differ from a pixel up to 2 pixels to the left, right, top or bottom
+   by 64 or more (of 255) in one color channel. Color is used because two pie
+   slices can differ in hue and hardly in brightness.
+3. An outline pixel is *alone* when the other page has no outline pixel within
+   `-tol` points of it, horizontally and vertically (as for word edges; 4
+   pixels at the default). For the other page a step of 32 is enough, so an
+   edge near the limit is not alone because it is 65 here and 63 there.
+4. The picture difference is the share of alone pixels in the outline, taken
+   for both pages; the larger share counts. Both pages blank is 0, ink on one
+   page only is 100 %.
+5. The page passes when the difference is at most `-ink` percent (default 1).
+   A picture page has no paired words and so no fit: the two pages are
+   compared as they are.
+
+The verdict of such a document is written `pass (picture)` or `FAIL (picture)`
+and the `picture` column gives the difference of each picture page, so it
+cannot be taken for a word comparison. If the page cannot be drawn, the
+document fails.
+
+Where the numbers come from (18 documents, candidate made with the fonts
+Hancom Office used, `-ink-all`):
+
+- Step 64: `pdftoppm` draws things that are not in the PDF and differ between
+  the two producers: seams between the tiles Hancom cuts a pie slice into
+  (step 1) and a faint edge around a picture with a transparent border (step
+  36; `mutool` does not draw it). A picture that one PDF holds as JPEG and the
+  other without loss differs in its grain. At step 32 these made a page with
+  two pictures in the right place read 2.0 %; at 64 it reads 0.0 %.
+- Limit 1 %: of the 47 pages that have words and pass, 46 read 0.41 % or less
+  (45 of them below 0.1 %); the other one holds memo balloons that only the
+  reference draws (44 %). The two picture pages read 0.39 % and 0.00 %. Ten
+  pages (those two and eight with words), moved on purpose by 1.25 pt to the
+  right or down, read 1.2 % to 24 %; moved by 2 pt, 11 % to 45 %. Pages of a
+  document with another page count read 57 % or more.
+
+The share is not a maximum. A few words that are 1.8 to 3.5 pt off on a full
+text page read 0.03 % to 0.49 %, below the limit. That is why pages with words
+are judged by their words and never by the picture.
+
 ### Verdict
 
 A document passes when
 
 - the page counts are the same,
 - no paired word is on another page number,
-- no word is left without a partner (on either side), and
-- the largest edge deviation is at most `-tol`.
+- no word is left without a partner (on either side; the candidate's words on
+  picture pages are not counted),
+- the largest edge deviation is at most `-tol`, and
+- every picture page has a picture difference of at most `-ink` percent.
 
 With `-reconvert`, the candidate HWP/HWPX printed by Hancom Office must pass the
 same test against the reference PDF.
@@ -148,7 +238,12 @@ substitutions.
 
 - The vertical middle comes from the font's box. When the two PDFs draw a word
   with different fonts, its middle moves even if the baseline does not.
-- Text drawn as outlines (Hancom draws chart labels as paths) has no words;
-  the candidate's chart labels then show up as words without a partner.
+  Baselines are used only in documents with Type 3 fonts.
+- The picture comparison sees shapes, not text. Another font for a chart label
+  changes the outline, and a wrong character with a similar shape does not.
+  Edges fainter than a quarter of the color range (a light highlight, a light
+  gray rule) are not measured.
+- A chart on a page where the reference has words is not a picture page. The
+  candidate's chart labels are then words without a partner.
 - Hancom Office follows the document's print settings, for example printing
   two pages on one sheet. The candidate does not, so page counts differ.

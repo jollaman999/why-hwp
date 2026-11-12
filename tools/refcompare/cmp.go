@@ -21,7 +21,11 @@ type row struct {
 	TxtNote string
 	RT      *pdfResult // candidate HWP/HWPX printed by Hancom Office
 	RTNote  string
-	Pass    bool
+	// BaseNote says why the baselines of a document with Type 3 fonts
+	// could not be read; its Type 3 words are then measured at the box
+	// middle.
+	BaseNote string
+	Pass     bool
 }
 
 func runCmp(args []string, stdout, stderr io.Writer) int {
@@ -32,12 +36,14 @@ func runCmp(args []string, stdout, stderr io.Writer) int {
 	tol := fs.Float64("tol", 1.0, "largest allowed word deviation in points")
 	fit := fs.String("fit", fitScale, "how a reference page is fitted to the candidate page: scale, shift or none")
 	skipMemo := fs.Bool("skip-memo", false, "ignore reference words that fall outside the fitted page (Hancom memo balloons)")
+	ink := fs.Float64("ink", defaultInkLimit, "largest allowed picture difference, in percent, of a page that is judged by its picture")
+	inkAll := fs.Bool("ink-all", false, "also measure the picture difference of every other page and list it (does not decide the verdict)")
 	reconvert := fs.Bool("reconvert", false, "also print the candidate HWP/HWPX to PDF with Hancom Office on the remote PC and compare it with the reference PDF")
 	exe := fs.String("exe", "", "with -reconvert: prebuilt Windows why-hwp.exe (default: build it from this module)")
 	force := fs.Bool("force", false, "with -reconvert: print every candidate again")
 	timeout := fs.Duration("timeout", 120*time.Second, "with -reconvert: Hancom Office time limit for one conversion")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: refcompare cmp -out DIR -cand DIR [-tol 1.0] [-fit scale] [-skip-memo] [-reconvert]")
+		fmt.Fprintln(stderr, "Usage: refcompare cmp -out DIR -cand DIR [-tol 1.0] [-fit scale] [-skip-memo] [-ink 1.0] [-ink-all] [-reconvert]")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Compares the candidate outputs with <out>/ref and writes the table to stdout and <out>/report.md.")
 		fmt.Fprintln(stderr, "Exit code 0 when every document passes, 1 when one fails or cannot be compared.")
@@ -50,7 +56,7 @@ func runCmp(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	if *outdir == "" || *candDir == "" || fs.NArg() != 0 || *tol < 0 || *timeout <= 0 {
+	if *outdir == "" || *candDir == "" || fs.NArg() != 0 || *tol < 0 || *ink < 0 || *timeout <= 0 {
 		fs.Usage()
 		return 2
 	}
@@ -60,7 +66,7 @@ func runCmp(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "refcompare cmp: -fit %q: want scale, shift or none\n", *fit)
 		return 2
 	}
-	opt := cmpOptions{Tol: *tol, Fit: *fit, SkipMemo: *skipMemo}
+	opt := cmpOptions{Tol: *tol, Fit: *fit, SkipMemo: *skipMemo, InkLimit: *ink / 100, InkAll: *inkAll}
 	refDir := filepath.Join(*outdir, "ref")
 	names, err := refNames(refDir)
 	if err != nil {
@@ -117,7 +123,8 @@ func refNames(refDir string) ([]string, error) {
 
 func compareDoc(name, refDir, candDir string, opt cmpOptions, rc *reconverter) row {
 	r := row{Name: name}
-	ref, err := readPDFWords(filepath.Join(refDir, name+".pdf"))
+	refPDF := filepath.Join(refDir, name+".pdf")
+	ref, err := readPDFWords(refPDF)
 	if err != nil {
 		r.Err = err.Error()
 		return r
@@ -128,7 +135,9 @@ func compareDoc(name, refDir, candDir string, opt cmpOptions, rc *reconverter) r
 	} else if cand, err := readPDFWords(candPDF); err != nil {
 		r.Err = err.Error()
 	} else {
+		r.BaseNote = loadBaselines(refPDF, candPDF, ref, cand)
 		res := comparePDF(ref, cand, opt)
+		measureInk(refPDF, candPDF, &res, opt)
 		r.PDF = &res
 	}
 
@@ -154,7 +163,11 @@ func compareDoc(name, refDir, candDir string, opt cmpOptions, rc *reconverter) r
 		} else if words, err := readPDFWords(pdf); err != nil {
 			r.RTNote = err.Error()
 		} else {
+			if note := loadBaselines(refPDF, pdf, ref, words); note != "" && r.BaseNote == "" {
+				r.BaseNote = note
+			}
 			res := comparePDF(ref, words, opt)
+			measureInk(refPDF, pdf, &res, opt)
 			r.RT = &res
 		}
 	}

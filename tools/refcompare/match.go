@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // lcsPairs returns the index pairs (i, j) of a longest common subsequence of
@@ -185,7 +186,9 @@ func solveFit(ref, cand []point, mode string) affine {
 type cmpOptions struct {
 	Tol      float64 // maximum allowed word deviation in points
 	Fit      string
-	SkipMemo bool // ignore unmatched reference words in the memo area (see inMemoArea)
+	SkipMemo bool    // ignore unmatched reference words in the memo area (see inMemoArea)
+	InkLimit float64 // largest picture difference of a picture page that passes, as a fraction (see inkDiff)
+	InkAll   bool    // measure the picture difference of every page, not only of picture pages
 }
 
 type located struct {
@@ -204,17 +207,58 @@ type pdfResult struct {
 	RefOnly, CandOnly   int // words with a character that has no partner
 	MemoSkipped         int
 	Edges               int // word edges measured
+	BaseEdges           int // of those, edges measured at the baseline (see pairY)
+	BoxEdges            int // edges of Type 3 words measured at the box middle for want of a baseline
 	MaxDev              float64
 	Worst               located
 	ScaleMin, ScaleMax  float64
 	RefOnlySample       []located
 	CandOnlySample      []located
 	SubstSample         []string
+	// Page has one entry for each page number that both PDFs have.
+	Page []pageStat
+	// PictureWords counts the candidate words without a partner on
+	// picture pages. They are not in CandOnly.
+	PictureWords int
+}
+
+// pageStat is the comparison of one reference page with the candidate page
+// of the same number.
+type pageStat struct {
+	RefWords, CandWords int
+	RefOnly, CandOnly   int     // words without a partner; CandOnly counts them on a picture page too
+	MaxDev              float64 // largest edge deviation between the two pages
+	Fit                 affine  // fit of the two pages; the identity when there is no paired word
+	// Picture is set when the reference page has no word. Hancom Office
+	// draws chart text as outlines, so there is nothing to pair; such a
+	// page is judged by drawing both pages (see inkDiff). A candidate
+	// page without words is not one: its reference words are unmatched.
+	Picture bool
+	// InkDone tells that Ink was measured; InkErr tells why it was not.
+	InkDone bool
+	Ink     float64
+	InkErr  string
 }
 
 func (r pdfResult) pass(o cmpOptions) bool {
+	for _, p := range r.Page {
+		if p.Picture && (!p.InkDone || p.Ink > o.InkLimit) {
+			return false
+		}
+	}
 	return r.RefPages == r.CandPages && r.PageMoves == 0 &&
 		r.RefOnly == 0 && r.CandOnly == 0 && r.MaxDev <= o.Tol
+}
+
+// picturePages returns the 1-based numbers of the picture pages.
+func (r pdfResult) picturePages() []int {
+	var out []int
+	for i, p := range r.Page {
+		if p.Picture {
+			out = append(out, i+1)
+		}
+	}
+	return out
 }
 
 const (
@@ -382,6 +426,44 @@ type edge struct {
 	key       pageKey
 	ref, cand point
 	refWord   int
+	how       int // yMiddle, yBaseline or yNoBaseline
+}
+
+// How the vertical position of a pair of words is taken.
+const (
+	yMiddle     = iota // middle of the word boxes
+	yBaseline          // baselines
+	yNoBaseline        // middle of the boxes, because the baseline of a Type 3 word is not known
+)
+
+// pairY returns the vertical positions at which reference word i and
+// candidate word j are compared.
+//
+// pdftotext makes a word box from the ascent and descent of the word's
+// font, so the middle of the box is a fixed distance above the baseline
+// for one font. Two cases break that, and those pairs are compared at
+// the baselines:
+//
+//   - One of the words holds a glyph of a Type 3 font. Such a font states
+//     no ascent and descent and pdftotext makes up a box that is not where
+//     the glyphs are.
+//   - The words are not the same run of characters. pdftotext starts a new
+//     word where a Type 3 font begins, so one PDF has "(" and "abc" where
+//     the other has "(abc", and the two boxes come from different fonts.
+//
+// Baselines are known only in a document with Type 3 fonts (see
+// loadBaselines). Every other pair is compared at the box middles.
+func pairY(ref, cand *pdfWords, i, j int) (ry, cy float64, how int) {
+	rb, cb := ref.base(i), cand.base(j)
+	type3 := rb.Type3 || cb.Type3
+	split := utf8.RuneCountInString(ref.Words[i].Text) != utf8.RuneCountInString(cand.Words[j].Text)
+	switch {
+	case (type3 || split) && rb.OK && cb.OK:
+		return rb.Y, cb.Y, yBaseline
+	case type3:
+		return ref.Words[i].ymid(), cand.Words[j].ymid(), yNoBaseline
+	}
+	return ref.Words[i].ymid(), cand.Words[j].ymid(), yMiddle
 }
 
 // comparePDF pairs the text of ref and cand, fits each pair of pages and
@@ -395,7 +477,7 @@ type edge struct {
 // A word edge is compared where both PDFs have a word boundary at the same
 // character: the left edges of words that start with paired characters and
 // the right edges of words that end with paired characters. Each edge is the
-// point (x, vertical middle of the word). The deviation is the larger of the
+// point (x, vertical position of the word); pairY tells which position. The deviation is the larger of the
 // horizontal and vertical distance after the fit, in candidate points. Fits
 // are made from the reading-order pairs only. Words on another page number
 // are counted in PageMoves and left out of the deviation.
@@ -403,6 +485,24 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 	r := pdfResult{
 		RefPages: len(ref.Pages), CandPages: len(cand.Pages),
 		RefWords: len(ref.Words), CandWords: len(cand.Words),
+	}
+	r.Page = make([]pageStat, min(len(ref.Pages), len(cand.Pages)))
+	for i := range r.Page {
+		r.Page[i].Fit = affine{S: 1}
+	}
+	for _, w := range ref.Words {
+		if w.Page < len(r.Page) {
+			r.Page[w.Page].RefWords++
+		}
+	}
+	for _, w := range cand.Words {
+		if w.Page < len(r.Page) {
+			r.Page[w.Page].CandWords++
+		}
+	}
+	for i := range r.Page {
+		p := &r.Page[i]
+		p.Picture = p.RefWords == 0
 	}
 	a, b := explode(ref), explode(cand)
 	pairs, subst := pairChars(a, b)
@@ -424,11 +524,12 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 		if k.rp != k.cp {
 			moved[a.word[i]] = true
 		}
+		ry, cy, how := pairY(ref, cand, a.word[i], b.word[j])
 		if a.first[i] && b.first[j] {
-			edges = append(edges, edge{k, point{wa.X0, wa.ymid()}, point{wb.X0, wb.ymid()}, a.word[i]})
+			edges = append(edges, edge{k, point{wa.X0, ry}, point{wb.X0, cy}, a.word[i], how})
 		}
 		if a.last[i] && b.last[j] {
-			edges = append(edges, edge{k, point{wa.X1, wa.ymid()}, point{wb.X1, wb.ymid()}, a.word[i]})
+			edges = append(edges, edge{k, point{wa.X1, ry}, point{wb.X1, cy}, a.word[i], how})
 		}
 	}
 	for _, p := range pairs {
@@ -456,6 +557,9 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 		}
 		f := fitPoints(rp, cp, mode)
 		fits[k] = f
+		if k.rp == k.cp && k.rp < len(r.Page) {
+			r.Page[k.rp].Fit = f
+		}
 		if d, ok := dominant[k.rp]; !ok || len(idx) > len(groups[d]) ||
 			(len(idx) == len(groups[d]) && k.cp < d.cp) {
 			dominant[k.rp] = k
@@ -482,11 +586,21 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 	r.Edges = len(edges)
 
 	for _, e := range edges {
+		switch e.how {
+		case yBaseline:
+			r.BaseEdges++
+		case yNoBaseline:
+			r.BoxEdges++
+		}
 		if e.key.rp != e.key.cp {
 			continue
 		}
 		x, y := fitFor(e.key).apply(e.ref.X, e.ref.Y)
-		if dev := math.Max(math.Abs(x-e.cand.X), math.Abs(y-e.cand.Y)); dev > r.MaxDev {
+		dev := math.Max(math.Abs(x-e.cand.X), math.Abs(y-e.cand.Y))
+		if e.key.rp < len(r.Page) && dev > r.Page[e.key.rp].MaxDev {
+			r.Page[e.key.rp].MaxDev = dev
+		}
+		if dev > r.MaxDev {
 			r.MaxDev = dev
 			w := ref.Words[e.refWord]
 			r.Worst = located{w.Text, w.Page + 1}
@@ -517,6 +631,9 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 			r.MemoSkipped++
 			continue
 		}
+		if w.Page < len(r.Page) {
+			r.Page[w.Page].RefOnly++
+		}
 		r.RefOnly++
 		if len(r.RefOnlySample) < sampleWords {
 			r.RefOnlySample = append(r.RefOnlySample, located{w.Text, w.Page + 1})
@@ -527,6 +644,13 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 			continue
 		}
 		w := cand.Words[wi]
+		if w.Page < len(r.Page) {
+			r.Page[w.Page].CandOnly++
+		}
+		if w.Page < len(r.Page) && r.Page[w.Page].Picture {
+			r.PictureWords++
+			continue
+		}
 		r.CandOnly++
 		if len(r.CandOnlySample) < sampleWords {
 			r.CandOnlySample = append(r.CandOnlySample, located{w.Text, w.Page + 1})
@@ -571,8 +695,9 @@ func pairLeftovers(ref, cand *pdfWords, a, b *charSeq, pairedA, pairedB []bool,
 		best, bestD := -1, math.Inf(1)
 		for k, cpos := range cands {
 			cw := cand.Words[b.order[cpos]]
-			x, y := fitFor(pageKey{w.Page, cw.Page}).apply(w.X0, w.ymid())
-			d := math.Hypot(x-cw.X0, y-cw.ymid()) + pagePenalty*math.Abs(float64(w.Page-cw.Page))
+			ry, cy, _ := pairY(ref, cand, wi, b.order[cpos])
+			x, y := fitFor(pageKey{w.Page, cw.Page}).apply(w.X0, ry)
+			d := math.Hypot(x-cw.X0, y-cy) + pagePenalty*math.Abs(float64(w.Page-cw.Page))
 			if d < bestD {
 				best, bestD = k, d
 			}
