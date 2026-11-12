@@ -5,6 +5,7 @@ Usage (from wasm/):
     | python3 list-crates.py > LICENSES/CRATES.md
 """
 import json
+import os
 import sys
 
 meta = json.load(sys.stdin)
@@ -29,6 +30,13 @@ print("Rust crates linked into `engine.wasm.gz` for wasm32-wasip1, from `wasm/Ca
 print("Regenerate with `wasm/list-crates.py` when the lock file changes.\n")
 print("| Crate | Version | License | Repository |")
 print("|-------|---------|---------|------------|")
+engine_dir = os.path.dirname(packages[root]["manifest_path"])
 for p in linked:
-    source = "rhwp (vendored)" if p["source"] is None else (p.get("repository") or "")
+    source = p.get("repository") or ""
+    if p["source"] is None:
+        local = os.path.relpath(os.path.dirname(p["manifest_path"]), engine_dir)
+        if local.split(os.sep)[0] == "rhwp-src":
+            source = "rhwp (vendored)"
+        else:
+            source = f"{source} (patched copy in `wasm/{local}`)"
     print(f"| {p['name']} | {p['version']} | {p['license'] or ''} | {source} |")

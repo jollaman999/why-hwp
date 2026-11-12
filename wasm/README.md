@@ -14,6 +14,7 @@ This directory holds what is needed to rebuild that file.
 |------|------|
 | `src/` | The engine: argument parsing and the commands below, on top of rhwp's library API |
 | `patch-rhwp.sh` | Changes rhwp needs to build and run under WASI |
+| `vendor/fontdb/` | fontdb 0.23.0 with one change for WASI (below), used in place of the crates.io copy |
 | `build.sh` | Fetches rhwp, patches it, builds, writes `engine.wasm.gz` and its SHA-256 |
 | `Cargo.lock` | Exact crate versions (taken from rhwp's own lock file) |
 | `list-crates.py` | Writes `LICENSES/CRATES.md` |
@@ -69,6 +70,36 @@ The changes are a script rather than a diff because the first one rewrites
 applies when rhwp moves those lines. Each step checks whether it is already
 applied and fails if it finds neither the old nor the new text, so running the
 script twice gives the same tree and an rhwp change cannot slip past it.
+
+## fontdb
+
+Without memory mapping, fontdb 0.23 reads the whole font file from disk every
+time a face's data is asked for, and usvg asks about a dozen times per glyph.
+With 20-30 MB Korean fonts that made PDF export 25-35 times slower than
+native rhwp. `vendor/fontdb` is fontdb 0.23.0 from crates.io (MIT, `LICENSE`
+kept) with one change in `src/lib.rs`: under WASI, `Source::File` data is read
+once per file and kept for the rest of the process. Other targets read as
+before. `Cargo.toml` swaps it in with `[patch.crates-io]`, so usvg, resvg and
+rhwp's vendored svg2pdf all use it; the only other edits are dropping the
+dev-dependencies, which serve upstream tests that are not copied, and turning
+an em dash in a doc comment into a hyphen for this repository's commit check.
+
+It is a copy in the repository rather than a patch applied at build time
+because cargo needs the `[patch]` path to exist before it resolves, so a
+patch would have to fetch the crate outside cargo. The copy is about 55 KB.
+To see the change, compare it with the registry copy:
+
+```sh
+diff -r ~/.cargo/registry/src/index.crates.io-*/fontdb-0.23.0/src vendor/fontdb/src
+```
+
+The cache has a unit test that runs natively (the test build turns the cache on
+for every target):
+
+```sh
+cd wasm
+cargo test -p fontdb --lib
+```
 
 ## Rebuilding
 

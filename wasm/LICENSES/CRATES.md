@@ -64,7 +64,7 @@ Regenerate with `wasm/list-crates.py` when the lock file changes.
 | foldhash | 0.2.0 | Zlib | https://github.com/orlp/foldhash |
 | font-types | 0.11.3 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
 | font-types | 0.12.7 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
-| fontdb | 0.23.0 | MIT | https://github.com/RazrFalcon/fontdb |
+| fontdb | 0.23.0 | MIT | https://github.com/RazrFalcon/fontdb (patched copy in `wasm/vendor/fontdb`) |
 | getrandom | 0.2.17 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | gif | 0.13.3 | MIT OR Apache-2.0 | https://github.com/image-rs/image-gif |
