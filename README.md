@@ -24,7 +24,7 @@ why-hwp is written in Go and built into one executable per platform, so the same
 - Record edits as **tracked changes**, so reviewers see them in Hancom's review view
 - Insert images at the highest resolution that fits the target area
 - Keep existing memos and other authors' content untouched
-- On Windows with Hancom Office installed, convert HWP, HWPX and DOCX to HWP, HWPX, PDF or UTF-8 text
+- Convert HWP and HWPX to HWP, HWPX, PDF or UTF-8 text on every platform with a built-in engine, without Hancom Office (on Windows, Hancom Office can be used instead)
 
 ## Platforms
 
@@ -33,6 +33,8 @@ why-hwp is written in Go and built into one executable per platform, so the same
 | Windows | amd64, arm64 |
 | Linux | amd64, arm64 |
 | macOS | amd64, arm64 |
+
+Every command works on every platform. Only `convert -engine hancom` needs Windows with Hancom Office installed.
 
 ## Commands
 
@@ -75,10 +77,18 @@ Checks a document before you hand it over. It reads `.hwpx`, `.hwp`, `.docx`, `.
 ### convert
 
 ```sh
-why-hwp convert [-to hwp|hwpx|pdf|txt] [-o out] [-timeout 120s] [-force] <in.hwp|in.hwpx|in.docx>
+why-hwp convert [-to hwp|hwpx|pdf|txt] [-o out] [-engine builtin|hancom] [-timeout 120s] [-force] <in.hwp|in.hwpx|in.docx>
 ```
 
-Converts a document with the installed Hancom Office (Windows only; on other systems it exits with "convert needs Windows with Hancom Office"). The format comes from `-to`, or from the extension of `-o`. Without `-o` the output is the input path with the new extension. Text output is UTF-8. An existing output file is not overwritten unless `-force` is given. Hancom runs hidden and works on a copy in the temporary folder, so it never asks for file access. Only the Hancom instance this command starts is closed, and on timeout only that process is killed; Hancom windows you already have open are left alone.
+Converts a document to HWP, HWPX, PDF or UTF-8 text. The format comes from `-to`, or from the extension of `-o`. Without `-o` the output is the input path with the new extension; the output cannot be the input file itself. An existing output file is not overwritten unless `-force` is given. `-timeout` (default 120s) limits one conversion.
+
+By default (`-engine builtin`) the conversion is done by the engine built into why-hwp: [rhwp](https://github.com/edwardkim/rhwp) and resvg compiled to WebAssembly (WASI) and run with [wazero](https://wazero.io), so it works on every OS and starts no other program. It reads `.hwp` and `.hwpx`; `.docx` is refused with an error. The first run compiles the engine, which takes several seconds (about 10 seconds on an 8-core PC), and keeps the result in the user cache folder (`why-hwp/wazero`), so later runs start quickly. `-timeout` covers the conversion and, for PDF output, font downloads. The first compile is not cut short by `-timeout`: it always runs to the end, and its time counts against the limit, so a `-timeout` shorter than the compile fails right after it.
+
+The PDF is an approximation of what Hancom Office prints, not a copy: rhwp lays out the pages itself, so line breaks and positions can differ, most of all when the document's fonts are not available. It comes closer when the fonts the document uses are installed. In a comparison with Hancom Office 2024 on 18 documents, the HWP and HWPX files written by the engine printed the same as the originals in Hancom Office for 17 of them.
+
+Fonts are used only for PDF output; HWP, HWPX and text output read no fonts and download nothing, so they are the same with or without fonts. For PDF, fonts installed on your computer are used first and are never downloaded or copied. why-hwp reads the usual font folders (Windows: `%WINDIR%\Fonts`, `%LOCALAPPDATA%\Microsoft\Windows\Fonts` and Hancom Office's `Shared\TTF\All` and `Shared\TTF\Hwp`; macOS: `/System/Library/Fonts`, `/Library/Fonts`, `~/Library/Fonts`; Linux: `~/.local/share/fonts`, `~/.fonts`, `/usr/share/fonts`, `/usr/local/share/fonts`). Fonts the document needs that are not installed are downloaded from rhwp's list of public fonts. `WHY_HWP_FONT_DIRS` adds folders that are searched first (separated by `;` on Windows, `:` elsewhere), and `WHY_HWP_SYSTEM_FONTS=0` stops reading the system folders, so the output depends only on downloaded fonts and `WHY_HWP_FONT_DIRS`. Downloaded fonts are kept in the user cache folder (`why-hwp/fonts`) and are not downloaded again. With `WHY_HWP_OFFLINE=1` nothing is downloaded: the fonts that are missing are listed in a warning on stderr and the PDF uses substitutes. Which fonts are downloaded and from where follows rhwp's list, and each font keeps its own maker's license. The user cache folder is `~/.cache` (or `$XDG_CACHE_HOME`) on Linux, `~/Library/Caches` on macOS and `%LOCALAPPDATA%` on Windows.
+
+With `-engine hancom` the installed Hancom Office does the conversion (Windows only; on other systems it exits with "convert needs Windows with Hancom Office"). It also reads `.docx`, and its PDF is what Hancom Office prints. Hancom runs hidden and works on a copy in the temporary folder, so it never asks for file access. Only the Hancom instance this command starts is closed, and on timeout only that process is killed; Hancom windows you already have open are left alone.
 
 ### svg2png
 
@@ -86,7 +96,7 @@ Converts a document with the installed Hancom Office (Windows only; on other sys
 why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-trim] [-timeout 2m] [-o out.png] <in.svg>
 ```
 
-Renders an SVG to a PNG sized for the space it will fill in the document (600 dpi by default; the height follows the SVG aspect ratio). Rendering is done by resvg built into why-hwp, so no browser or other program is needed and the PNG is the same on every machine. Text is drawn only with the fonts embedded in the SVG: the TrueType or OpenType files in `data:` URIs of `@font-face` rules in `<style>`, which `svgfont` writes. Fonts installed on the system are not used, so run `svgfont` first; an SVG with `<text>` but no embedded font is rendered without its text and a warning is printed to stderr. Embedded fonts that cannot be decoded, or that are not TrueType or OpenType (such as WOFF), are skipped with a warning. `-trim` cuts white margins. Without a width, the SVG's own size (96 px per inch) is used. Output is limited to 20000 px per side and 120 million pixels. The first run compiles the engine, which takes several seconds, and keeps the result in the user cache folder (`why-hwp/wazero`), so later runs start quickly. `-timeout` (default 2m) limits the whole render, including that first compile.
+Renders an SVG to a PNG sized for the space it will fill in the document (600 dpi by default; the height follows the SVG aspect ratio). Rendering is done by resvg built into why-hwp, so no browser or other program is needed and the PNG is the same on every machine. Text is drawn only with the fonts embedded in the SVG: the TrueType or OpenType files in `data:` URIs of `@font-face` rules in `<style>`, which `svgfont` writes. Fonts installed on the system are not used, so run `svgfont` first; an SVG with `<text>` but no embedded font is rendered without its text and a warning is printed to stderr. Embedded fonts that cannot be decoded, or that are not TrueType or OpenType (such as WOFF), are skipped with a warning. `-trim` cuts white margins. Without a width, the SVG's own size (96 px per inch) is used. Output is limited to 20000 px per side and 120 million pixels. The first run compiles the engine, which takes several seconds, and keeps the result in the user cache folder (`why-hwp/wazero`), so later runs start quickly. `-timeout` (default 2m) limits the render. The first compile is not cut short by `-timeout`: it always runs to the end, and its time counts against the limit.
 
 ### svgfont
 
@@ -108,7 +118,7 @@ Checks the layout of an SVG figure by computation. Text is measured with the adv
 
 ## Build
 
-Requires Go 1.24 or later and GNU make. On Windows, run make from Git Bash.
+Requires Go 1.25 or later and GNU make. On Windows, run make from Git Bash.
 
 ```sh
 make            # build for the current OS into bin/
@@ -124,3 +134,5 @@ Pushing an annotated `v*` tag runs `.github/workflows/release.yml`, which tests,
 ## License
 
 [Apache License 2.0](LICENSE)
+
+The built-in engine (`internal/engine/engine.wasm.gz`) contains rhwp (MIT), resvg (Apache-2.0 or MIT), tiny-skia (BSD-3-Clause), code derived from the Independent JPEG Group's work (IJG License), a subset of the Latin Modern Math font (GUST Font License) and other Rust crates. Their license texts and the list of crates are in [`wasm/LICENSES/`](wasm/LICENSES/). Fonts downloaded at run time are not part of why-hwp and keep their own licenses.

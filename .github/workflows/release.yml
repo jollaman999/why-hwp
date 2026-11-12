@@ -26,7 +26,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # -short skips the tests that start a browser or Hancom Office.
+      # -short skips the tests that download fonts, render SVGs with the engine or
+      # start Hancom Office.
       - name: Test
         run: go test -short ./...
 

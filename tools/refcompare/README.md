@@ -35,7 +35,7 @@ WHY_HWP_REF_HOST=user@host WHY_HWP_REF_DIR=/mnt/c/Users/me/why-hwp-ref \
 - For each `<name>` (the file name with its extension) Hancom Office makes
   `OUT/ref/<name>.pdf`, `<name>.txt` and the other format: `<name>.hwpx` for an
   hwp input, `<name>.hwp` for an hwpx input.
-- The conversion is `why-hwp convert` (Hancom COM) built for Windows. By default
+- The conversion is `why-hwp convert -engine hancom` (Hancom COM) built for Windows. By default
   `ref` builds it from the module of the current folder, uncommitted changes
   included. To use a committed tree, build it yourself and pass `-exe`:
   `git archive HEAD | tar -x -C /tmp/w && (cd /tmp/w && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o why-hwp.exe ./cmd/why-hwp)`.

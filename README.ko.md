@@ -24,7 +24,7 @@ why-hwp 는 Go 로 작성해 플랫폼마다 실행 파일 하나로 빌드합�
 - 고친 내용을 **변경 추적**으로 남겨, 한글의 검토 화면에서 보이게 합니다
 - 그림은 들어갈 영역에 맞는 가장 높은 해상도로 넣습니다
 - 기존 메모와 다른 사람이 쓴 내용은 건드리지 않습니다
-- 한컴오피스가 설치된 Windows 에서는 HWP·HWPX·DOCX 를 HWP, HWPX, PDF, UTF-8 텍스트로 변환합니다
+- 내장 엔진으로 모든 플랫폼에서 한컴오피스 없이 HWP·HWPX 를 HWP, HWPX, PDF, UTF-8 텍스트로 변환합니다 (Windows 에서는 한컴오피스로 변환할 수도 있습니다)
 
 ## 지원 플랫폼
 
@@ -33,6 +33,8 @@ why-hwp 는 Go 로 작성해 플랫폼마다 실행 파일 하나로 빌드합�
 | Windows | amd64, arm64 |
 | Linux | amd64, arm64 |
 | macOS | amd64, arm64 |
+
+모든 명령이 모든 플랫폼에서 됩니다. `convert -engine hancom` 만 한컴오피스가 설치된 Windows 가 필요합니다.
 
 ## 명령
 
@@ -75,10 +77,18 @@ why-hwp verify [-orig 원본] [-allow locs.txt] [-banned words.txt] [-ignore-cas
 ### convert
 
 ```sh
-why-hwp convert [-to hwp|hwpx|pdf|txt] [-o 출력] [-timeout 120s] [-force] <입력.hwp|입력.hwpx|입력.docx>
+why-hwp convert [-to hwp|hwpx|pdf|txt] [-o 출력] [-engine builtin|hancom] [-timeout 120s] [-force] <입력.hwp|입력.hwpx|입력.docx>
 ```
 
-설치된 한컴오피스로 문서를 변환합니다 (Windows 전용. 다른 OS 에서는 "convert needs Windows with Hancom Office" 를 내고 끝납니다). 형식은 `-to` 로 주거나 `-o` 의 확장자에서 정합니다. `-o` 가 없으면 입력 경로에서 확장자만 바꿔 씁니다. 텍스트는 UTF-8 로 저장합니다. 출력 파일이 이미 있으면 `-force` 없이는 덮어쓰지 않습니다. 한글은 창을 숨긴 채 임시 폴더의 복사본으로 작업하므로 파일 접근 허용을 묻지 않습니다. 이 명령이 띄운 한글만 닫고, 시간이 넘으면 그 프로세스만 끝냅니다. 이미 열어 둔 한글 창은 건드리지 않습니다.
+문서를 HWP, HWPX, PDF, UTF-8 텍스트로 변환합니다. 형식은 `-to` 로 주거나 `-o` 의 확장자에서 정합니다. `-o` 가 없으면 입력 경로에서 확장자만 바꿔 쓰고, 출력이 입력 파일 자신이면 거부합니다. 출력 파일이 이미 있으면 `-force` 없이는 덮어쓰지 않습니다. `-timeout`(기본 120s)은 변환 한 번의 시간 상한입니다.
+
+기본(`-engine builtin`)은 why-hwp 안에 든 엔진으로 변환합니다. [rhwp](https://github.com/edwardkim/rhwp) 와 resvg 를 WebAssembly(WASI)로 컴파일해 [wazero](https://wazero.io) 로 실행하므로 모든 OS 에서 되고 다른 프로그램을 띄우지 않습니다. `.hwp` 와 `.hwpx` 를 읽고, `.docx` 는 오류를 내고 거부합니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초(8코어 PC 에서 약 10초) 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. `-timeout` 은 변환과, PDF 출력이면 글꼴 내려받기의 시간 상한입니다. 첫 컴파일은 `-timeout` 으로 중간에 끊기지 않고 끝까지 돌며, 그 시간도 상한에 들어가므로 컴파일보다 짧은 `-timeout` 은 컴파일이 끝난 직후 실패합니다.
+
+PDF 는 한글이 인쇄한 것과 똑같지 않은 근사입니다. 쪽 배치를 rhwp 가 직접 하므로 줄바꿈과 위치가 다를 수 있고, 문서의 글꼴이 없을 때 특히 그렇습니다. 문서가 쓰는 글꼴이 설치돼 있으면 더 가까워집니다. 한글 2024 와 18개 문서로 비교했을 때, 엔진이 쓴 HWP·HWPX 파일은 17개가 한글로 인쇄했을 때 원본과 같았습니다.
+
+글꼴은 PDF 출력에만 쓰입니다. HWP·HWPX·텍스트 출력은 글꼴을 읽지도 내려받지도 않으므로 글꼴이 있든 없든 같습니다. PDF 는 컴퓨터에 설치된 글꼴을 먼저 쓰고, 이 글꼴은 내려받거나 복사하지 않습니다. why-hwp 는 흔히 쓰는 글꼴 폴더를 읽습니다 (Windows: `%WINDIR%\Fonts`, `%LOCALAPPDATA%\Microsoft\Windows\Fonts`, 한컴오피스의 `Shared\TTF\All`·`Shared\TTF\Hwp`; macOS: `/System/Library/Fonts`, `/Library/Fonts`, `~/Library/Fonts`; Linux: `~/.local/share/fonts`, `~/.fonts`, `/usr/share/fonts`, `/usr/local/share/fonts`). 문서에 필요한데 설치돼 있지 않은 글꼴은 rhwp 의 공개 글꼴 목록에서 내려받습니다. `WHY_HWP_FONT_DIRS` 는 먼저 찾을 폴더를 더합니다 (Windows 는 `;`, 그 밖은 `:` 로 나눕니다). `WHY_HWP_SYSTEM_FONTS=0` 이면 시스템 폴더를 읽지 않으므로, 출력이 내려받은 글꼴과 `WHY_HWP_FONT_DIRS` 에만 달려 있게 됩니다. 내려받은 글꼴은 사용자 캐시 폴더(`why-hwp/fonts`)에 두고 다시 받지 않습니다. `WHY_HWP_OFFLINE=1` 이면 아무것도 내려받지 않고, 없는 글꼴을 stderr 경고로 알린 뒤 PDF 를 대체 글꼴로 만듭니다. 어떤 글꼴을 어디서 받는지는 rhwp 의 목록을 따르고, 각 글꼴은 그 제작자의 라이선스를 따릅니다. 사용자 캐시 폴더는 Linux 에서 `~/.cache`(또는 `$XDG_CACHE_HOME`), macOS 에서 `~/Library/Caches`, Windows 에서 `%LOCALAPPDATA%` 입니다.
+
+`-engine hancom` 은 설치된 한컴오피스로 변환합니다 (Windows 전용. 다른 OS 에서는 "convert needs Windows with Hancom Office" 를 내고 끝납니다). `.docx` 도 읽고, PDF 는 한글이 인쇄한 그대로입니다. 한글은 창을 숨긴 채 임시 폴더의 복사본으로 작업하므로 파일 접근 허용을 묻지 않습니다. 이 명령이 띄운 한글만 닫고, 시간이 넘으면 그 프로세스만 끝냅니다. 이미 열어 둔 한글 창은 건드리지 않습니다.
 
 ### svg2png
 
@@ -86,7 +96,7 @@ why-hwp convert [-to hwp|hwpx|pdf|txt] [-o 출력] [-timeout 120s] [-force] <입
 why-hwp svg2png [-width-mm N | -width-px N] [-dpi 600] [-trim] [-timeout 2m] [-o out.png] <in.svg>
 ```
 
-SVG 를 문서에 들어갈 너비에 맞춘 PNG 로 만듭니다(기본 600 dpi, 높이는 SVG 비율대로). why-hwp 안에 든 resvg 로 그리므로 브라우저나 다른 프로그램이 필요 없고, 어느 PC 에서나 같은 PNG 가 나옵니다. 글자는 SVG 에 넣은 글꼴로만 그립니다. `<style>` 의 `@font-face` 에 `data:` URI 로 든 TrueType·OpenType 파일이 그것이고, `svgfont` 가 이렇게 넣습니다. 시스템에 설치된 글꼴은 쓰지 않으니 `svgfont` 를 먼저 돌립니다. `<text>` 가 있는데 넣은 글꼴이 없으면 글자 없이 그리고 stderr 에 경고를 냅니다. 풀 수 없거나 TrueType·OpenType 이 아닌(WOFF 등) 글꼴은 경고를 내고 건너뜁니다. `-trim` 은 흰 여백을 잘라냅니다. 너비를 주지 않으면 SVG 고유 크기(1인치 = 96px)를 씁니다. 출력은 한 변 20000px, 전체 1억 2천만 픽셀까지입니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. `-timeout`(기본 2m)은 이 첫 컴파일을 포함한 렌더 전체의 시간 상한입니다.
+SVG 를 문서에 들어갈 너비에 맞춘 PNG 로 만듭니다(기본 600 dpi, 높이는 SVG 비율대로). why-hwp 안에 든 resvg 로 그리므로 브라우저나 다른 프로그램이 필요 없고, 어느 PC 에서나 같은 PNG 가 나옵니다. 글자는 SVG 에 넣은 글꼴로만 그립니다. `<style>` 의 `@font-face` 에 `data:` URI 로 든 TrueType·OpenType 파일이 그것이고, `svgfont` 가 이렇게 넣습니다. 시스템에 설치된 글꼴은 쓰지 않으니 `svgfont` 를 먼저 돌립니다. `<text>` 가 있는데 넣은 글꼴이 없으면 글자 없이 그리고 stderr 에 경고를 냅니다. 풀 수 없거나 TrueType·OpenType 이 아닌(WOFF 등) 글꼴은 경고를 내고 건너뜁니다. `-trim` 은 흰 여백을 잘라냅니다. 너비를 주지 않으면 SVG 고유 크기(1인치 = 96px)를 씁니다. 출력은 한 변 20000px, 전체 1억 2천만 픽셀까지입니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. `-timeout`(기본 2m)은 렌더의 시간 상한입니다. 첫 컴파일은 `-timeout` 으로 중간에 끊기지 않고 끝까지 돌며, 그 시간도 상한에 들어갑니다.
 
 ### svgfont
 
@@ -108,7 +118,7 @@ SVG 그림의 배치를 계산으로 검사합니다. 글자 폭은 `svgfont` �
 
 ## 빌드
 
-Go 1.24 이상과 GNU make 가 필요합니다. Windows 에서는 Git Bash 에서 make 를 실행합니다.
+Go 1.25 이상과 GNU make 가 필요합니다. Windows 에서는 Git Bash 에서 make 를 실행합니다.
 
 ```sh
 make            # 현재 OS 용으로 bin/ 에 빌드
@@ -124,3 +134,5 @@ make test       # go test ./...
 ## 라이선스
 
 [Apache License 2.0](LICENSE)
+
+내장 엔진(`internal/engine/engine.wasm.gz`)에는 rhwp(MIT), resvg(Apache-2.0 또는 MIT), tiny-skia(BSD-3-Clause), Independent JPEG Group 의 작업에서 온 코드(IJG License), Latin Modern Math 글꼴의 일부(GUST Font License)와 그 밖의 Rust crate 가 들어 있습니다. 라이선스 전문과 crate 목록은 [`wasm/LICENSES/`](wasm/LICENSES/) 에 있습니다. 실행 중에 내려받는 글꼴은 why-hwp 에 들어 있지 않으며 각자의 라이선스를 따릅니다.

@@ -146,7 +146,7 @@ func (r *remote) convert(ctx context.Context, in, inSHA, to, out string) error {
 		return err
 	}
 	secs := int(r.timeout / time.Second)
-	cmd := fmt.Sprintf("cd %s && rm -f %s && ./why-hwp.exe convert -force -timeout %ds -to %s -o %s %s",
+	cmd := fmt.Sprintf("cd %s && rm -f %s && ./why-hwp.exe convert -engine hancom -force -timeout %ds -to %s -o %s %s",
 		shellQuote(r.work), rout, secs, to, rout, rin)
 	if msg, err := r.ssh(ctx, r.timeout+30*time.Second, cmd); err != nil {
 		if to == "txt" && strings.Contains(msg, emptyOutputMsg) {

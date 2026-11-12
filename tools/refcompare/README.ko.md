@@ -32,7 +32,7 @@ WHY_HWP_REF_HOST=user@host WHY_HWP_REF_DIR=/mnt/c/Users/me/why-hwp-ref \
 - `CORPUS` 는 `.hwp`·`.hwpx` 파일이 든 폴더다 (하위 폴더는 읽지 않는다).
 - `<name>`(확장자까지 포함한 파일 이름)마다 한글로 `OUT/ref/<name>.pdf`, `<name>.txt`, 그리고
   다른 형식(hwp 입력이면 `<name>.hwpx`, hwpx 입력이면 `<name>.hwp`)을 만든다.
-- 변환은 Windows 용으로 빌드한 `why-hwp convert`(한글 COM)다. 기본값은 지금 폴더의 모듈을
+- 변환은 Windows 용으로 빌드한 `why-hwp convert -engine hancom`(한글 COM)이다. 기본값은 지금 폴더의 모듈을
   커밋 안 된 변경까지 포함해 빌드한다. 커밋된 상태로 하려면 직접 빌드해 `-exe` 로 넘긴다:
   `git archive HEAD | tar -x -C /tmp/w && (cd /tmp/w && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o why-hwp.exe ./cmd/why-hwp)`.
 - 실행 파일은 원격 사본과 SHA-256 이 다를 때만 복사한다. 입력은 해시로 만든 이름으로 복사하므로
