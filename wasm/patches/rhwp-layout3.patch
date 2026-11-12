@@ -1,0 +1,474 @@
+# rhwp fallback-glyph fixes for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh,
+# wasm/patches/rhwp-layout.patch and wasm/patches/rhwp-layout2.patch; apply this
+# after rhwp-layout2.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - equation/hancom_glyphs.rs, pdf.rs: when the PDF font database has no HyhwpEQ
+#   or HancomEQN, equation private-use glyphs of that face are drawn as the
+#   characters they stand for in the default equation fonts.
+# - pua_glyph.rs, svg.rs, svg/pua_glyph.rs: a Wingdings private-use character
+#   (U+F020-U+F0FF) that the run's face lacks is drawn as itself in Wingdings
+#   when a Wingdings font is found and its cmap has the glyph; otherwise the
+#   Unicode display substitute is kept.
+# - pdf.rs, pua_glyph.rs and svg/tests.rs cover these changes.
+diff --git a/src/renderer/equation/hancom_glyphs.rs b/src/renderer/equation/hancom_glyphs.rs
+index a7ddd9eeec..7b4be7edd3 100644
+--- a/src/renderer/equation/hancom_glyphs.rs
++++ b/src/renderer/equation/hancom_glyphs.rs
+@@ -143 +143,4 @@ fn glyph(ch: char, role: Role) -> Option<(char, u16)> {
+-#[cfg(feature = "native-skia")]
++#[cfg(any(
++    feature = "native-skia",
++    not(all(target_arch = "wasm32", target_os = "unknown"))
++))]
+diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
+index b3c812649f..2e7c351bd0 100644
+--- a/src/renderer/pdf.rs
++++ b/src/renderer/pdf.rs
+@@ -1770,0 +1771,76 @@ fn add_font_fallbacks(svg: &str, options: &PdfExportOptions) -> String {
++/// Hancom equation faces that the PDF font database does not hold.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++fn missing_hancom_equation_families(fontdb: &usvg::fontdb::Database) -> Vec<&'static str> {
++    [
++        crate::renderer::equation::hancom_glyphs::FONT_FAMILY,
++        "HancomEQN",
++    ]
++    .into_iter()
++    .filter(|family| !font_family_exists(fontdb, family))
++    .collect()
++}
++
++/// Draw the glyph runs of a missing Hancom equation face with the characters
++/// they stand for in the default equation fonts, as the Skia renderer does.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++fn decode_missing_hancom_equation_glyphs<'a>(
++    svg: &'a str,
++    missing: &[&str],
++) -> std::borrow::Cow<'a, str> {
++    if missing.is_empty() {
++        return std::borrow::Cow::Borrowed(svg);
++    }
++    const CLOSE: &str = "</text>";
++    let mut out = String::with_capacity(svg.len());
++    let mut rest = svg;
++    while let Some(start) = rest.find("<text") {
++        out.push_str(&rest[..start]);
++        rest = &rest[start..];
++        let Some(tag_end) = rest.find('>') else {
++            break;
++        };
++        let tag = &rest[..=tag_end];
++        let after = &rest[tag_end + 1..];
++        let found = missing.iter().find_map(|family| {
++            let attr = format!("font-family=\"{family}\"");
++            tag.contains(&attr).then_some((*family, attr))
++        });
++        let close = after
++            .find(CLOSE)
++            .filter(|&close| !tag.ends_with("/>") && !after[..close].contains('<'));
++        let (Some((family, attr)), Some(close)) = (found, close) else {
++            out.push_str("<text");
++            rest = &rest["<text".len()..];
++            continue;
++        };
++        let mut italic = false;
++        let mut body = String::with_capacity(close);
++        for ch in after[..close].chars() {
++            match crate::renderer::equation::hancom_glyphs::semantic_fallback_glyph(family, ch) {
++                Some((semantic, intrinsic_italic)) => {
++                    italic |= intrinsic_italic;
++                    match semantic {
++                        '&' => body.push_str("&amp;"),
++                        '<' => body.push_str("&lt;"),
++                        '>' => body.push_str("&gt;"),
++                        _ => body.push(semantic),
++                    }
++                }
++                None => body.push(ch),
++            }
++        }
++        let family_attr = crate::renderer::equation::svg_render::DEFAULT_EQUATION_FONT_FAMILY_ATTR;
++        let replacement = if italic {
++            format!("font-style=\"italic\" {family_attr}")
++        } else {
++            family_attr.to_string()
++        };
++        out.push_str(&tag.replacen(&attr, &replacement, 1));
++        out.push_str(&body);
++        out.push_str(CLOSE);
++        rest = &after[close + CLOSE.len()..];
++    }
++    out.push_str(rest);
++    std::borrow::Cow::Owned(out)
++}
++
+@@ -2274,0 +2351 @@ where
++    let missing_equation_families = missing_hancom_equation_families(&fontdb);
+@@ -2299 +2376,2 @@ where
+-        let svg_with_fallback = apply_pdf_font_options(svg, export_options);
++        let svg = decode_missing_hancom_equation_glyphs(svg, &missing_equation_families);
++        let svg_with_fallback = apply_pdf_font_options(&svg, export_options);
+@@ -2690,0 +2769,67 @@ mod tests {
++    #[test]
++    fn missing_hancom_equation_face_glyphs_are_drawn_as_their_characters() {
++        use usvg::fontdb::{Database, FaceInfo, Language, Source, Stretch, Style, Weight, ID};
++        let mut database = Database::new();
++        assert_eq!(
++            missing_hancom_equation_families(&database),
++            vec!["HyhwpEQ", "HancomEQN"]
++        );
++        database.push_face_info(FaceInfo {
++            id: ID::dummy(),
++            source: Source::Binary(std::sync::Arc::new(Vec::new())),
++            index: 0,
++            families: vec![("HyhwpEQ".to_string(), Language::English_UnitedStates)],
++            post_script_name: "HyhwpEQ".to_string(),
++            style: Style::Normal,
++            weight: Weight::NORMAL,
++            stretch: Stretch::Normal,
++            monospaced: false,
++        });
++        assert_eq!(
++            missing_hancom_equation_families(&database),
++            vec!["HancomEQN"]
++        );
++
++        let svg = concat!(
++            "<svg>",
++            "<text x=\"1\" font-size=\"7.33\" font-family=\"HyhwpEQ\">\u{E0E5}</text>",
++            "<text font-family=\"HyhwpEQ\">\u{E034}</text>",
++            "<text font-family=\"HyhwpEQ\">\u{E055}</text>",
++            "<text font-family=\"HyhwpEQ\">\u{E000}</text>",
++            "<text font-family=\"HyhwpEQ\">\u{D7}</text>",
++            "<text font-family=\"HyhwpEQ\">\u{E09D}</text>",
++            "<text font-family=\"HancomEQN\">\u{E09D}</text>",
++            "<text font-family=\"HyhwpEQ, serif\">\u{E034}</text>",
++            "<text font-family=\"Other\">\u{E034}</text>",
++            "</svg>",
++        );
++        let eq = crate::renderer::equation::svg_render::DEFAULT_EQUATION_FONT_FAMILY_ATTR;
++        let expected = format!(
++            concat!(
++                "<svg>",
++                "<text x=\"1\" font-size=\"7.33\" font-style=\"italic\" {eq}>a</text>",
++                "<text {eq}>1</text>",
++                "<text {eq}>&lt;</text>",
++                "<text {eq}>A</text>",
++                "<text {eq}>\u{D7}</text>",
++                "<text {eq}>\u{E09D}</text>",
++                "<text {eq}>\u{3B1}</text>",
++                "<text font-family=\"HyhwpEQ, serif\">\u{E034}</text>",
++                "<text font-family=\"Other\">\u{E034}</text>",
++                "</svg>",
++            ),
++            eq = eq
++        );
++        assert_eq!(
++            decode_missing_hancom_equation_glyphs(svg, &["HyhwpEQ", "HancomEQN"]),
++            expected
++        );
++        assert!(matches!(
++            decode_missing_hancom_equation_glyphs(svg, &[]),
++            std::borrow::Cow::Borrowed(same) if same == svg
++        ));
++        let only_eqn = decode_missing_hancom_equation_glyphs(svg, &["HancomEQN"]);
++        assert!(only_eqn.contains("font-family=\"HyhwpEQ\">\u{E0E5}</text>"));
++        assert!(only_eqn.contains(&format!("<text {eq}>\u{3B1}</text>")));
++    }
++
+diff --git a/src/renderer/pua_glyph.rs b/src/renderer/pua_glyph.rs
+index 66c2703259..2b6ac7dc85 100644
+--- a/src/renderer/pua_glyph.rs
++++ b/src/renderer/pua_glyph.rs
+@@ -23,0 +24,4 @@ const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
++/// 맑은 고딕 등 원 face에 없는 Wingdings PUA를 한컴 2024 Print는 Wingdings로 그린다.
++pub(crate) const SYMBOL_PROGRAM: &str = "Wingdings";
++const SYMBOL_FIRST: u32 = 0xf020;
++const SYMBOL_LAST: u32 = 0xf0ff;
+@@ -35,0 +40,48 @@ pub(crate) fn candidate(cluster: &str) -> Option<char> {
++/// 표시 Unicode 대체(`map_pua_bullet_char`)가 있는 Wingdings 기호 영역 글자.
++pub(crate) fn symbol_program_candidate(ch: char) -> bool {
++    (SYMBOL_FIRST..=SYMBOL_LAST).contains(&(ch as u32))
++        && super::layout::map_pua_bullet_char(ch) != ch
++}
++
++/// 기호 글꼴은 Windows Symbol cmap(3,0)만 갖는 경우가 많아 그 표도 본다.
++fn symbol_glyph(face: &ttf_parser::Face<'_>, code: u32) -> Option<ttf_parser::GlyphId> {
++    let cmap = face.tables().cmap?;
++    cmap.subtables
++        .into_iter()
++        .filter(|table| {
++            table.is_unicode()
++                || (table.platform_id == ttf_parser::PlatformId::Windows && table.encoding_id == 0)
++        })
++        .find_map(|table| table.glyph_index(code))
++        .filter(|glyph| glyph.0 != 0 && face.glyph_bounding_box(*glyph).is_some())
++}
++
++fn names_family(face: &ttf_parser::Face<'_>, family: &str) -> bool {
++    face.names().into_iter().any(|name| {
++        name.name_id == ttf_parser::name_id::FAMILY
++            && name
++                .to_string()
++                .is_some_and(|value| value.trim().eq_ignore_ascii_case(family))
++    })
++}
++
++fn symbol_coverage(family: &str, bytes: &[u8], index: u32) -> [u64; 4] {
++    let mut coverage = [0u64; 4];
++    if bytes.len() > MAX_SOURCE_BYTES {
++        return coverage;
++    }
++    let Ok(face) = ttf_parser::Face::parse(bytes, index) else {
++        return coverage;
++    };
++    if !names_family(&face, family) {
++        return coverage;
++    }
++    for code in SYMBOL_FIRST..=SYMBOL_LAST {
++        if symbol_glyph(&face, code).is_some() {
++            let bit = (code - SYMBOL_FIRST) as usize;
++            coverage[bit / 64] |= 1 << (bit % 64);
++        }
++    }
++    coverage
++}
++
+@@ -103,0 +156 @@ pub(crate) struct FontCoverage {
++    symbol_faces: HashMap<String, [u64; 4]>,
+@@ -197,0 +251,34 @@ impl FontCoverage {
++    /// 찾지 못한 공급도 빈 표로 기록해 같은 렌더에서 다시 찾지 않는다.
++    pub(crate) fn register_symbol_program(&mut self, family: &str, source: Option<(&[u8], u32)>) {
++        let coverage = source.map_or([0; 4], |(bytes, index)| {
++            symbol_coverage(family, bytes, index)
++        });
++        self.symbol_faces.insert(primary(family), coverage);
++    }
++
++    pub(crate) fn has_symbol_program_record(&self, family: &str) -> bool {
++        self.symbol_faces.contains_key(&primary(family))
++    }
++
++    /// 실제 공급한 기호 글꼴의 cmap에 원 PUA 글리프가 있을 때만 그 family를 고른다.
++    pub(crate) fn symbol_program(&self, ch: char) -> Option<&'static str> {
++        if !symbol_program_candidate(ch) {
++            return None;
++        }
++        let bit = (ch as u32 - SYMBOL_FIRST) as usize;
++        self.symbol_faces
++            .get(&primary(SYMBOL_PROGRAM))
++            .filter(|coverage| coverage[bit / 64] & (1 << (bit % 64)) != 0)
++            .map(|_| SYMBOL_PROGRAM)
++    }
++
++    #[cfg(test)]
++    pub(crate) fn supply_symbol_program_for_test(&mut self, chars: &[char]) {
++        let mut coverage = [0u64; 4];
++        for &ch in chars {
++            let bit = (ch as u32 - SYMBOL_FIRST) as usize;
++            coverage[bit / 64] |= 1 << (bit % 64);
++        }
++        self.symbol_faces.insert(primary(SYMBOL_PROGRAM), coverage);
++    }
++
+@@ -253,0 +341,27 @@ pub(crate) fn candidates(text: &str) -> (Vec<Candidate>, bool) {
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn symbol_program_needs_display_substitute_and_supplied_glyph() {
++        assert!(symbol_program_candidate('\u{F0FC}'));
++        assert!(symbol_program_candidate('\u{F09F}'));
++        assert!(!symbol_program_candidate('\u{F02FC}'));
++        assert!(!symbol_program_candidate('\u{F021}'));
++        assert!(!symbol_program_candidate('A'));
++
++        let mut coverage = FontCoverage::default();
++        assert_eq!(coverage.symbol_program('\u{F0FC}'), None);
++        coverage.register_symbol_program(SYMBOL_PROGRAM, None);
++        assert!(coverage.has_symbol_program_record("Wingdings"));
++        assert_eq!(coverage.symbol_program('\u{F0FC}'), None);
++        coverage.register_symbol_program(SYMBOL_PROGRAM, Some((b"not a font", 0)));
++        assert_eq!(coverage.symbol_program('\u{F0FC}'), None);
++
++        coverage.supply_symbol_program_for_test(&['\u{F0FC}']);
++        assert_eq!(coverage.symbol_program('\u{F0FC}'), Some("Wingdings"));
++        assert_eq!(coverage.symbol_program('\u{F09F}'), None);
++        assert_eq!(coverage.symbol_program('\u{2714}'), None);
++    }
++}
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index 2ee1210345..17a5db4193 100644
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -35,0 +36,29 @@ mod stroke_pattern;
++/// 공급한 기호 글꼴로 그릴 원 PUA만 남기고 나머지 구간은 기존 표시 대체를 거친다.
++fn expand_pua_render_text_keeping(
++    text: &str,
++    style: &TextStyle,
++    keep: impl Fn(char) -> bool,
++) -> String {
++    let mut out = String::with_capacity(text.len());
++    let mut segment = String::new();
++    for ch in text.chars() {
++        if keep(ch) {
++            if !segment.is_empty() {
++                out.push_str(&expand_pua_old_hangul(&expand_pua_render_text_in_style(
++                    &segment, style,
++                )));
++                segment.clear();
++            }
++            out.push(ch);
++        } else {
++            segment.push(ch);
++        }
++    }
++    if !segment.is_empty() {
++        out.push_str(&expand_pua_old_hangul(&expand_pua_render_text_in_style(
++            &segment, style,
++        )));
++    }
++    out
++}
++
+@@ -3441,4 +3470,26 @@ impl Renderer for SvgRenderer {
+-        let text = &expand_pua_render_text_in_style(&text, style);
+-        // [Task #528] Hanyang-PUA 옛한글 → KS X 1026-1:2007 자모 시퀀스.
+-        // 한/글 2010 이전 옛한글 PUA 인코딩을 표준 자모로 변환 (KTUG 매핑).
+-        let text = &expand_pua_old_hangul(text);
++        let symbol_program = self.symbol_program_glyphs(text, style);
++        let symbol_coverage = symbol_program.then(|| self.source_font_coverage.clone());
++        let symbol_glyph = |ch: char| {
++            symbol_coverage
++                .as_ref()
++                .is_some_and(|coverage| coverage.symbol_program(ch).is_some())
++                && !style
++                    .native_pua_metrics
++                    .as_ref()
++                    .is_some_and(|program| program.advance_em(ch).is_some())
++        };
++        let symbol_cluster = |cluster: &str| {
++            let mut chars = cluster.chars();
++            chars
++                .next()
++                .filter(|&ch| chars.next().is_none() && symbol_glyph(ch))
++                .and(Some(crate::renderer::pua_glyph::SYMBOL_PROGRAM))
++        };
++        let text = &if symbol_program {
++            expand_pua_render_text_keeping(text, style, symbol_glyph)
++        } else {
++            let text = expand_pua_render_text_in_style(&text, style);
++            // [Task #528] Hanyang-PUA 옛한글 → KS X 1026-1:2007 자모 시퀀스.
++            // 한/글 2010 이전 옛한글 PUA 인코딩을 표준 자모로 변환 (KTUG 매핑).
++            expand_pua_old_hangul(&text)
++        };
+@@ -3527 +3578 @@ impl Renderer for SvgRenderer {
+-            if !style.italic {
++            if !style.italic || symbol_cluster(cluster_str).is_some() {
+@@ -3548 +3599,4 @@ impl Renderer for SvgRenderer {
+-            let cluster_font_family = if source_coverage
++            let symbol_family = symbol_cluster(cluster_str).map(|family| format!("'{family}'"));
++            let cluster_font_family = if let Some(family) = symbol_family.as_ref() {
++                family
++            } else if source_coverage
+diff --git a/src/renderer/svg/pua_glyph.rs b/src/renderer/svg/pua_glyph.rs
+index 108d587fc2..8d5db57b4d 100644
+--- a/src/renderer/svg/pua_glyph.rs
++++ b/src/renderer/svg/pua_glyph.rs
+@@ -132,0 +133,50 @@ impl SvgRenderer {
++impl SvgRenderer {
++    /// 원 face에 없는 Wingdings PUA는 PDF fontdb와 같은 공급 경로에서 Wingdings를
++    /// 찾고, 그 cmap에 원 글리프가 있을 때만 원 글자로 그린다. 없으면 표시 대체를 유지한다.
++    pub(super) fn symbol_program_glyphs(&mut self, text: &str, style: &TextStyle) -> bool {
++        let candidates = text
++            .chars()
++            .filter(|&ch| crate::renderer::pua_glyph::symbol_program_candidate(ch))
++            .filter(|&ch| {
++                !style
++                    .native_pua_metrics
++                    .as_ref()
++                    .is_some_and(|program| program.advance_em(ch).is_some())
++            })
++            .collect::<Vec<_>>();
++        if candidates.is_empty() {
++            return false;
++        }
++        let family = crate::renderer::pua_glyph::SYMBOL_PROGRAM;
++        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++        if !self.source_font_coverage.has_symbol_program_record(family) {
++            let plan = super::plan_svg_font_file_lookup_with_fallback(
++                family,
++                &self.font_paths,
++                false,
++                false,
++            );
++            let bytes = super::find_font_file(&plan)
++                .filter(|file| file.metadata().is_ok_and(|m| m.len() <= 32 * 1024 * 1024))
++                .and_then(|file| std::fs::read(file).ok());
++            self.source_font_coverage
++                .register_symbol_program(family, bytes.as_deref().map(|bytes| (bytes, 0)));
++        }
++        let covered = candidates
++            .iter()
++            .filter(|&&ch| self.source_font_coverage.symbol_program(ch).is_some())
++            .copied()
++            .collect::<Vec<_>>();
++        if covered.is_empty() {
++            return false;
++        }
++        if self.font_embed_mode != super::FontEmbedMode::None {
++            self.font_codepoints
++                .entry(family.to_owned())
++                .or_default()
++                .extend(covered);
++        }
++        true
++    }
++}
++
+diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+index f0118ee11a..1126265dcb 100644
+--- a/src/renderer/svg/tests.rs
++++ b/src/renderer/svg/tests.rs
+@@ -1497,0 +1498,38 @@ fn test_svg_hidden_middle_dot_text_uses_run_font_family() {
++
++#[test]
++fn wingdings_pua_uses_wingdings_only_when_supplied() {
++    let style = TextStyle {
++        font_size: 13.333,
++        font_family: "맑은 고딕".to_string(),
++        ..Default::default()
++    };
++    let draw = |coverage: crate::renderer::pua_glyph::FontCoverage| {
++        let mut renderer = SvgRenderer::new();
++        renderer.source_font_coverage = coverage;
++        renderer.begin_page(800.0, 600.0);
++        renderer.draw_text("가\u{F0FC}나", 10.0, 20.0, &style);
++        renderer.output().to_string()
++    };
++    let family_of = |output: &str, text: &str| -> Option<String> {
++        let close = output.find(&format!(">{text}</text>"))?;
++        let open = output[..close].rfind("<text")?;
++        let tag = &output[open..close];
++        let at = tag.find(" font-family=\"")? + 14;
++        let end = tag[at..].find('"')?;
++        Some(tag[at..at + end].to_string())
++    };
++
++    let mut supplied = crate::renderer::pua_glyph::FontCoverage::default();
++    supplied.supply_symbol_program_for_test(&['\u{F0FC}']);
++    let output = draw(supplied);
++    assert_eq!(family_of(&output, "\u{F0FC}").as_deref(), Some("&apos;Wingdings&apos;"));
++    assert!(!output.contains('\u{2714}'));
++    assert_ne!(family_of(&output, "가").as_deref(), Some("&apos;Wingdings&apos;"));
++
++    let mut missing = crate::renderer::pua_glyph::FontCoverage::default();
++    missing.register_symbol_program("Wingdings", None);
++    let output = draw(missing);
++    assert!(family_of(&output, "\u{2714}").is_some());
++    assert!(!output.contains('\u{F0FC}'));
++    assert!(!output.contains("Wingdings"));
++}

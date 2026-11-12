@@ -120,6 +120,15 @@ With both, 12 of 18 test documents pass.
 | Wingdings U+F0FC (check mark) advances 1609/2048 em, the width in the font's `hmtx` | It was measured with the full width of the substitute `✔` |
 | The invisible text drawn over a vector `·`, kept so the character can be found and copied, carries the run's `font-family` | It had no `font-family` |
 
+`patches/rhwp-layout3.patch` is applied after `rhwp-layout2.patch` and changes
+which glyph rhwp draws when a symbol font is missing or present. With all
+three, 13 of 18 test documents pass.
+
+| Change | Before |
+|--------|--------|
+| When the PDF font database has no HyhwpEQ or HancomEQN, equation private-use characters of that face are drawn as the characters they stand for (`a`, `<`, `α`, ...) in the default equation fonts, as rhwp's Skia renderer already does | The private-use code points went to PDF font fallback, which picked whatever installed font covered them (on the Linux test computer: OpenSymbol, Font Awesome, Meslo, Adwaita) |
+| A Wingdings private-use character (U+F020-U+F0FF) that the run's font lacks is drawn as itself in Wingdings when a Wingdings font is found and has the glyph, as Hancom Office prints it. Without Wingdings the Unicode substitute (such as `✔`) is kept | The Unicode substitute was always drawn, in the run's font, so its width and position differed from Hancom Office's Wingdings glyph |
+
 The patches also add rhwp unit tests for these changes. They are zero-context
 diffs because the surrounding rhwp lines contain em dashes, which this
 repository's commit check refuses. The comment at the top of each file lists
