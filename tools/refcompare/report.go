@@ -94,10 +94,23 @@ func renderReport(rows []row, o cmpOptions, candDir string, reconvert bool) stri
 }
 
 func detailLines(b *strings.Builder, what string, p pdfResult, o cmpOptions) {
-	fmt.Fprintf(b, "- %s: %d/%d pages, %d/%d words, %d matched (%d out of reading order), %d on another page, %d edges measured\n",
-		what, p.RefPages, p.CandPages, p.RefWords, p.CandWords, p.Matched, p.Reordered, p.PageMoves, p.Edges)
+	unit := "pages"
+	if p.TwoUp {
+		unit = "sheets"
+	}
+	fmt.Fprintf(b, "- %s: %d/%d %s, %d/%d words, %d matched (%d out of reading order), %d on another page, %d edges measured\n",
+		what, p.RefPages, p.CandPages, unit, p.RefWords, p.CandWords, p.Matched, p.Reordered, p.PageMoves, p.Edges)
+	if p.TwoUp {
+		h := p.halfScales()
+		fmt.Fprintf(b, "- %s: two pages to a sheet, compared half by half (L left, R right): scale of the left halves %s, of the right halves %s\n",
+			what, scaleRange(h.LeftMin, h.LeftMax, h.Left), scaleRange(h.RightMin, h.RightMax, h.Right))
+		for _, d := range h.Differ {
+			fmt.Fprintf(b, "- %s: the halves of sheet %d differ in scale: left %.4f from %d edges, right %.4f from %d edges\n",
+				what, d.Sheet, d.Left, d.LeftEdges, d.Right, d.RightEdges)
+		}
+	}
 	if p.MaxDev > o.Tol {
-		fmt.Fprintf(b, "- %s: largest deviation %.2f pt at %q (ref page %d)\n", what, p.MaxDev, p.Worst.Text, p.Worst.Page)
+		fmt.Fprintf(b, "- %s: largest deviation %.2f pt at %q (ref page %s)\n", what, p.MaxDev, p.Worst.Text, pageLabel(p.TwoUp, p.Worst.Page-1))
 	}
 	if p.BaseEdges > 0 || p.BoxEdges > 0 {
 		fmt.Fprintf(b, "- %s: %d edges measured at the baseline", what, p.BaseEdges)
@@ -110,17 +123,17 @@ func detailLines(b *strings.Builder, what string, p pdfResult, o cmpOptions) {
 		switch {
 		case !pg.Picture:
 		case !pg.InkDone:
-			fmt.Fprintf(b, "- %s: page %d is judged by its picture (%s) and its picture could not be compared: %s\n", what, i+1, wordSide(pg), pg.InkErr)
+			fmt.Fprintf(b, "- %s: page %s is judged by its picture (%s) and its picture could not be compared: %s\n", what, pageLabel(p.TwoUp, i), wordSide(pg), pg.InkErr)
 		default:
-			fmt.Fprintf(b, "- %s: page %d is judged by its picture (%s): %.2f %% of the outline is more than %.2f pt off, limit %.2f %%\n",
-				what, i+1, wordSide(pg), 100*pg.Ink, o.Tol, 100*o.InkLimit)
+			fmt.Fprintf(b, "- %s: page %s is judged by its picture (%s): %.2f %% of the outline is more than %.2f pt off, limit %.2f %%\n",
+				what, pageLabel(p.TwoUp, i), wordSide(pg), 100*pg.Ink, o.Tol, 100*o.InkLimit)
 		}
 	}
 	if len(p.RefOnlySample) > 0 {
-		fmt.Fprintf(b, "- %s: only in ref: %s\n", what, sample(p.RefOnlySample, p.RefOnly))
+		fmt.Fprintf(b, "- %s: only in ref: %s\n", what, sample(p.RefOnlySample, p.RefOnly, p.TwoUp))
 	}
 	if len(p.CandOnlySample) > 0 {
-		fmt.Fprintf(b, "- %s: only in cand: %s\n", what, sample(p.CandOnlySample, p.CandOnly))
+		fmt.Fprintf(b, "- %s: only in cand: %s\n", what, sample(p.CandOnlySample, p.CandOnly, p.TwoUp))
 	}
 	if len(p.SubstSample) > 0 {
 		s := strings.Join(p.SubstSample, ", ")
@@ -168,9 +181,9 @@ func pictureCell(p pdfResult) string {
 		switch {
 		case !pg.Picture:
 		case !pg.InkDone:
-			parts = append(parts, fmt.Sprintf("p%d not compared", i+1))
+			parts = append(parts, fmt.Sprintf("p%s not compared", pageLabel(p.TwoUp, i)))
 		default:
-			parts = append(parts, fmt.Sprintf("p%d %.2f %%", i+1, 100*pg.Ink))
+			parts = append(parts, fmt.Sprintf("p%s %.2f %%", pageLabel(p.TwoUp, i), 100*pg.Ink))
 		}
 		if pg.Picture && pg.CandOnly > 0 {
 			parts[len(parts)-1] += fmt.Sprintf(", %d words not paired", pg.CandOnly)
@@ -201,16 +214,16 @@ func inkTable(b *strings.Builder, rows []row, o cmpOptions) {
 			if pg.InkDone {
 				ink = fmt.Sprintf("%.2f", 100*pg.Ink)
 			}
-			fmt.Fprintf(b, "| %s | %d | %d/%d | %d/%d | %.2f | %s | %s |\n", cell(r.Name), i+1,
+			fmt.Fprintf(b, "| %s | %s | %d/%d | %d/%d | %.2f | %s | %s |\n", cell(r.Name), pageLabel(r.PDF.TwoUp, i),
 				pg.RefWords, pg.CandWords, pg.RefOnly, pg.CandOnly, pg.MaxDev, cell(ink), by)
 		}
 	}
 }
 
-func sample(ws []located, total int) string {
+func sample(ws []located, total int, twoUp bool) string {
 	parts := make([]string, len(ws))
 	for i, w := range ws {
-		parts[i] = fmt.Sprintf("%q p%d", clip(w.Text), w.Page)
+		parts[i] = fmt.Sprintf("%q p%s", clip(w.Text), pageLabel(twoUp, w.Page-1))
 	}
 	s := strings.Join(parts, ", ")
 	if total > len(ws) {
@@ -228,13 +241,50 @@ func shortResult(p pdfResult, o cmpOptions) string {
 }
 
 func scaleCell(p pdfResult) string {
+	if p.TwoUp {
+		return twoUpCell(p)
+	}
 	if p.Matched == 0 {
 		return "-"
 	}
-	if fmt.Sprintf("%.4f", p.ScaleMin) == fmt.Sprintf("%.4f", p.ScaleMax) {
-		return fmt.Sprintf("%.4f", p.ScaleMin)
+	return scaleRange(p.ScaleMin, p.ScaleMax, 1)
+}
+
+// scaleRange writes the smallest and the largest of n scales.
+func scaleRange(lo, hi float64, n int) string {
+	if n == 0 {
+		return "-"
 	}
-	return fmt.Sprintf("%.4f-%.4f", p.ScaleMin, p.ScaleMax)
+	if fmt.Sprintf("%.4f", lo) == fmt.Sprintf("%.4f", hi) {
+		return fmt.Sprintf("%.4f", lo)
+	}
+	return fmt.Sprintf("%.4f-%.4f", lo, hi)
+}
+
+// twoUpCell tells that a document was compared half by half, the fit
+// scales of its left and right halves, and the sheets whose two halves
+// differ in scale.
+func twoUpCell(p pdfResult) string {
+	h := p.halfScales()
+	s := fmt.Sprintf("two-up: left %s, right %s", scaleRange(h.LeftMin, h.LeftMax, h.Left), scaleRange(h.RightMin, h.RightMax, h.Right))
+	if len(h.Differ) == 0 {
+		return s
+	}
+	s += "; halves differ on sheet"
+	if len(h.Differ) > 1 {
+		s += "s"
+	}
+	for i, d := range h.Differ {
+		if i == sampleWords {
+			s += fmt.Sprintf(" (+%d more)", len(h.Differ)-i)
+			break
+		}
+		if i > 0 {
+			s += ","
+		}
+		s += fmt.Sprintf(" %d", d.Sheet)
+	}
+	return s
 }
 
 func txtCell(r row) string {

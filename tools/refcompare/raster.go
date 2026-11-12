@@ -222,23 +222,31 @@ func loneOutline(a, b *pageImage, r int, move func(x, y float64) (float64, float
 
 // measureInk draws the picture pages of a comparison, or every page with
 // o.InkAll, and stores their picture difference. A picture page has no
-// paired word and so no fit; its two pages are compared as they are.
+// paired word and so no fit; its two pages are compared as they are. Of a
+// sheet compared half by half, the other half is painted white.
 func measureInk(refPath, candPath string, r *pdfResult, o cmpOptions) {
+	var ref, cand *pageImage
+	var err error
+	drawn := -1
 	for i := range r.Page {
 		p := &r.Page[i]
 		if !p.Picture && !o.InkAll {
 			continue
 		}
-		ref, err := renderPage(refPath, i)
+		sheet, side := i, 0
+		if r.TwoUp {
+			sheet, side = i/2, 1+i%2
+		}
+		if sheet != drawn {
+			drawn = sheet
+			if ref, err = renderPage(refPath, sheet); err == nil {
+				cand, err = renderPage(candPath, sheet)
+			}
+		}
 		if err != nil {
 			p.InkErr = err.Error()
 			continue
 		}
-		cand, err := renderPage(candPath, i)
-		if err != nil {
-			p.InkErr = err.Error()
-			continue
-		}
-		p.Ink, p.InkDone = inkDiff(ref, cand, p.Fit, o.Tol), true
+		p.Ink, p.InkDone = inkDiff(halfImage(ref, side), halfImage(cand, side), p.Fit, o.Tol), true
 	}
 }

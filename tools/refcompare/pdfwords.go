@@ -28,6 +28,10 @@ type pdfWords struct {
 	// Base is parallel to Words and is set by attachBaselines, which is run
 	// only for a document that has Type 3 fonts. It is nil otherwise.
 	Base []wordBase
+	// TwoUp tells that the pages are the halves of sheets printed two
+	// pages to a sheet (see halves): pages 2n and 2n+1 are the left and
+	// the right half of sheet n.
+	TwoUp bool
 }
 
 // wordBase is the baseline of a word. OK is false when the word's first

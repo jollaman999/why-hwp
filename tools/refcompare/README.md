@@ -125,6 +125,66 @@ With `-skip-memo` a reference word with no partner is ignored when its page was
 shrunk (fit scale above 1.01) and, after the fit, it lands right of every
 candidate word on the page. That is where Hancom Office prints memos.
 
+### Two pages to a sheet
+
+Hancom Office follows the print settings of a document, and one of them prints
+two pages side by side on a landscape sheet. When both PDFs shrink the pages
+by the same amount, one fit of the sheet holds both pages and nothing else is
+needed. When they do not, each page is scaled about the corner of its own half
+of the sheet and no single fit holds both. Hancom Office shrinks every page
+once more for memo balloons: in one document of 20 sheets the candidate's
+pages were 1.27 times the reference's, so the two halves needed fits 114 pt
+apart, and compared sheet by sheet the document read 600 pt off with 69 words
+on another page.
+
+Such a document is compared half by half. The left and the right half of
+every sheet are two pages: each has its own reading order, its own fit of the
+`-fit` kind (the same kinds as for any page), its own picture test, and a word
+that went to the other half is a word on another page (`moved`).
+
+A document is compared this way only when all of this holds:
+
+1. Every page of both PDFs is landscape.
+2. In both PDFs no word lies across the vertical centre line of its page, and
+   there are words on both sides of it.
+3. The halves are fitted with scale and translation, and on more than half of
+   the sheets whose two halves both have a scale (6 edges or more each) the
+   two fits
+   - put the top left corners of the two halves half a candidate sheet apart,
+     to within 2 pt, which is what printing two pages to a sheet does whatever
+     the pages are scaled by, and
+   - that is more than 4 pt from where one fit of the sheet, with the mean of
+     the two scales, would put them (4 pt is 1 % of half an A4 sheet, the
+     same share that marks a memo shrink).
+
+The two distances in 3 are the same when the scale is 1, so both hold only
+when the halves are scaled and their corners stay in place. Everything else
+is compared as before, one page to a sheet, which is the stricter test:
+
+- A landscape page with two columns whose right column the candidate moves
+  (by 5 pt or by 80 pt) has scale 1 in both halves. It fails as before.
+- A landscape page that Hancom Office shrank as a whole is held by one fit.
+- A two-up document whose pages both PDFs shrink alike is held by one fit of
+  the sheet too. A word that goes to the other half is then not `moved`; it
+  is hundreds of points off.
+
+In the document above 18 of the 20 sheets met 3 (corners 0.3 to 1.0 pt from
+half a sheet apart, 114 to 115 pt from one fit). The other two have a left
+half with three words and a left half whose fit was pulled off by words
+paired with the wrong partner.
+
+In the report such a document has `two-up: left <scales>, right <scales>` in
+the `scale` column, `pages` counts sheets, and a page is named by its sheet
+and half: `p8L` is the left half of sheet 8. The two halves of a sheet are
+pages of one document and should have one scale. Where they differ by more
+than 0.5 % (the pages of the documents that are not two-up differ by up to
+0.33 %), the cell adds `halves differ on sheets ...`, and `## Differences`
+gives both scales and the number of edges each was made from. Like every fit
+scale this is shown and does not decide the verdict.
+
+For the picture test of a half the sheet is drawn and the other half is
+painted white.
+
 ### Type 3 fonts
 
 Hancom Office writes some fonts into the PDF as Type 3 fonts. Such a font
@@ -224,8 +284,9 @@ A document passes when
 With `-reconvert`, the candidate HWP/HWPX printed by Hancom Office must pass the
 same test against the reference PDF.
 
-Shown but not part of the verdict: substitutions (`subst`), the fit scale, and
-the TXT comparison. TXT is compared line by line after dropping blank lines and
+Shown but not part of the verdict: substitutions (`subst`), the fit scale
+(also when the two halves of a two-up sheet differ in it), and the TXT
+comparison. TXT is compared line by line after dropping blank lines and
 trailing spaces and decoding `&#NNNN;` (Hancom writes characters outside its
 code page that way); the two converters lay out tables and spaces in text
 differently, so it is a hint, not a test.
@@ -246,4 +307,10 @@ substitutions.
 - A chart on a page where the reference has words is not a picture page. The
   candidate's chart labels are then words without a partner.
 - Hancom Office follows the document's print settings, for example printing
-  two pages on one sheet. The candidate does not, so page counts differ.
+  two pages on one sheet. A candidate that does not has another page count.
+- Two pages to a sheet are told from the words alone (see *Two pages to a
+  sheet*). Only two portrait pages side by side on a landscape sheet are
+  handled. A two-up sheet with a word across its centre line, or whose halves
+  are not scaled, is compared as one page.
+- A half gets its own fit like every page, so a half that is moved or scaled
+  as a whole is not a deviation.

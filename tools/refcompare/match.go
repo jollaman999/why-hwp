@@ -198,6 +198,10 @@ type located struct {
 
 // pdfResult is the comparison of one candidate PDF with its reference.
 type pdfResult struct {
+	// TwoUp tells that the document is printed two pages to a sheet and
+	// was compared half by half (see compareSheets). RefPages and
+	// CandPages count sheets, and Page has one entry for each half.
+	TwoUp               bool
 	RefPages, CandPages int
 	RefWords, CandWords int
 	Matched             int // reference words whose every character has a partner
@@ -215,7 +219,9 @@ type pdfResult struct {
 	RefOnlySample       []located
 	CandOnlySample      []located
 	SubstSample         []string
-	// Page has one entry for each page number that both PDFs have.
+	// Page has one entry for each page number that both PDFs have. A
+	// page number in located and in Page is that of a half with TwoUp
+	// (see pageLabel).
 	Page []pageStat
 	// PictureWords counts the candidate words without a partner on
 	// picture pages. They are not in CandOnly.
@@ -229,6 +235,7 @@ type pageStat struct {
 	RefOnly, CandOnly   int     // words without a partner; CandOnly counts them on a picture page too
 	MaxDev              float64 // largest edge deviation between the two pages
 	Fit                 affine  // fit of the two pages; the identity when there is no paired word
+	FitEdges            int     // edges the fit was made from; with -fit scale it has a scale from minScalePoints up
 	// Picture is set when the reference page has no word. Hancom Office
 	// draws chart text as outlines, so there is nothing to pair; such a
 	// page is judged by drawing both pages (see inkDiff). A candidate
@@ -486,6 +493,9 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 		RefPages: len(ref.Pages), CandPages: len(cand.Pages),
 		RefWords: len(ref.Words), CandWords: len(cand.Words),
 	}
+	if ref.TwoUp && cand.TwoUp {
+		r.TwoUp, r.RefPages, r.CandPages = true, r.RefPages/2, r.CandPages/2
+	}
 	r.Page = make([]pageStat, min(len(ref.Pages), len(cand.Pages)))
 	for i := range r.Page {
 		r.Page[i].Fit = affine{S: 1}
@@ -509,7 +519,7 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 	r.Substituted = len(subst)
 	for _, s := range subst {
 		if len(r.SubstSample) < sampleWords {
-			r.SubstSample = append(r.SubstSample, fmt.Sprintf("%q>%q p%d", a.text[s[0]], b.text[s[1]], ref.Words[a.word[s[0]]].Page+1))
+			r.SubstSample = append(r.SubstSample, fmt.Sprintf("%q>%q p%s", a.text[s[0]], b.text[s[1]], pageLabel(r.TwoUp, ref.Words[a.word[s[0]]].Page)))
 		}
 	}
 
@@ -558,7 +568,7 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 		f := fitPoints(rp, cp, mode)
 		fits[k] = f
 		if k.rp == k.cp && k.rp < len(r.Page) {
-			r.Page[k.rp].Fit = f
+			r.Page[k.rp].Fit, r.Page[k.rp].FitEdges = f, len(idx)
 		}
 		if d, ok := dominant[k.rp]; !ok || len(idx) > len(groups[d]) ||
 			(len(idx) == len(groups[d]) && k.cp < d.cp) {

@@ -136,7 +136,7 @@ func compareDoc(name, refDir, candDir string, opt cmpOptions, rc *reconverter) r
 		r.Err = err.Error()
 	} else {
 		r.BaseNote = loadBaselines(refPDF, candPDF, ref, cand)
-		res := comparePDF(ref, cand, opt)
+		res := compareSheets(ref, cand, opt)
 		measureInk(refPDF, candPDF, &res, opt)
 		r.PDF = &res
 	}
@@ -166,7 +166,7 @@ func compareDoc(name, refDir, candDir string, opt cmpOptions, rc *reconverter) r
 			if note := loadBaselines(refPDF, pdf, ref, words); note != "" && r.BaseNote == "" {
 				r.BaseNote = note
 			}
-			res := comparePDF(ref, words, opt)
+			res := compareSheets(ref, words, opt)
 			measureInk(refPDF, pdf, &res, opt)
 			r.RT = &res
 		}
