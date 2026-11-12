@@ -64,7 +64,7 @@ func TestCompileCacheHit(t *testing.T) {
 	if _, err := get(testCtx(t)); err != nil {
 		t.Fatal(err)
 	}
-	dir := compileCacheDir()
+	dir := filepath.Join(compileCacheRoot(), cacheKey(engineSum))
 	ents, err := os.ReadDir(dir)
 	if err != nil || len(ents) == 0 {
 		t.Fatalf("compilation cache %s is empty: %v", dir, err)

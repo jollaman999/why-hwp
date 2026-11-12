@@ -9,6 +9,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -263,4 +265,176 @@ func TestRemoveStaleTemp(t *testing.T) {
 	}
 
 	removeStaleTemp(filepath.Join(dir, "missing"), now)
+}
+
+func TestCacheKey(t *testing.T) {
+	a := sumOf([]byte("engine a"))
+	b := sumOf([]byte("engine b"))
+	ka := cacheKey(a + "  engine.wasm.gz\n")
+	if len(ka) != 16 {
+		t.Fatalf("key %q is not 16 characters", ka)
+	}
+	if _, err := hex.DecodeString(ka); err != nil {
+		t.Fatalf("key %q is not hex: %v", ka, err)
+	}
+	if got := cacheKey(strings.ToUpper(a)); got != ka {
+		t.Errorf("key of the same checksum in upper case = %q, want %q", got, ka)
+	}
+	if kb := cacheKey(b); kb == ka {
+		t.Errorf("two engines share the key %q", ka)
+	}
+}
+
+// emptyModule is the smallest valid WebAssembly module.
+var emptyModule = []byte("\x00asm\x01\x00\x00\x00")
+
+// cacheTree is a fake user cache folder holding a compilation cache root
+// with the current build's directory, the caches of other builds, the
+// layout of older releases, a cache being written by another process and
+// symbolic links to files outside the cache.
+type cacheTree struct {
+	root, key       string
+	gone, kept      []string
+	outsideFile     string
+	outsideLinkDest string
+}
+
+func newCacheTree(t *testing.T) *cacheTree {
+	t.Helper()
+	base := t.TempDir()
+	c := &cacheTree{root: filepath.Join(base, "why-hwp", "wazero"), key: cacheKey(sumOf([]byte("now")))}
+	now := time.Now()
+	old := now.Add(-staleTempAge - time.Minute)
+	write := func(rel string, mtime time.Time) string {
+		p := filepath.Join(c.root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("entry"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	otherKey := cacheKey(sumOf([]byte("older engine")))
+	c.gone = []string{
+		write(filepath.Join(otherKey, "wazero-v1.12.0-amd64-linux", "aaaa"), old),
+		write(filepath.Join(otherKey, "wazero-v1.12.0-amd64-linux", "aaaa.1.tmp"), old),
+		write(filepath.Join("wazero-v1.12.0-amd64-linux", "bbbb"), old),
+		write(filepath.Join("wazero-v0.0.0-amd64-linux", "cccc"), old),
+		write("stray", old),
+	}
+	c.gone = append(c.gone,
+		filepath.Join(c.root, otherKey),
+		filepath.Join(c.root, "wazero-v1.12.0-amd64-linux"),
+		filepath.Join(c.root, "wazero-v0.0.0-amd64-linux"))
+	c.kept = []string{
+		write(filepath.Join(c.key, "wazero-v1.12.0-amd64-linux", "dddd"), old),
+		write(filepath.Join("busy", "wazero-v1.13.0-amd64-linux", "eeee.2.tmp"), now),
+		write(filepath.Join("wazero-v1.11.0-amd64-linux", "ffff.3.tmp"), now),
+	}
+
+	outside := filepath.Join(base, "fonts")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c.outsideFile = filepath.Join(outside, "font.ttf")
+	if err := os.WriteFile(c.outsideFile, []byte("font"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(c.root, "link")
+	inner := filepath.Join(c.root, otherKey, "wazero-v1.12.0-amd64-linux", "link")
+	if os.Symlink(outside, link) == nil && os.Symlink(outside, inner) == nil {
+		c.outsideLinkDest = outside
+		c.gone = append(c.gone, link, inner)
+	}
+	return c
+}
+
+func (c *cacheTree) check(t *testing.T, removed bool) {
+	t.Helper()
+	for _, p := range c.gone {
+		_, err := os.Lstat(p)
+		if exists := err == nil; exists == removed {
+			t.Errorf("%s: exists %v, want %v", p, exists, !removed)
+		}
+	}
+	for _, p := range append(c.kept, c.outsideFile) {
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("%s was removed: %v", p, err)
+		}
+	}
+	if c.outsideLinkDest == "" {
+		t.Log("symbolic links not supported here; link cases skipped")
+	} else if fi, err := os.Lstat(c.outsideLinkDest); err != nil || !fi.IsDir() {
+		t.Errorf("link target %s was removed: %v", c.outsideLinkDest, err)
+	}
+}
+
+func TestRemoveOldCaches(t *testing.T) {
+	c := newCacheTree(t)
+	removeOldCaches(c.root, c.key, time.Now())
+	c.check(t, true)
+	removeOldCaches(filepath.Join(c.root, "missing"), c.key, time.Now())
+}
+
+func TestCompileCachedRemovesOldCaches(t *testing.T) {
+	c := newCacheTree(t)
+	e, err := compileCached(context.Background(), emptyModule, c.root, c.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.rt.Close(context.Background())
+	if !hasCacheEntry(filepath.Join(c.root, c.key)) {
+		t.Fatal("no cache entry was written for the current build")
+	}
+	c.check(t, true)
+	ents, err := os.ReadDir(c.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, ent := range ents {
+		names = append(names, ent.Name())
+	}
+	want := []string{"busy", c.key, "wazero-v1.11.0-amd64-linux"}
+	sort.Strings(want)
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("cache root holds %v, want %v", names, want)
+	}
+}
+
+func TestCompileCachedFailureRemovesNothing(t *testing.T) {
+	c := newCacheTree(t)
+	if _, err := compileCached(context.Background(), []byte("not wasm"), c.root, c.key); err == nil {
+		t.Fatal("compiling garbage succeeded")
+	}
+	c.check(t, false)
+}
+
+func TestCompileCachedWithoutEntryRemovesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory the test cannot write to")
+	}
+	c := newCacheTree(t)
+	dir := filepath.Join(c.root, c.key)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	c.kept = c.kept[1:]
+	if err := os.Mkdir(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	e, err := compileCached(context.Background(), emptyModule, c.root, c.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.rt.Close(context.Background())
+	if hasCacheEntry(dir) {
+		t.Fatal("a cache entry was written into a read-only directory")
+	}
+	c.check(t, false)
 }

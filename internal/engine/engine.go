@@ -14,8 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,11 +102,30 @@ func compileEmbedded() (*engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir := compileCacheDir()
-	if dir != "" {
-		removeStaleTemp(dir, time.Now())
+	return compileCached(context.Background(), wasm, compileCacheRoot(), cacheKey(engineSum))
+}
+
+// compileCached compiles wasm with the compilation cache root/key. Once the
+// compile has succeeded and left its entry there, the caches of other builds
+// in root are deleted. root "" compiles without a cache.
+func compileCached(ctx context.Context, wasm []byte, root, key string) (*engine, error) {
+	dir := ""
+	if root != "" {
+		dir = filepath.Join(root, key)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			dir = ""
+		} else {
+			removeStaleTemp(dir, time.Now())
+		}
 	}
-	return newEngine(context.Background(), wasm, dir)
+	e, err := newEngine(ctx, wasm, dir)
+	if err != nil {
+		return nil, err
+	}
+	if dir != "" && hasCacheEntry(dir) {
+		removeOldCaches(root, key, time.Now())
+	}
+	return e, nil
 }
 
 var engineLoader = newLoader(compileEmbedded)
@@ -151,18 +172,114 @@ func verifySHA256(data []byte, sum string) error {
 	return nil
 }
 
-// compileCacheDir returns the wazero compilation cache directory, or "" when
-// it cannot be created, in which case the module is compiled without a cache.
-func compileCacheDir() string {
+// compileCacheRoot returns the root of the wazero compilation caches,
+// why-hwp/wazero in the user cache folder, or "" when there is no user cache
+// folder. Each engine build has its own directory in it, named by cacheKey.
+func compileCacheRoot() string {
 	base, err := userCacheDir()
 	if err != nil {
 		return ""
 	}
-	dir := filepath.Join(base, "why-hwp", "wazero")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	return filepath.Join(base, "why-hwp", "wazero")
+}
+
+// cacheKey names the compilation cache directory of one engine build: the
+// first 16 hex digits of the SHA-256 of the engine checksum sum and the
+// wazero version. A new engine or a new wazero gets a new directory, so
+// every other directory beside it belongs to another build.
+func cacheKey(sum string) string {
+	var id string
+	if fields := strings.Fields(sum); len(fields) > 0 {
+		id = strings.ToLower(fields[0])
+	}
+	h := sha256.Sum256([]byte(id + "\x00" + wazeroVersion()))
+	return hex.EncodeToString(h[:8])
+}
+
+// wazeroVersion returns the version of the wazero module this program was
+// built with, or "" when the build information has none.
+func wazeroVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
 		return ""
 	}
-	return dir
+	for _, dep := range info.Deps {
+		if dep.Path != "github.com/tetratelabs/wazero" {
+			continue
+		}
+		if dep.Replace != nil {
+			dep = dep.Replace
+		}
+		return dep.Path + "@" + dep.Version + " " + dep.Sum
+	}
+	return ""
+}
+
+// hasCacheEntry reports whether dir holds a finished cache entry: a regular
+// file, not a "*.tmp" one, in one of its direct subdirectories (wazero writes
+// to dir/wazero-<version>-<arch>-<os>/<hex>).
+func hasCacheEntry(dir string) bool {
+	subs, _ := os.ReadDir(dir)
+	for _, sub := range subs {
+		if !sub.IsDir() {
+			continue
+		}
+		ents, _ := os.ReadDir(filepath.Join(dir, sub.Name()))
+		for _, ent := range ents {
+			if ent.Type().IsRegular() && !strings.HasSuffix(ent.Name(), ".tmp") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// removeOldCaches deletes everything in root, the compilation cache root,
+// except the directory keep: the caches of other engine builds and the
+// wazero-<version>-<arch>-<os> directories that older releases wrote straight
+// into root. Symbolic links are removed, not followed. A directory or file
+// holding a "*.tmp" file younger than staleTempAge is left alone, since
+// another process may be writing it. Errors are ignored.
+//
+// Another release may still be reading an entry deleted here: Linux and
+// macOS keep an open file readable after it is deleted, Windows may refuse
+// the deletion, and either way that release only compiles again next time.
+func removeOldCaches(root, keep string, now time.Time) {
+	ents, _ := os.ReadDir(root)
+	for _, ent := range ents {
+		if ent.Name() == keep {
+			continue
+		}
+		p := filepath.Join(root, ent.Name())
+		if ent.Type()&os.ModeSymlink == 0 && hasFreshTemp(p, now) {
+			continue
+		}
+		if ent.IsDir() {
+			os.RemoveAll(p)
+		} else {
+			os.Remove(p)
+		}
+	}
+}
+
+// hasFreshTemp reports whether p is, or is a directory holding, a "*.tmp"
+// regular file not older than staleTempAge. Symbolic links are not followed.
+func hasFreshTemp(p string, now time.Time) bool {
+	fresh := false
+	filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || fresh {
+			return nil
+		}
+		if !d.Type().IsRegular() || !strings.HasSuffix(d.Name(), ".tmp") {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && now.Sub(info.ModTime()) <= staleTempAge {
+			fresh = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return fresh
 }
 
 // staleTempAge is how old a "*.tmp" file in the compilation cache must be
