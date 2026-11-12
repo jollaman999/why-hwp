@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image/color"
 	"image/png"
@@ -21,7 +22,7 @@ import (
 // TestMain points the compilation and font caches at a temporary directory
 // so the tests neither read nor fill the user's caches.
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "why-hwp-engine-test-")
+	dir, err := os.MkdirTemp("", "why-hwp-enginetest-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -339,5 +340,67 @@ func TestCanceled(t *testing.T) {
 	cancel()
 	if _, err := Version(ctx); err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
 		t.Errorf("canceled context: err = %v", err)
+	}
+}
+
+// gatedRunner runs the real engine, but holds convert until gate is closed
+// and then runs it with a ctx of its own, as a run that had already started
+// when its caller gave up would go on.
+type gatedRunner struct {
+	e       *engine
+	started chan struct{}
+	gate    chan struct{}
+	err     error
+}
+
+func (g *gatedRunner) run(ctx context.Context, args []string, mounts []mount) ([]byte, error) {
+	if args[0] != "convert" {
+		return g.e.run(ctx, args, mounts)
+	}
+	close(g.started)
+	<-g.gate
+	var out []byte
+	out, g.err = g.e.run(context.Background(), args, mounts)
+	return out, g.err
+}
+
+// TestConvertAbandonedRun checks with the real engine that a run left
+// behind by a timed-out Convert, whose work directory is removed under it,
+// ends without a panic or a warning and leaves nothing in the temporary
+// folder.
+func TestConvertAbandonedRun(t *testing.T) {
+	needEngine(t)
+	warns := offline(t)
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	e, err := get(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &gatedRunner{e: e, started: make(chan struct{}), gate: make(chan struct{})}
+	old := loadRunner
+	t.Cleanup(func() { loadRunner = old })
+	loadRunner = func(context.Context) (runner, error) { return g, nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	out := filepath.Join(t.TempDir(), "a.txt")
+	errc := make(chan error, 1)
+	go func() { errc <- Convert(ctx, filepath.Join("..", "..", "testdata", "sample.hwp"), out, "txt") }()
+	<-g.started
+	cancel()
+	if err := <-errc; !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want %v", err, context.Canceled)
+	}
+	close(g.gate)
+	detached.Wait()
+	t.Logf("run left behind ended with: %v", g.err)
+	if len(*warns) > 0 {
+		t.Errorf("warnings from the run left behind: %q", *warns)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("output written by the run left behind: %v", err)
+	}
+	if ents, _ := os.ReadDir(tmp); len(ents) > 0 {
+		t.Errorf("left in the temporary folder: %v", ents)
 	}
 }

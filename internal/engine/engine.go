@@ -1,6 +1,10 @@
 // Package engine runs the embedded why-hwp-engine WebAssembly module (rhwp
 // and resvg built for wasm32-wasip1) with wazero, so conversion and SVG
 // rendering need no external program.
+//
+// A call whose ctx ends returns at once, but the engine run it started goes
+// on to its end in the background, using CPU until then; a long-lived
+// process that times calls out may see that load pile up.
 package engine
 
 import (
@@ -184,15 +188,16 @@ func compileCacheRoot() string {
 }
 
 // cacheKey names the compilation cache directory of one engine build: the
-// first 16 hex digits of the SHA-256 of the engine checksum sum and the
-// wazero version. A new engine or a new wazero gets a new directory, so
-// every other directory beside it belongs to another build.
+// first 16 hex digits of the SHA-256 of the engine checksum sum, the wazero
+// version and runtimeOptions. A new engine, a new wazero or new compile
+// options get a new directory, so every other directory beside it belongs
+// to another build.
 func cacheKey(sum string) string {
 	var id string
 	if fields := strings.Fields(sum); len(fields) > 0 {
 		id = strings.ToLower(fields[0])
 	}
-	h := sha256.Sum256([]byte(id + "\x00" + wazeroVersion()))
+	h := sha256.Sum256([]byte(id + "\x00" + wazeroVersion() + "\x00" + runtimeOptions))
 	return hex.EncodeToString(h[:8])
 }
 
@@ -315,9 +320,20 @@ func removeStaleTemp(dir string, now time.Time) {
 	}
 }
 
+// runtimeOptions names the runtime options that change the compiled code,
+// for cacheKey. wazero keys its cache entries on them too, but in the same
+// directory, so an entry compiled with other options would stay behind.
+const runtimeOptions = "close-on-context-done=false"
+
 // newEngine compiles wasm once. cacheDir "" disables the compilation cache.
+//
+// WithCloseOnContextDone is left off: with it, wazero v1.12.0 compiles a
+// call out of the native code into Go at every loop header
+// (frontend/lower.go, handled at call_engine.go ExitCodeCheckModuleExitCode)
+// to see whether the module was closed, which made a long pdf conversion
+// about four times slower. Callers time runs out with detach instead.
 func newEngine(ctx context.Context, wasm []byte, cacheDir string) (*engine, error) {
-	cfg := wazero.NewRuntimeConfig().WithCloseOnContextDone(true)
+	cfg := wazero.NewRuntimeConfig()
 	if cacheDir != "" {
 		if cache, err := wazero.NewCompilationCacheWithDir(cacheDir); err == nil {
 			cfg = cfg.WithCompilationCache(cache)
@@ -346,8 +362,16 @@ type mount struct {
 
 // run executes the module with args (the subcommand and its arguments) and
 // returns its stdout. Exit code 1 and 2 become errors carrying the last
-// stderr line; a done ctx stops the module and returns ctx.Err().
+// stderr line. A ctx already done returns its error without starting the
+// module; one that ends later does not stop the module.
 func (e *engine) run(ctx context.Context, args []string, mounts []mount) ([]byte, error) {
+	sub := "module"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("engine %s: %w", sub, err)
+	}
 	fs := wazero.NewFSConfig()
 	var fontPath []string
 	for _, m := range mounts {
@@ -383,15 +407,8 @@ func (e *engine) run(ctx context.Context, args []string, mounts []mount) ([]byte
 	if mod != nil {
 		mod.Close(context.Background())
 	}
-	sub := "module"
-	if len(args) > 0 {
-		sub = args[0]
-	}
 	if err == nil {
 		return stdout.Bytes(), nil
-	}
-	if ctx.Err() != nil {
-		return nil, fmt.Errorf("engine %s: %w", sub, ctx.Err())
 	}
 	msg := lastLine(stderr.String())
 	var exit *sys.ExitError

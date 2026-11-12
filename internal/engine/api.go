@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Warn receives warnings that do not stop an operation, such as fonts left
@@ -31,6 +32,10 @@ var convertFormats = map[string]bool{"hwp": true, "hwpx": true, "pdf": true, "tx
 // case the missing fonts are reported through Warn. Fonts installed on this
 // computer (see EnvFontDirs and EnvSystemFonts) are used as they are and not
 // downloaded.
+//
+// When ctx ends first, Convert returns ctx's error at once and leaves out
+// alone; the engine run already started goes on to its end in the
+// background (see the package comment).
 func Convert(ctx context.Context, in, out, to string) error {
 	if !convertFormats[to] {
 		return fmt.Errorf("engine: unsupported output format %q", to)
@@ -43,11 +48,31 @@ func Convert(ctx context.Context, in, out, to string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(work)
+	outName := "output." + to
+	_, err = detach(ctx, "convert", func() (missingFonts, error) {
+		return convertIn(ctx, e, work, in, outName, to)
+	}, func(miss missingFonts) error {
+		if len(miss) > 0 {
+			Warn(fmt.Sprintf("%s=1: at least %d font(s) not downloaded, output may use substitutes: %s",
+				EnvOffline, len(miss), strings.Join(miss, ", ")))
+		}
+		return copyFile(filepath.Join(work, "out", outName), out)
+	}, func() { os.RemoveAll(work) })
+	return err
+}
 
+// convertIn does the work of Convert inside the work directory work: it
+// copies in there, installs the fonts a pdf needs and has the engine write
+// outName in work/out. It returns the fonts left out in offline mode.
+//
+// The font cache is planned against under the read lock, so that a run
+// left behind by a caller whose ctx ended does not hold up a document
+// whose fonts are all in the cache; the write lock is taken only when
+// fonts have to be installed.
+func convertIn(ctx context.Context, e runner, work, in, outName, to string) (missingFonts, error) {
 	inName := "input" + strings.ToLower(filepath.Ext(in))
 	if err := copyFile(in, filepath.Join(work, "in", inName)); err != nil {
-		return err
+		return nil, err
 	}
 	guestIn := "/in/" + inName
 	mounts := []mount{
@@ -55,34 +80,32 @@ func Convert(ctx context.Context, in, out, to string) error {
 		{host: filepath.Join(work, "out"), guest: "/out"},
 	}
 
+	var miss missingFonts
 	if to == "pdf" {
 		fontsDir, err := fontCacheDir()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		hostFonts := hostFontMounts(hostFontDirs())
-		fontMu.Lock()
-		miss, err := ensureFonts(ctx, e, httpClient, filepath.Join(work, "in"), guestIn,
-			filepath.Join(work, "dl"), fontsDir, hostFonts, os.Getenv(EnvOffline) == "1")
-		fontMu.Unlock()
-		if err != nil {
-			return err
+		inDir, dlDir := filepath.Join(work, "in"), filepath.Join(work, "dl")
+		fontMu.RLock()
+		miss, err = ensureFonts(ctx, e, httpClient, inDir, guestIn, dlDir, fontsDir, hostFonts, true)
+		fontMu.RUnlock()
+		if err == nil && len(miss) > 0 && os.Getenv(EnvOffline) != "1" {
+			fontMu.Lock()
+			miss, err = ensureFonts(ctx, e, httpClient, inDir, guestIn, dlDir, fontsDir, hostFonts, false)
+			fontMu.Unlock()
 		}
-		if len(miss) > 0 {
-			Warn(fmt.Sprintf("%s=1: at least %d font(s) not downloaded, output may use substitutes: %s",
-				EnvOffline, len(miss), strings.Join(miss, ", ")))
+		if err != nil {
+			return nil, err
 		}
 		mounts = append(append(mounts, mount{host: fontsDir, guest: "/fonts", readOnly: true}), hostFonts...)
 	}
 
-	outName := "output." + to
 	fontMu.RLock()
-	_, err = e.run(ctx, []string{"convert", "--to", to, "--in", guestIn, "--out", "/out/" + outName}, mounts)
-	fontMu.RUnlock()
-	if err != nil {
-		return err
-	}
-	return copyFile(filepath.Join(work, "out", outName), out)
+	defer fontMu.RUnlock()
+	_, err := e.run(ctx, []string{"convert", "--to", to, "--in", guestIn, "--out", "/out/" + outName}, mounts)
+	return miss, err
 }
 
 // loadRunner returns the engine Convert runs. Tests replace it.
@@ -96,7 +119,7 @@ var loadRunner = func(ctx context.Context) (runner, error) {
 
 // SVG2PNG renders svg on a white background using only the given font
 // files. The image is stretched to exactly w x h pixels; keeping the aspect
-// ratio is up to the caller.
+// ratio is up to the caller. A done ctx returns at once, as in Convert.
 func SVG2PNG(ctx context.Context, svg []byte, fonts [][]byte, w, h int) ([]byte, error) {
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("engine: bad size %dx%d", w, h)
@@ -109,8 +132,13 @@ func SVG2PNG(ctx context.Context, svg []byte, fonts [][]byte, w, h int) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(work)
+	return detach(ctx, "svg2png", func() ([]byte, error) {
+		return svg2pngIn(ctx, e, work, svg, fonts, w, h)
+	}, nil, func() { os.RemoveAll(work) })
+}
 
+// svg2pngIn does the work of SVG2PNG inside the work directory work.
+func svg2pngIn(ctx context.Context, e runner, work string, svg []byte, fonts [][]byte, w, h int) ([]byte, error) {
 	if err := os.WriteFile(filepath.Join(work, "in", "x.svg"), svg, 0o644); err != nil {
 		return nil, err
 	}
@@ -132,23 +160,104 @@ func SVG2PNG(ctx context.Context, svg []byte, fonts [][]byte, w, h int) ([]byte,
 	return os.ReadFile(filepath.Join(work, "out", "x.png"))
 }
 
-// Version returns the engine's version line.
+// Version returns the engine's version line. A done ctx returns at once, as
+// in Convert.
 func Version(ctx context.Context) (string, error) {
 	e, err := get(ctx)
 	if err != nil {
 		return "", err
 	}
-	out, err := e.run(ctx, []string{"version"}, nil)
+	out, err := detach(ctx, "version", func() ([]byte, error) {
+		return e.run(ctx, []string{"version"}, nil)
+	}, nil, nil)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
+// detach runs job in a goroutine of its own and waits for it or for ctx,
+// whichever ends first.
+//
+// When job ends first, detach calls keep (if not nil) with job's result on
+// the caller's goroutine, then cleanup (if not nil), and returns. keep is
+// where results leave the work directory, so nothing reaches the caller's
+// files after detach has returned.
+//
+// When ctx ends first, detach calls cleanup and returns "engine <what>:
+// <ctx error>" at once without calling keep. job goes on to its end; engine
+// runs cannot be stopped from outside without slowing every run down (see
+// newEngine). The work directory is thus removed under the running job,
+// which then fails or writes nothing, and its result is dropped. Once job
+// ends, its goroutine calls cleanup again for what could not be removed
+// while in use (open files on Windows). cleanup must allow being called
+// twice, at the same time too.
+func detach[T any](ctx context.Context, what string, job func() (T, error), keep func(T) error, cleanup func()) (T, error) {
+	var zero T
+	if err := ctx.Err(); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return zero, fmt.Errorf("engine %s: %w", what, err)
+	}
+	type result struct {
+		v   T
+		err error
+	}
+	done := make(chan result)
+	abandoned := make(chan struct{})
+	detached.Add(1)
+	go func() {
+		defer detached.Done()
+		v, err := job()
+		select {
+		case done <- result{v, err}:
+		case <-abandoned:
+			if cleanup != nil {
+				cleanup()
+			}
+		}
+	}()
+	select {
+	case r := <-done:
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if r.err != nil {
+			return zero, r.err
+		}
+		if keep != nil {
+			if err := keep(r.v); err != nil {
+				return zero, err
+			}
+		}
+		return r.v, nil
+	case <-ctx.Done():
+		close(abandoned)
+		if cleanup != nil {
+			cleanup()
+		}
+		return zero, fmt.Errorf("engine %s: %w", what, ctx.Err())
+	}
+}
+
+// detached counts the jobs of detach still running; tests wait on it.
+var detached sync.WaitGroup
+
+// workDirPrefix starts the names of the work directories in the temporary
+// folder.
+const workDirPrefix = "why-hwp-engine-"
+
+// staleWorkAge is how long a work directory has gone unmodified before
+// newWorkDir takes it for one left behind and deletes it.
+const staleWorkAge = time.Hour
+
 // newWorkDir creates a fresh temporary directory with the given
-// subdirectories. The caller removes it.
+// subdirectories. The caller removes it. Work directories of earlier runs
+// left in the temporary folder are deleted first (see removeStaleWork).
 func newWorkDir(subs ...string) (string, error) {
-	dir, err := os.MkdirTemp("", "why-hwp-engine-")
+	removeStaleWork(os.TempDir(), time.Now())
+	dir, err := os.MkdirTemp("", workDirPrefix)
 	if err != nil {
 		return "", err
 	}
@@ -177,4 +286,23 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return w.Close()
+}
+
+// removeStaleWork deletes the directories named workDirPrefix* in tmp that
+// were last modified more than staleWorkAge before now. A run timed out on
+// Windows can leave its work directory behind when the process exits, since
+// files the engine still has open cannot be deleted. Symbolic links and
+// other files are left alone. Errors are ignored.
+func removeStaleWork(tmp string, now time.Time) {
+	ents, _ := os.ReadDir(tmp)
+	for _, ent := range ents {
+		if !ent.IsDir() || !strings.HasPrefix(ent.Name(), workDirPrefix) {
+			continue
+		}
+		info, err := ent.Info()
+		if err != nil || now.Sub(info.ModTime()) <= staleWorkAge {
+			continue
+		}
+		os.RemoveAll(filepath.Join(tmp, ent.Name()))
+	}
 }
