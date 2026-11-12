@@ -17,8 +17,8 @@ func init() {
 func runSVGCheck(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("svgcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	regular := fs.String("regular", "", "regular TrueType font to measure with (default: $"+svgtool.EnvFontRegular+", then the OS font folders and the why-hwp font cache)")
-	bold := fs.String("bold", "", "bold TrueType font to measure with (default: $"+svgtool.EnvFontBold+", then the OS font folders and the why-hwp font cache)")
+	regular := fs.String("regular", "", "regular TrueType font to measure with (default: $"+svgtool.EnvFontRegular+", then the OS font folders, the why-hwp font cache and a NanumGothic download)")
+	bold := fs.String("bold", "", "bold TrueType font to measure with (default: $"+svgtool.EnvFontBold+", then the OS font folders, the why-hwp font cache and a NanumGothic download)")
 	format := fs.String("format", "plain", "output format: plain or json")
 	tol := fs.Float64("tol", 2, "how far in px an arrow end may be from a box edge")
 	fs.Usage = func() {
@@ -68,7 +68,7 @@ func runSVGCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "why-hwp svgcheck: %s: %v\n", in, err)
 		return 2
 	}
-	finder := fontFinder()
+	finder := fontFinder(stderr)
 	explicit := map[svgtool.Weight]string{svgtool.Regular: *regular, svgtool.Bold: *bold}
 	fonts := map[svgtool.Weight]*sfnt.Font{}
 	for _, w := range weights {

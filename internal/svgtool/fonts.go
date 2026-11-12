@@ -44,7 +44,7 @@ var cacheFamilies = [][2][]string{
 // LoadedFont is a font found for one weight.
 type LoadedFont struct {
 	Path   string
-	Source string // "flag", the environment variable, "search" or "cache"
+	Source string // "flag", the environment variable, "search", "cache" or "download"
 	Font   *sfnt.Font
 }
 
@@ -57,6 +57,9 @@ type FontFinder struct {
 	// CacheDir is the why-hwp font cache, searched by family name after
 	// the font directories. Empty skips it.
 	CacheDir string
+	// Download, when not nil and CacheDir is set, downloads a public font
+	// into CacheDir when nothing else is found, unless $WHY_HWP_OFFLINE is 1.
+	Download *Downloader
 }
 
 // FontDirs lists the font directories searched on goos.
@@ -91,8 +94,9 @@ func FontDirs(goos string, getenv func(string) string) []string {
 // Find returns the font for w: the explicit path when given, then the
 // environment variable, then the first usable file found in the font
 // directories, then the first usable font in the cache directory whose
-// family and weight match. Variable, CFF and restricted fonts found by the
-// search are skipped; given explicitly they are an error.
+// family and weight match, then the public font that Download fetches.
+// Variable, CFF and restricted fonts found by the search are skipped; given
+// explicitly they are an error.
 func (ff FontFinder) Find(w Weight, explicit string) (*LoadedFont, error) {
 	flagName, env := "-regular", EnvFontRegular
 	if w == Bold {
@@ -169,6 +173,17 @@ func (ff FontFinder) Find(w Weight, explicit string) (*LoadedFont, error) {
 	if len(skipped) > 0 {
 		sort.Strings(skipped)
 		msg += "; skipped: " + strings.Join(skipped, "; ")
+	}
+	if ff.Download != nil && ff.CacheDir != "" {
+		if rf, ok := ff.Download.font(w); ok && ff.Getenv(EnvOffline) == "1" {
+			msg += fmt.Sprintf("; %s was not downloaded because %s=1", rf.Name, EnvOffline)
+		} else {
+			lf, err := ff.Download.fetch(ff.CacheDir, w)
+			if err == nil {
+				return lf, nil
+			}
+			msg += "; downloading the public font failed: " + err.Error()
+		}
 	}
 	if w == Bold {
 		return nil, errors.New(msg + ". The figure has bold text: pass -bold font.ttf or set $" + EnvFontBold)

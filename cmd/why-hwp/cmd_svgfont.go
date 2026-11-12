@@ -16,20 +16,22 @@ func init() {
 }
 
 // fontFinder returns the finder of svgfont and svgcheck: the OS font
-// folders, then the font cache that convert fills.
-func fontFinder() svgtool.FontFinder {
+// folders, then the font cache that convert fills, then the public
+// NanumGothic font downloaded into that cache. Downloads are logged to log.
+func fontFinder(log io.Writer) svgtool.FontFinder {
 	cache, err := engine.FontCachePath()
 	if err != nil {
 		cache = ""
 	}
-	return svgtool.FontFinder{GOOS: runtime.GOOS, Getenv: os.Getenv, CacheDir: cache}
+	return svgtool.FontFinder{GOOS: runtime.GOOS, Getenv: os.Getenv, CacheDir: cache,
+		Download: &svgtool.Downloader{Log: log}}
 }
 
 func runSVGFont(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("svgfont", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	regular := fs.String("regular", "", "regular TrueType font (default: $"+svgtool.EnvFontRegular+", then the OS font folders and the why-hwp font cache)")
-	bold := fs.String("bold", "", "bold TrueType font (default: $"+svgtool.EnvFontBold+", then the OS font folders and the why-hwp font cache)")
+	regular := fs.String("regular", "", "regular TrueType font (default: $"+svgtool.EnvFontRegular+", then the OS font folders, the why-hwp font cache and a NanumGothic download)")
+	bold := fs.String("bold", "", "bold TrueType font (default: $"+svgtool.EnvFontBold+", then the OS font folders, the why-hwp font cache and a NanumGothic download)")
 	family := fs.String("family", svgtool.DefaultFamily, "font-family name of the embedded font")
 	out := fs.String("o", "", "output SVG path")
 	inPlace := fs.Bool("w", false, "overwrite the input SVG")
@@ -47,7 +49,10 @@ func runSVGFont(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "variable these are searched for: NotoSansKR-Regular/Bold.ttf,")
 		fmt.Fprintln(stderr, "NanumGothic.ttf/NanumGothicBold.ttf, NanumSquareR/B.ttf, malgun/malgunbd.ttf")
 		fmt.Fprintln(stderr, "in the OS font folders, then the same families in the font cache that")
-		fmt.Fprintln(stderr, "why-hwp convert fills.")
+		fmt.Fprintln(stderr, "why-hwp convert fills. When none is found, NanumGothic Regular or Bold")
+		fmt.Fprintln(stderr, "(SIL Open Font License 1.1) is downloaded from google/fonts at a pinned")
+		fmt.Fprintln(stderr, "commit, checked against a pinned SHA-256 and kept in that cache, unless")
+		fmt.Fprintln(stderr, "$"+svgtool.EnvOffline+"=1.")
 		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
 	}
@@ -85,7 +90,7 @@ func runSVGFont(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "why-hwp svgfont: %s: %v\n", in, err)
 		return 1
 	}
-	finder := fontFinder()
+	finder := fontFinder(stderr)
 	explicit := map[svgtool.Weight]string{svgtool.Regular: *regular, svgtool.Bold: *bold}
 	var faces []svgtool.Face
 	for _, w := range []svgtool.Weight{svgtool.Regular, svgtool.Bold} {
