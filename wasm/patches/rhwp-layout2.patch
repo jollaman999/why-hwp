@@ -1,0 +1,472 @@
+# More rhwp layout fixes for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch; apply this after rhwp-layout.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - serializer/hwpx/mod.rs: an HWP5 document's print settings (DOC_DATA) go to
+#   settings.xml PrintInfo when converting to hwpx, so Hangul keeps 2-up printing.
+# - layout.rs: a paragraph-anchored table in a host paragraph that holds only
+#   spaces sits at the paragraph top when the stored line positions show the
+#   space line was pushed below it.
+# - font_metrics_overlays.rs: bold HCI Poppy U+00B7 advances 384/1000 em like
+#   the regular face; Wingdings U+F0FC advances 1609/2048 em.
+# - composer/punctuation_slots.rs: a stored Latin run is split at a neutral space
+#   so that space advances with the Hangul em and ratio.
+# - svg.rs: the hidden text drawn over a vector U+00B7 carries the run's font-family.
+# - composer/tests.rs, layout/tests.rs, layout/text_measurement.rs,
+#   font_metrics_data.rs and svg/tests.rs cover these changes.
+diff --git a/src/renderer/composer/punctuation_slots.rs b/src/renderer/composer/punctuation_slots.rs
+index 562cf12528..5ba2d46c32 100644
+--- a/src/renderer/composer/punctuation_slots.rs
++++ b/src/renderer/composer/punctuation_slots.rs
+@@ -153,0 +154 @@ pub(super) fn try_resolve_run_slots<S: crate::storage::Storage>(
++                        || space_origin(ch, run.lang_index, style) != run.neutral_space_origin
+diff --git a/src/renderer/composer/tests.rs b/src/renderer/composer/tests.rs
+index 2d65ec89b7..ecef286abd 100644
+--- a/src/renderer/composer/tests.rs
++++ b/src/renderer/composer/tests.rs
+@@ -2589,0 +2590,56 @@ fn latin_neutral_space_advances_with_hangul_slot_ratio() {
++
++/// 저장된 줄의 영문 run도 공백만 한글 슬롯 em·장평으로 전진하도록 나뉜다.
++#[test]
++fn stored_latin_run_splits_neutral_space_with_hangul_slot_ratio() {
++    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle, ResolvedStyleSet};
++    let styles = ResolvedStyleSet {
++        char_styles: vec![ResolvedCharStyle {
++            font_size: 16.0,
++            ratio: 1.0,
++            ratios: vec![0.98, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
++            ..Default::default()
++        }],
++        para_styles: vec![ResolvedParaStyle::default()],
++        ..Default::default()
++    };
++    let mut lines = vec![ComposedLine {
++        runs: vec![ComposedTextRun {
++            text: "hit the".to_string(),
++            char_style_id: 0,
++            lang_index: 1,
++            neutral_space_origin: None,
++            char_overlap: None,
++            footnote_marker: None,
++            display_text: None,
++            supplemental_metrics_blocked: false,
++            inserted_control_text: false,
++            space_metric: crate::renderer::composer::SpaceMetric::Stored,
++            regenerated_font_metrics: false,
++            literal_figure_space: false,
++            literal_soft_hyphen: false,
++        }],
++        line_height: 400,
++        baseline_distance: 320,
++        segment_width: 0,
++        column_start: 0,
++        line_spacing: 0,
++        has_line_break: false,
++        char_start: 0,
++    }];
++    punctuation_slots::try_resolve_run_slots(
++        &mut lines,
++        &styles,
++        false,
++        &crate::storage::Unbounded,
++    )
++    .unwrap();
++    let runs: Vec<_> = lines[0]
++        .runs
++        .iter()
++        .map(|run| (run.text.as_str(), run.lang_index, run.neutral_space_origin))
++        .collect();
++    assert_eq!(runs, [("hit", 1, None), (" ", 1, Some(0)), ("the", 1, None)]);
++    let space = lines[0].runs[1].text_style(&styles);
++    let width = crate::renderer::layout::estimate_text_width_unrounded(" ", &space);
++    assert!((width - 16.0 * 0.5 * 0.98).abs() < 1e-6, "공백 {width}");
++}
+diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
+index 0f85fdc2aa..b1bec13ad1 100644
+--- a/src/renderer/font_metrics_data.rs
++++ b/src/renderer/font_metrics_data.rs
+@@ -704,0 +705,13 @@ mod tests {
++    #[test]
++    fn hci_poppy_bold_middle_dot_keeps_original_program_advance() {
++        assert_eq!(
++            original_glyph_advance_em("HCI Poppy", true, false, '·'),
++            Some(0.384)
++        );
++        assert_eq!(
++            original_glyph_advance_em("HCI Poppy", false, false, '·'),
++            Some(0.384)
++        );
++        assert_eq!(original_glyph_advance_em("HCI Poppy", true, true, '·'), None);
++    }
++
+diff --git a/src/renderer/font_metrics_overlays.rs b/src/renderer/font_metrics_overlays.rs
+index 415dbc9cc9..7ffe00d868 100644
+--- a/src/renderer/font_metrics_overlays.rs
++++ b/src/renderer/font_metrics_overlays.rs
+@@ -14,0 +15,4 @@ pub(crate) fn implicit_symbol_advance_em(character: char) -> Option<f64> {
++        // 맑은 고딕 run의 U+F0FC를 한컴 2024 Print는 Wingdings로 그린다.
++        // CIDFontType2 /W 785이고 wingding.ttf hmtx도 1609/2048이다.
++        // 표시용 ✔의 대체 글꼴 전각 폭으로 재지 않는다.
++        '\u{F0FC}' => Some(1609.0 / 2048.0),
+@@ -66,0 +71,12 @@ static ORIGINAL_GLYPH_METRICS: &[OriginalGlyphMetric] = &[
++    // fdi-2025q2 한컴2024 Print 9쪽 T15(Type3, 굵은 런): ToUnicode 00B7,
++    // Widths 384, FontMatrix.001. 굵은 원본 HCI Poppy도 고유 폭은 일반과 같고
++    // 굵기 전진은 문자 측정 walk가 따로 더한다. 대체 Palatino의 0.25em으로
++    // 재면 가운뎃점마다 뒤 글자가 약 2.8pt 당겨진다.
++    OriginalGlyphMetric {
++        face: "HCI Poppy",
++        bold: true,
++        italic: false,
++        character: '·',
++        advance_units: 384,
++        em_units: 1000,
++    },
+diff --git a/src/renderer/layout.rs b/src/renderer/layout.rs
+index abb3f93470..94810a02c5 100644
+--- a/src/renderer/layout.rs
++++ b/src/renderer/layout.rs
+@@ -2271,0 +2272,52 @@ fn tac_paragraph_tail_stored_line_top(
++/// 공백만 있는 host 문단의 줄을 자기 아래로 밀어낸 문단 기준 자리차지 표인가.
++///
++/// 한/글은 이 표를 문단 상단(+ 세로 오프셋 + 바깥 위 여백)에 두고 공백 줄은 표 아래로
++/// 보낸다. 저장 사다리가 그 증거다 - 앞 문단 끝에서 이 문단 첫 줄까지의 간격이 표 상자
++/// (오프셋 + 바깥 여백 + 높이)와 정확히 같다. fdi-2025q2 1쪽 지역별 표: 앞 문단 끝
++/// 60151 + 1000 + 552 = 61703, 첫 줄 vpos 68526, 차이 6823 = 289 + 141 + 6252 + 141.
++/// 공백 줄을 먼저 흐름에 놓으면 표가 그 줄 높이만큼 내려간다(한컴 Print 대비 4.4pt).
++fn whitespace_host_line_pushed_below_float(
++    previous: Option<&Paragraph>,
++    para: &Paragraph,
++    table: &crate::model::table::Table,
++    control_index: usize,
++) -> bool {
++    use crate::model::paragraph::LineSeg;
++    let v_off = i64::from(signed_hwpunit(table.common.vertical_offset));
++    if !is_para_topbottom_float(&table.common)
++        || table.common.vert_align != crate::model::shape::VertAlign::Top
++        || table.caption.is_some()
++        || v_off < 0
++        || !para_has_visible_text(para)
++        || para_has_non_whitespace_text(para)
++        || para.stored_text_partition_is_dirty()
++        || para.cell_format_vpos_dirty
++        || para.line_segs.len() != 1
++        || control_line_seg_index(para, control_index) != Some(0)
++    {
++        return false;
++    }
++    let Some(previous) = previous.filter(|p| {
++        !p.stored_text_partition_is_dirty() && !p.cell_format_vpos_dirty
++    }) else {
++        return false;
++    };
++    let (Some(prev), Some(anchor)) = (previous.line_segs.last(), para.line_segs.first()) else {
++        return false;
++    };
++    if prev.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
++        || anchor.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0
++        || prev.line_spacing < 0
++    {
++        return false;
++    }
++    let previous_end = i64::from(prev.vertical_pos)
++        + i64::from(prev.line_height)
++        + i64::from(prev.line_spacing);
++    let frame = v_off
++        + i64::from(table.outer_margin_top)
++        + i64::from(table.outer_margin_bottom)
++        + i64::from(table.common.height);
++    frame > 0 && i64::from(anchor.vertical_pos) - previous_end == frame
++}
++
+@@ -13762,0 +13815,7 @@ impl LayoutEngine {
++                        } else if whitespace_host_line_pushed_below_float(
++                            para_index.checked_sub(1).and_then(|i| paragraphs.get(i)),
++                            para,
++                            t,
++                            control_index,
++                        ) {
++                            para_y_for_table
+diff --git a/src/renderer/layout/tests.rs b/src/renderer/layout/tests.rs
+index 3085036587..bd21dc9012 100644
+--- a/src/renderer/layout/tests.rs
++++ b/src/renderer/layout/tests.rs
+@@ -285,0 +286,49 @@ fn issue2817_paper_anchor_behind_picture_host_keeps_no_line_advance() {
++#[test]
++fn whitespace_host_line_pushed_below_float_needs_exact_stored_gap() {
++    let previous = Paragraph {
++        line_segs: vec![LineSeg {
++            vertical_pos: 60151,
++            line_height: 1000,
++            line_spacing: 552,
++            ..Default::default()
++        }],
++        ..Default::default()
++    };
++    let host = |text: &str, vpos: i32| Paragraph {
++        text: text.to_string(),
++        line_segs: vec![LineSeg {
++            vertical_pos: vpos,
++            line_height: 1000,
++            line_spacing: 552,
++            ..Default::default()
++        }],
++        controls: vec![Control::Table(Box::new(Table {
++            outer_margin_top: 141,
++            outer_margin_bottom: 141,
++            common: CommonObjAttr {
++                treat_as_char: false,
++                text_wrap: TextWrap::TopAndBottom,
++                vert_rel_to: VertRelTo::Para,
++                vert_align: crate::model::shape::VertAlign::Top,
++                vertical_offset: 289,
++                height: 6252,
++                ..Default::default()
++            },
++            ..Default::default()
++        }))],
++        ..Default::default()
++    };
++    let check = |previous: Option<&Paragraph>, para: &Paragraph| {
++        let Control::Table(table) = &para.controls[0] else {
++            unreachable!()
++        };
++        whitespace_host_line_pushed_below_float(previous, para, table, 0)
++    };
++    // 61703 + 289 + 141 + 6252 + 141 = 68526
++    assert!(check(Some(&previous), &host("         ", 68526)));
++    assert!(!check(Some(&previous), &host("         ", 68527)));
++    assert!(!check(Some(&previous), &host("  text  ", 68526)));
++    assert!(!check(Some(&previous), &host("", 68526)));
++    assert!(!check(None, &host("         ", 68526)));
++}
++
+diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
+index 1316bdd430..77a11375f9 100644
+--- a/src/renderer/layout/text_measurement.rs
++++ b/src/renderer/layout/text_measurement.rs
+@@ -4044,0 +4045,18 @@ mod tests {
++    #[test]
++    fn wingdings_check_mark_pua_uses_wingdings_advance() {
++        let m = EmbeddedTextMeasurer;
++        let style = TextStyle {
++            font_family: "맑은 고딕".to_string(),
++            font_size: 14.667,
++            ratio: 1.0,
++            ..Default::default()
++        };
++        let positions = m.compute_char_positions("가\u{F0FC}나", &style);
++        let advance = positions[2] - positions[1];
++        let expected = style.font_size * 1609.0 / 2048.0;
++        assert!(
++            (advance - expected).abs() < 0.02,
++            "U+F0FC advance {advance:.3}, want {expected:.3}"
++        );
++    }
++
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index 8e0a57be1a..2ee1210345 100644
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -3828 +3828 @@ impl Renderer for SvgRenderer {
+-                        "<text x=\"{:.4}\" y=\"{:.4}\" font-size=\"{}\" fill=\"{}\" \
++                        "<text x=\"{:.4}\" y=\"{:.4}\" font-family=\"{}\" font-size=\"{}\" fill=\"{}\" \
+@@ -3831,0 +3832 @@ impl Renderer for SvgRenderer {
++                        escape_xml(&font_family),
+diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+index 202281c872..f0118ee11a 100644
+--- a/src/renderer/svg/tests.rs
++++ b/src/renderer/svg/tests.rs
+@@ -1469,0 +1470,28 @@ fn char_overlap_with_border_keeps_charsz_reduction() {
++
++#[test]
++fn test_svg_hidden_middle_dot_text_uses_run_font_family() {
++    let mut renderer = SvgRenderer::new();
++    renderer.begin_page(800.0, 600.0);
++    renderer.draw_text(
++        "가\u{00B7}나",
++        10.0,
++        20.0,
++        &TextStyle {
++            font_size: 13.333,
++            font_family: "맑은 고딕".to_string(),
++            ..Default::default()
++        },
++    );
++    let output = renderer.output();
++    let family_of = |text: &str| -> Option<String> {
++        let close = output.find(&format!(">{text}</text>"))?;
++        let open = output[..close].rfind("<text")?;
++        let tag = &output[open..close];
++        let at = tag.find(" font-family=\"")? + 14;
++        let end = tag[at..].find('"')?;
++        Some(tag[at..at + end].to_string())
++    };
++    let hidden = family_of("\u{00B7}").expect("hidden middle-dot text has a font-family");
++    assert!(output.contains("<circle"));
++    assert_eq!(Some(hidden), family_of("가"));
++}
+diff --git a/src/serializer/hwpx/mod.rs b/src/serializer/hwpx/mod.rs
+index b8d128554c..2203f6a9a4 100644
+--- a/src/serializer/hwpx/mod.rs
++++ b/src/serializer/hwpx/mod.rs
+@@ -217,8 +217,2 @@ where
+-    //    하드코딩 상수는 PrintInfo(확대/인쇄 설정) 등을 빠뜨린다.
+-    const CROP_SETTINGS_XML: &str = concat!(
+-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>"#,
+-        r#"<ha:HWPApplicationSetting xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0">"#,
+-        r#"<ha:CaretPosition listIDRef="0" paraIDRef="0" pos="16"/>"#,
+-        r#"<config:config-item-set name="PrintInfo"><config:config-item name="PrintCropMark" type="short">1</config:config-item></config:config-item-set>"#,
+-        "</ha:HWPApplicationSetting>",
+-    );
++    //    원본이 없으면(HWP5 등) DOC_DATA 의 인쇄 설정을 PrintInfo 로 옮긴다.
++    let hwp5_settings = hwp5_print_info_settings_xml(doc);
+@@ -228,5 +222,4 @@ where
+-            if doc.print_crop_marks() {
+-                CROP_SETTINGS_XML.as_bytes()
+-            } else {
+-                SETTINGS_XML.as_bytes()
+-            }
++            hwp5_settings
++                .as_deref()
++                .map(str::as_bytes)
++                .unwrap_or(SETTINGS_XML.as_bytes())
+@@ -650,0 +644,64 @@ where
++/// HWP5 `HWPTAG_DOC_DATA` 인쇄 항목 ID 와 HWPX `settings.xml` PrintInfo 항목 (한컴 출력 순서).
++///
++/// ID 는 레코드의 `(u16 id, u16 type, u32 value)` 항목에서 읽는다. 0x4006·0x4010·0x401a·
++/// 0x401f·0x4020 은 한글이 같은 HWP5 를 HWPX 로 저장한 결과와 값·유무로 대조했다.
++/// 0x400a·0x400e·0x401d 는 대조 문서에서 모두 0 이라 순서로만 정했다.
++const HWP5_PRINT_INFO_ITEMS: [(u16, &str, bool); 8] = [
++    (0x400a, "PrintAutoFootNote", true),
++    (0x400e, "PrintAutoHeadNote", true),
++    (0x4006, "PrintMethod", false),
++    (0x4010, "OverlapSize", false),
++    (0x401a, "PrintCropMark", false),
++    (0x401d, "BinderHoleType", false),
++    (0x401f, "ZoomX", false),
++    (0x4020, "ZoomY", false),
++];
++
++/// HWP5 `HWPTAG_DOC_DATA` 의 인쇄 설정을 한컴 `settings.xml` 의 PrintInfo 로 옮긴다.
++///
++/// 한글은 모아 찍기(PrintMethod 4·5) 등을 이 설정에서 읽는다. 빠지면 같은 문서가
++/// HWPX 에서 모아 찍기 없이 인쇄된다. DOC_DATA 에 인쇄 항목이 없으면 `None`.
++fn hwp5_print_info_settings_xml(doc: &Document) -> Option<String> {
++    let record = doc
++        .doc_info
++        .extra_records
++        .iter()
++        .find(|r| r.tag_id == crate::parser::tags::HWPTAG_DOC_DATA)?;
++    let values: Vec<(u16, u32)> = record
++        .data
++        .chunks_exact(8)
++        .map(|kv| {
++            (
++                u16::from_le_bytes([kv[0], kv[1]]),
++                u32::from_le_bytes([kv[4], kv[5], kv[6], kv[7]]),
++            )
++        })
++        .collect();
++    let mut items = String::new();
++    for (id, name, boolean) in HWP5_PRINT_INFO_ITEMS {
++        let Some(&(_, value)) = values.iter().find(|(key, _)| *key == id) else {
++            continue;
++        };
++        if boolean {
++            let _ = write!(
++                items,
++                r#"<config:config-item name="{name}" type="boolean">{}</config:config-item>"#,
++                value != 0
++            );
++        } else {
++            let _ = write!(
++                items,
++                r#"<config:config-item name="{name}" type="short">{value}</config:config-item>"#
++            );
++        }
++    }
++    if items.is_empty() {
++        return None;
++    }
++    let close = "</ha:HWPApplicationSetting>";
++    let base = static_assets::SETTINGS_XML.trim_end().strip_suffix(close)?;
++    Some(format!(
++        r#"{base}<config:config-item-set name="PrintInfo">{items}</config:config-item-set>{close}"#
++    ))
++}
++
+@@ -696,0 +754,73 @@ mod tests {
++    fn settings_xml_of(doc: &Document) -> String {
++        let bytes = serialize_hwpx(doc).expect("serialize");
++        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
++        let mut entry = archive.by_name("settings.xml").expect("settings.xml");
++        let mut got = String::new();
++        std::io::Read::read_to_string(&mut entry, &mut got).expect("read");
++        got
++    }
++
++    /// HWP5 DOC_DATA 의 인쇄 설정(모아 찍기 PrintMethod=4 등)이 한컴과 같은 PrintInfo 로 나간다.
++    /// 레코드 바이트는 memo-field-hwp5.hwp 원본 그대로, 기대 문자열은 한글이 같은 문서를
++    /// HWPX 로 저장한 settings.xml 의 PrintInfo 다.
++    #[test]
++    fn hwp5_doc_data_print_info_goes_to_settings_xml() {
++        let mut doc = Document::default();
++        let data: Vec<u8> = [
++            0x0001_021c_u32, 0x0207_0000, 0x0207_8000, 8,
++            0x0006_4006, 4, 0x0006_400e, 0, 0x0006_400a, 0, 0x0007_401f, 100,
++            0x0006_401d, 0, 0x0006_401a, 0, 0x0007_4010, 0, 0x0007_4020, 100,
++        ]
++        .iter()
++        .flat_map(|w| w.to_le_bytes())
++        .collect();
++        doc.doc_info.extra_records.push(crate::model::document::RawRecord {
++            tag_id: crate::parser::tags::HWPTAG_DOC_DATA,
++            level: 0,
++            data,
++        });
++        let got = settings_xml_of(&doc);
++        let expected = concat!(
++            r#"<config:config-item-set name="PrintInfo">"#,
++            r#"<config:config-item name="PrintAutoFootNote" type="boolean">false</config:config-item>"#,
++            r#"<config:config-item name="PrintAutoHeadNote" type="boolean">false</config:config-item>"#,
++            r#"<config:config-item name="PrintMethod" type="short">4</config:config-item>"#,
++            r#"<config:config-item name="OverlapSize" type="short">0</config:config-item>"#,
++            r#"<config:config-item name="PrintCropMark" type="short">0</config:config-item>"#,
++            r#"<config:config-item name="BinderHoleType" type="short">0</config:config-item>"#,
++            r#"<config:config-item name="ZoomX" type="short">100</config:config-item>"#,
++            r#"<config:config-item name="ZoomY" type="short">100</config:config-item>"#,
++            r#"</config:config-item-set></ha:HWPApplicationSetting>"#,
++        );
++        assert!(got.ends_with(expected), "{got}");
++        assert!(got.starts_with(r#"<?xml version="1.0""#), "{got}");
++        assert_eq!(got.matches("<ha:CaretPosition").count(), 1, "{got}");
++    }
++
++    /// OverlapSize 가 없는 DOC_DATA 는 그 항목을 빼고, DOC_DATA 가 없으면 PrintInfo 도 없다.
++    #[test]
++    fn hwp5_print_info_emits_only_present_items() {
++        let mut doc = Document::default();
++        assert!(!settings_xml_of(&doc).contains("PrintInfo"));
++        let data: Vec<u8> = [
++            0x0001_021c_u32, 0x0207_0000, 0x0207_8000, 2,
++            0x0006_401a, 1, 0x0007_401f, 100,
++        ]
++        .iter()
++        .flat_map(|w| w.to_le_bytes())
++        .collect();
++        doc.doc_info.extra_records.push(crate::model::document::RawRecord {
++            tag_id: crate::parser::tags::HWPTAG_DOC_DATA,
++            level: 0,
++            data,
++        });
++        let got = settings_xml_of(&doc);
++        assert!(got.contains(concat!(
++            r#"<config:config-item-set name="PrintInfo">"#,
++            r#"<config:config-item name="PrintCropMark" type="short">1</config:config-item>"#,
++            r#"<config:config-item name="ZoomX" type="short">100</config:config-item>"#,
++            r#"</config:config-item-set>"#,
++        )), "{got}");
++        assert!(!got.contains("PrintMethod"), "{got}");
++    }
++

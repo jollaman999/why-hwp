@@ -194,8 +194,14 @@ fi
 #    already applied; one that neither applies nor reverses fails the build.
 #    git apply takes paths from the enclosing repository's top, so stop it from
 #    looking above the source tree (wasm/rhwp-src sits inside this repository).
+#    The order is byte order: a glob sorts by locale, and en_US puts
+#    rhwp-layout2.patch before rhwp-layout.patch, which applies silently wrong.
 export GIT_CEILING_DIRECTORIES=$(dirname "$(pwd -P)")
-for p in "$patch_dir"/*.patch; do
+patches=()
+while IFS= read -r p; do
+	patches+=("$p")
+done < <(printf '%s\n' "$patch_dir"/*.patch | LC_ALL=C sort)
+for p in "${patches[@]}"; do
 	[ -e "$p" ] || continue
 	if git apply --unidiff-zero --reverse --check "$p" 2>/dev/null; then
 		continue

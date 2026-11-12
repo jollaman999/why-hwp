@@ -98,11 +98,24 @@ test documents have every word within 1 pt of Hancom Office's position, up from 
 | A space after Latin text advances with the Hangul em and width ratio when they differ from the Latin ones | It used the Latin em and ratio |
 | Equation arrows are drawn as glyphs of the equation font list (HyhwpEQ, Latin Modern Math, ...); HYhwpEQ equations in the current format keep a thin space after a function name such as `sin` | Arrows were drawn as generic math symbols, and the thin space was dropped |
 
-The patch also adds rhwp unit tests for these changes. It is a zero-context
-diff because the surrounding rhwp lines contain em dashes, which this
-repository's commit check refuses. The comment at the top of the file lists
-the changes by source file. To change it, apply it to a tree that `patch-rhwp.sh`
-produced before this step, edit, and write a new diff with `git diff -U0`.
+`patches/rhwp-layout2.patch` is applied after it and was found the same way.
+With both, 12 of 18 test documents pass.
+
+| Change | Before |
+|--------|--------|
+| Converting an HWP5 document to HWPX writes its print settings (`DOC_DATA`: print method such as 2-up, zoom, crop marks) to `settings.xml` as `PrintInfo`, the way Hancom Office saves them. The 40-page test document set to print two pages per sheet prints on 20 pages, as its HWP original does | Only crop marks were carried over, so Hancom Office printed the HWPX one page per sheet |
+| A paragraph-anchored table whose host paragraph holds only spaces sits at the top of the paragraph when the stored line positions show the space line was pushed below the table (the gap before the line equals the table's offset, outer margins and height) | The space line was placed first and the table drawn one line lower |
+| Bold HCI Poppy `·` (U+00B7) advances 384/1000 em, like the regular face | It was measured with the substitute font's width, pulling the next character about 2.8 pt left |
+| A space inside a Latin run of a stored line advances with the Hangul em and width ratio, as one after a Latin run already did | The space kept the Latin em and ratio |
+| Wingdings U+F0FC (check mark) advances 1609/2048 em, the width in the font's `hmtx` | It was measured with the full width of the substitute `✔` |
+| The invisible text drawn over a vector `·`, kept so the character can be found and copied, carries the run's `font-family` | It had no `font-family` |
+
+The patches also add rhwp unit tests for these changes. They are zero-context
+diffs because the surrounding rhwp lines contain em dashes, which this
+repository's commit check refuses. The comment at the top of each file lists
+the changes by source file. To change one, apply it to a tree that
+`patch-rhwp.sh` produced up to that patch, edit, and write a new diff with
+`git diff -U0`.
 
 ## fontdb
 
