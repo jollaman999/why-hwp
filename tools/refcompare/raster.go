@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"fmt"
 	"io"
 	"math"
@@ -223,30 +224,36 @@ func loneOutline(a, b *pageImage, r int, move func(x, y float64) (float64, float
 // measureInk draws the picture pages of a comparison, or every page with
 // o.InkAll, and stores their picture difference. A picture page has no
 // paired word and so no fit; its two pages are compared as they are. Of a
-// sheet compared half by half, the other half is painted white.
+// sheet compared half by half, the other half is painted white. A half
+// that is compared with a page of the one-up reference (see compareOneUp)
+// is smaller than that page and somewhere else, so without a fit there is
+// nothing to compare it by.
 func measureInk(refPath, candPath string, r *pdfResult, o cmpOptions) {
 	var ref, cand *pageImage
-	var err error
-	drawn := -1
+	var refErr, candErr error
+	refDrawn, candDrawn := -1, -1
 	for i := range r.Page {
 		p := &r.Page[i]
 		if !p.Picture && !o.InkAll {
 			continue
 		}
-		sheet, side := i, 0
-		if r.TwoUp {
-			sheet, side = i/2, 1+i%2
+		rs, rside, cs, cside := r.sheetOf(i)
+		if r.OneUp != nil && r.OneUp.Halved && p.FitEdges == 0 {
+			p.InkErr = "no paired word to fit the half of the candidate sheet to the page of the one-up reference"
+			continue
 		}
-		if sheet != drawn {
-			drawn = sheet
-			if ref, err = renderPage(refPath, sheet); err == nil {
-				cand, err = renderPage(candPath, sheet)
-			}
+		if rs != refDrawn {
+			refDrawn = rs
+			ref, refErr = renderPage(refPath, rs)
 		}
-		if err != nil {
+		if cs != candDrawn && refErr == nil {
+			candDrawn = cs
+			cand, candErr = renderPage(candPath, cs)
+		}
+		if err := cmp.Or(refErr, candErr); err != nil {
 			p.InkErr = err.Error()
 			continue
 		}
-		p.Ink, p.InkDone = inkDiff(halfImage(ref, side), halfImage(cand, side), p.Fit, o.Tol), true
+		p.Ink, p.InkDone = inkDiff(halfImage(ref, rside), halfImage(cand, cside), p.Fit, o.Tol), true
 	}
 }

@@ -228,13 +228,23 @@ type pdfResult struct {
 	// PictureWords counts the candidate words without a partner on
 	// picture pages. They are not in CandOnly.
 	PictureWords int
+	// CandOnlyWords are the candidate words counted in CandOnly, in
+	// reading order. measureDrawn takes out of them, and out of CandOnly,
+	// the words that the reference draws at the same place, and counts
+	// those in DrawnWords.
+	CandOnlyWords []loneWord
+	DrawnWords    int
+	// OneUp is set when the document was compared with its one-up
+	// reference (see compareOneUp). The candidate must then have the
+	// sheets of the two-up reference as well.
+	OneUp *oneUp
 }
 
 // pageStat is the comparison of one reference page with the candidate page
 // of the same number.
 type pageStat struct {
 	RefWords, CandWords int
-	RefOnly, CandOnly   int     // words without a partner; CandOnly counts them on a picture page too
+	RefOnly, CandOnly   int     // words without a partner; CandOnly counts them on a picture page too, and not those in Drawn
 	MaxDev              float64 // largest edge deviation between the two pages
 	Fit                 affine  // fit of the two pages; the identity when there is no paired word
 	FitEdges            int     // edges the fit was made from; with -fit scale it has a scale from minScalePoints up
@@ -247,6 +257,14 @@ type pageStat struct {
 	InkDone bool
 	Ink     float64
 	InkErr  string
+	// Drawn counts the candidate words without a partner that the
+	// reference draws at the same place (see drawnShift); they are not
+	// in CandOnly. DrawnShift is the largest shift, in points, at which
+	// one of them was found. DrawnErr tells why the words of the page
+	// could not be tested.
+	Drawn      int
+	DrawnShift float64
+	DrawnErr   string
 }
 
 func (r pdfResult) pass(o cmpOptions) bool {
@@ -254,6 +272,9 @@ func (r pdfResult) pass(o cmpOptions) bool {
 		if p.Picture && (!p.InkDone || p.Ink > o.InkLimit) {
 			return false
 		}
+	}
+	if r.OneUp != nil && !r.OneUp.sameSheets(o.Tol) {
+		return false
 	}
 	return r.RefPages == r.CandPages && r.PageMoves == 0 &&
 		r.RefOnly == 0 && r.CandOnly == 0 && r.MaxDev <= o.Tol
@@ -1133,6 +1154,33 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 			r.RefOnlySample = append(r.RefOnlySample, located{w.Text, w.Page + 1})
 		}
 	}
+	candPage := map[int][]int{}
+	for wi := range unpairedB {
+		candPage[cand.Words[wi].Page] = nil
+	}
+	for wi, w := range cand.Words {
+		if _, ok := candPage[w.Page]; ok {
+			candPage[w.Page] = append(candPage[w.Page], wi)
+		}
+	}
+	refLone := map[int][]int{}
+	for wi := range unpairedA {
+		refLone[ref.Words[wi].Page] = append(refLone[ref.Words[wi].Page], wi)
+	}
+	// shared reports whether candidate word wi has another word at its
+	// place: a candidate word, or a reference word without a partner.
+	shared := func(wi int) bool {
+		page := cand.Words[wi].Page
+		if hasTwin(cand, wi, candPage[page]) {
+			return true
+		}
+		for _, ri := range refLone[page] {
+			if _, same := samePlace(ref, cand, ri, wi, fitFor(pageKey{page, page})); same {
+				return true
+			}
+		}
+		return false
+	}
 	for _, wi := range b.order {
 		if !unpairedB[wi] {
 			continue
@@ -1146,6 +1194,7 @@ func comparePDF(ref, cand *pdfWords, o cmpOptions) pdfResult {
 			continue
 		}
 		r.CandOnly++
+		r.CandOnlyWords = append(r.CandOnlyWords, loneWord{w, shared(wi)})
 		if len(r.CandOnlySample) < sampleWords {
 			r.CandOnlySample = append(r.CandOnlySample, located{w.Text, w.Page + 1})
 		}

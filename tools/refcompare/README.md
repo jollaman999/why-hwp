@@ -50,6 +50,14 @@ WHY_HWP_REF_HOST=user@host WHY_HWP_REF_DIR=/mnt/c/Users/me/why-hwp-ref \
   (default 120s) is Hancom Office's limit for one conversion.
 - When Hancom Office saves an empty text file (a document with no text, such as
   a chart only), the reference `.txt` is kept empty.
+- A document whose print setting is two pages to a sheet also gets
+  `OUT/ref/<name>.oneup.pdf`: the document printed one page to a sheet (see
+  *One-up reference*). The setting is `PrintMethod` 4 in `settings.xml` of the
+  HWPX form of the document, which is the input itself or, for an hwp input,
+  `OUT/ref/<name>.hwpx`. `ref` copies that file with the one value changed to
+  0 (every other zip entry is copied as it is stored, in the same order) and
+  has Hancom Office print the copy. The copy is not kept, and the PDF is
+  cached like every other output.
 
 ## Candidates
 
@@ -89,7 +97,7 @@ passes, 1 when one fails or cannot be compared, 2 for bad usage.
 | `-tol` | largest allowed word-edge deviation in points (default 1.0) |
 | `-fit` | how each reference page is fitted to the candidate page before measuring: `scale` (uniform scale and translation, default), `shift` (translation only), `none` |
 | `-skip-memo` | ignore reference words in Hancom's memo area (see below) |
-| `-ink` | largest allowed picture difference, in percent, of a page that is judged by its picture (default 1.0, see below) |
+| `-ink` | largest allowed picture difference, in percent, of a page that is judged by its picture and of a word that is looked for in the reference's picture (default 1.0, see *Picture pages* and *Text that the reference draws*) |
 | `-ink-all` | also measure the picture difference of every other page and list it under `## Picture difference of every page`; it does not change a verdict |
 | `-reconvert` | also print the candidate HWP/HWPX to PDF with Hancom Office on the remote PC (`OUT/reconv/`, cached like `ref`) and compare that PDF with the reference PDF; needs the same environment as `ref`. `-exe`, `-force` and `-timeout` work as in `ref` |
 
@@ -222,6 +230,47 @@ scale this is shown and does not decide the verdict.
 For the picture test of a half the sheet is drawn and the other half is
 painted white.
 
+A document that has a one-up reference is not compared this way (see the next
+section), except for the round trip of `-reconvert`.
+
+### One-up reference
+
+Hancom Office's two-up print is not always the whole document. In the
+document of 20 sheets above, its PDF lacks 885 table cells: on ten pages the
+right columns of a wide table are cut off in the right half of the sheet. A
+candidate that draws those pages in full has 885 words without a partner and
+cannot pass, however right it is. Printed one page to a sheet, the same
+document has 40 pages and every cell.
+
+So when `OUT/ref/<name>.oneup.pdf` exists (see *ref*), and `manifest.json`
+records it for the same input as `<name>.pdf`, the candidate PDF is compared
+with it:
+
+- A candidate that prints two pages to a sheet (every page is landscape, no
+  word lies across the vertical centre line of its page, and there are words
+  on both sides of it) is cut into halves. Half *n* is compared with page *n*
+  of the one-up reference just as two pages are compared: pairing, a fit of
+  the `-fit` kind for each page, deviations in candidate points, drawn text.
+  The fit takes up what the candidate shrank the page by to put two on a sheet
+  (0.7085 to 0.7103 in the document above) and what Hancom Office shrank a
+  reference page by for memos. When the reference has one page less than the
+  candidate has halves and the last half has no word, that half is not a
+  page; the sheet is drawn, and the document fails when the half has ink.
+- Any other candidate is compared with the one-up reference page by page.
+- The two-up reference `<name>.pdf` decides only the sheets: the candidate
+  must have as many, each of the same width and height to within `-tol`
+  points. A candidate that does not follow the print setting fails here even
+  when all its words are in place.
+
+In the report such a document has `one-up ref; sheets <reference>/<candidate>`
+after the page counts, which are those of the one-up reference and of the
+candidate's halves, and `halves: left <scales>, right <scales>` in the `scale`
+column. A page is named by its number in the document. `## Differences` says
+which reference was used and why.
+
+The round trip of `-reconvert` is compared with the two-up reference as
+before: both PDFs are then printed two-up by Hancom Office and are cut alike.
+
 ### Type 3 fonts
 
 Hancom Office writes some fonts into the PDF as Type 3 fonts. Such a font
@@ -307,6 +356,85 @@ The share is not a maximum. A few words that are 1.8 to 3.5 pt off on a full
 text page read 0.03 % to 0.49 %, below the limit. That is why pages with words
 are judged by their words and never by the picture.
 
+### Text that the reference draws
+
+Hancom Office draws the text of a chart as outlines also on a page that has
+other words, and a chart that the document holds as a picture has no text at
+all. The candidate has words there, and they have no partner. Such a word may
+be just what the reference shows, or it may be a word the candidate made up or
+put in the wrong place. So it is not ignored: it is looked for in the picture
+of the reference, and only a word whose shape is found at its place is taken
+out of the unmatched words.
+
+1. For every candidate word without a partner `pdftoppm` draws both PDFs
+   around the word at 8 pixels per point. The reference is drawn where the fit
+   of the word's page (step 7 of *How PDFs are compared*) puts the word box.
+2. The outline is that of *Picture pages*, step 2. On both pages the outline
+   pixels inside the word box are taken.
+3. The reference may be moved by up to `-tol` points to either side,
+   horizontally and vertically, as a word edge may. The shifts are tried in
+   steps of a pixel, the smallest first. At a shift the two shapes *lie on
+   each other* when both pages have outline in the box and at most `-ink`
+   percent of either outline has no outline pixel of the other page within a
+   quarter of a point.
+4. The word is *drawn* when the shapes lie on each other at one of these
+   shifts, and at none of the four shifts that are `-tol` and half a point
+   further to the left, right, top or bottom. Where they do there too, the box
+   is so full of ink (the middle of a radar chart, a hatched area) that any
+   shape lies on it, and nothing is known about the word.
+5. A word is not looked for when another word is at the same place (as in
+   step 4.1 of the pairing): another candidate word, or a reference word
+   without a partner. The ink there is that word's. So a candidate that
+   prints a word twice still has a word without a partner, and so has one
+   that prints another text than the reference (`O` where the reference PDF
+   reports a code of a formula font). A word on a page that only the
+   candidate has is not looked for, and a word on a picture page belongs to
+   the picture test.
+
+A drawn word is not counted as unmatched. The `drawn` column of the report
+gives their number, in all and for each page, with the largest shift at which
+one of them was found (the shape itself can be a quarter of a point further).
+`## Differences` repeats it for a failed document, and the page table of
+`-ink-all` has a `drawn` column.
+
+These stay unmatched: a word where the reference has no ink, a shape that is
+further away than `-tol` and the quarter point, another shape at the place
+(another digit, a rule, a box), and a word that is too faint in one of the
+PDFs to have an outline.
+
+Where the numbers come from (one document of 20 two-up sheets with words and
+charts, whose candidate has 1257 words without a partner against the two-up
+reference; against its one-up reference, see *One-up reference*, the 885 table
+cells have partners and all 371 chart labels are drawn):
+
+- 885 of them are table cells that the reference PDF does not have: on ten
+  of the pages that Hancom Office shrank for memos it left out the right
+  columns of the tables. The reference has no ink there and all 885 stay
+  unmatched.
+- 371 are the labels of charts on five pages, which the reference PDF holds
+  as pictures. 315 are drawn (117 of 117, 103 of 105, 41 of 41, 35 of 36 and
+  19 of 72). Of the others, 53 are on
+  a page whose only paired words are the three of its page number: the fit
+  made from them is more than 2 pt off at the top of the page (with the scale
+  of the other pages all 72 are drawn). Two are a `0` in the middle of a radar chart
+  (step 4), and one is drawn bold in the reference only (1.6 %).
+- One is a digit in a table. The reference has it as a glyph of a Type 3
+  font, and `pdftotext` does not report it. It is drawn.
+- Resolution and the quarter point: the labels are about 3.5 pt in the
+  reference, where a digit is 8 by 10 pixels at 4 pixels per point. Tested as
+  a picture page is, with `-tol` as the only tolerance and no shift, 237 of
+  240 labels also lay on the reference's picture of *another* label of the
+  same size (`10` on `12`), and 279 of 309 still lay on their own picture
+  moved by 1.25 pt. With shifts and a quarter point at 4 pixels per point,
+  264 of 300 labels were found and 13 of 231 lay on another label; at 8
+  pixels per point 299 of 300 and 5 of 231. An eighth of a point found 93 of
+  300: the two producers do not draw a glyph alike (Hancom Office writes it
+  as a path, in another size).
+- Moved by 1.5, 2 and 3 pt to each of the four sides from where it was found,
+  none of the 316 words is drawn (1264 tries each). Laid on the reference's
+  picture of the nearest other label of the same size and length, 5 of 245
+  are (`28` on `26`, `2022년` on `2021년`, `2,000,000` on `1,000,000`).
+
 ### Verdict
 
 A document passes when
@@ -314,9 +442,13 @@ A document passes when
 - the page counts are the same,
 - no paired word is on another page number,
 - no word is left without a partner (on either side; the candidate's words on
-  picture pages are not counted),
+  picture pages and those the reference draws are not counted),
 - the largest edge deviation is at most `-tol`, and
 - every picture page has a picture difference of at most `-ink` percent.
+
+For a document with a one-up reference the pages are those of the one-up
+reference, and the candidate must also have the sheets of the two-up
+reference: as many, of the same size to within `-tol` points.
 
 With `-reconvert`, the candidate HWP/HWPX printed by Hancom Office must pass the
 same test against the reference PDF.
@@ -341,10 +473,33 @@ substitutions.
   changes the outline, and a wrong character with a similar shape does not.
   Edges fainter than a quarter of the color range (a light highlight, a light
   gray rule) are not measured.
-- A chart on a page where the reference has words is not a picture page. The
-  candidate's chart labels are then words without a partner.
+- The search for drawn text sees shapes too. A label that differs from the
+  reference's in one character of several can be taken for drawn (5 of 245
+  above), and so is the same text in another weight: bold on regular is less
+  than a quarter of a point apart in a 3.5 pt label. A label in another
+  typeface is not found: of the 371 labels above, 200 were with a candidate
+  made with other fonts.
+- Drawn text is looked for where the fit of the page puts it, and the fit is
+  made from the paired words. On a page with a few words in one line the fit
+  is poor far from them, and drawn text there is not found.
+- Text that the candidate draws and the reference has as words is not looked
+  for. Those are reference words without a partner.
 - Hancom Office follows the document's print settings, for example printing
-  two pages on one sheet. A candidate that does not has another page count.
+  two pages on one sheet. A candidate that does not has another page count,
+  or with a one-up reference another number of sheets.
+- Only the print setting two pages to a sheet (`PrintMethod` 4) gets a
+  one-up reference. A reference made before `ref` knew of it has none until
+  `ref` is run again.
+- A half that is compared with a page of the one-up reference is measured on
+  the sheet, in candidate points, where the page is about 0.71 of its size:
+  1 pt there is 1.4 pt on the page. A candidate of one page to a sheet is
+  measured at full size.
+- A page of the one-up reference without words has no fit, and a half of a
+  candidate sheet cannot be laid on it without one. Such a page is reported
+  as not compared and the document fails.
+- With a one-up reference the two-up reference is not compared word by word,
+  so where on the sheet the candidate puts a half is not measured: each half
+  has its own fit.
 - Two pages to a sheet are told from the words alone (see *Two pages to a
   sheet*). Only two portrait pages side by side on a landscape sheet are
   handled. A two-up sheet with a word across its centre line, or whose halves

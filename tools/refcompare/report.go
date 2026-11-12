@@ -7,8 +7,11 @@ import (
 
 func renderReport(rows []row, o cmpOptions, candDir string, reconvert bool) string {
 	var b strings.Builder
-	pass, byPicture := 0, 0
+	pass, byPicture, oneUps := 0, 0, 0
 	for _, r := range rows {
+		if r.PDF != nil && r.PDF.OneUp != nil {
+			oneUps++
+		}
 		if r.Pass {
 			pass++
 			if r.judgedByPicture() {
@@ -24,6 +27,15 @@ func renderReport(rows []row, o cmpOptions, candDir string, reconvert bool) stri
 	}
 	fmt.Fprintf(&b, ".  \nA page where the reference has no word is judged by its picture: at most %.2f %% of the outline\n", 100*o.InkLimit)
 	fmt.Fprintf(&b, "of one page may be more than %.2f pt from the outline of the other. Such a verdict is marked (picture).  \n", o.Tol)
+	fmt.Fprintf(&b, "A candidate word without a partner is not unmatched when the reference draws its shape within %.2f pt of the place\n", o.Tol)
+	fmt.Fprintf(&b, "(chart text, which Hancom Office draws as outlines): at most %.2f %% of the outline in the word box may be more than\n", 100*o.InkLimit)
+	fmt.Fprintf(&b, "%.2f pt off once the shapes are laid on each other. The drawn column counts these words.  \n", float64(drawnSlack)/drawnPxPerPt)
+	if oneUps > 0 {
+		b.WriteString("A document marked one-up ref prints two pages to a sheet. Its words are compared with Hancom Office's print of\n")
+		b.WriteString("the document one page to a sheet (ref/<name>.oneup.pdf), because Hancom Office's two-up print can leave out parts\n")
+		b.WriteString("of a page. Each half of a candidate sheet is compared with one page of it. The two-up reference decides the\n")
+		fmt.Fprintf(&b, "number of sheets and their size (to within %.2f pt).  \n", o.Tol)
+	}
 	fmt.Fprintf(&b, "Fit: %s. Memo words skipped: %v. Substituted characters (same place, different code point,\n", o.Fit, o.SkipMemo)
 	fmt.Fprintf(&b, "usually symbol fonts) and TXT are shown but do not decide the verdict.\n\n")
 	fmt.Fprintf(&b, "%d of %d documents pass", pass, len(rows))
@@ -32,8 +44,8 @@ func renderReport(rows []row, o cmpOptions, candDir string, reconvert bool) stri
 	}
 	b.WriteString(".\n\n")
 
-	b.WriteString("| document | pages ref/cand | max dev pt | unmatched ref/cand | moved | subst | scale | memo skipped | txt lines ref-only/cand-only | round trip | type 3 | picture | verdict |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| document | pages ref/cand | max dev pt | unmatched ref/cand | moved | subst | scale | memo skipped | txt lines ref-only/cand-only | round trip | type 3 | picture | drawn | verdict |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, r := range rows {
 		verdict := "FAIL"
 		if r.Pass {
@@ -50,13 +62,13 @@ func renderReport(rows []row, o cmpOptions, candDir string, reconvert bool) stri
 			rt = r.RTNote
 		}
 		if r.PDF == nil {
-			fmt.Fprintf(&b, "| %s | %s | | | | | | | %s | %s | | | %s |\n", cell(r.Name), cell(r.Err), txtCell(r), cell(rt), verdict)
+			fmt.Fprintf(&b, "| %s | %s | | | | | | | %s | %s | | | | %s |\n", cell(r.Name), cell(r.Err), txtCell(r), cell(rt), verdict)
 			continue
 		}
 		p := r.PDF
-		fmt.Fprintf(&b, "| %s | %d/%d | %.2f | %d/%d | %d | %d | %s | %d | %s | %s | %s | %s | %s |\n",
-			cell(r.Name), p.RefPages, p.CandPages, p.MaxDev, p.RefOnly, p.CandOnly, p.PageMoves,
-			p.Substituted, scaleCell(*p), p.MemoSkipped, txtCell(r), cell(rt), cell(type3Cell(r)), cell(pictureCell(*p)), verdict)
+		fmt.Fprintf(&b, "| %s | %s | %.2f | %d/%d | %d | %d | %s | %d | %s | %s | %s | %s | %s | %s |\n",
+			cell(r.Name), cell(pagesCell(*p, o)), p.MaxDev, p.RefOnly, p.CandOnly, p.PageMoves,
+			p.Substituted, scaleCell(*p), p.MemoSkipped, txtCell(r), cell(rt), cell(type3Cell(r)), cell(pictureCell(*p)), cell(drawnCell(*p)), verdict)
 	}
 	if o.InkAll {
 		inkTable(&b, rows, o)
@@ -100,6 +112,24 @@ func detailLines(b *strings.Builder, what string, p pdfResult, o cmpOptions) {
 	}
 	fmt.Fprintf(b, "- %s: %d/%d %s, %d/%d words, %d matched (%d out of reading order), %d on another page, %d edges measured\n",
 		what, p.RefPages, p.CandPages, unit, p.RefWords, p.CandWords, p.Matched, p.Reordered, p.PageMoves, p.Edges)
+	if u := p.OneUp; u != nil {
+		fmt.Fprintf(b, "- %s: compared with the one-up reference (Hancom Office's print of the document one page to a sheet), because the document prints two pages to a sheet and Hancom Office's two-up print can leave out parts of a page\n", what)
+		if u.Halved {
+			h := p.halfScales()
+			fmt.Fprintf(b, "- %s: the candidate prints two pages to a sheet; each half is compared with a page of the one-up reference: scale of the left halves %s, of the right halves %s\n",
+				what, scaleRange(h.LeftMin, h.LeftMax, h.Left), scaleRange(h.RightMin, h.RightMax, h.Right))
+		} else {
+			fmt.Fprintf(b, "- %s: the candidate does not print two pages to a sheet; its pages are compared with the pages of the one-up reference\n", what)
+		}
+		fmt.Fprintf(b, "- %s: %s\n", what, sheetsLine(u, o))
+		if u.Trimmed {
+			if u.HalfErr == "" {
+				fmt.Fprintf(b, "- %s: the right half of the candidate's last sheet is empty and is not a page\n", what)
+			} else {
+				fmt.Fprintf(b, "- %s: the right half of the candidate's last sheet is left out as empty, but %s\n", what, u.HalfErr)
+			}
+		}
+	}
 	if p.TwoUp {
 		h := p.halfScales()
 		fmt.Fprintf(b, "- %s: two pages to a sheet, compared half by half (L left, R right): scale of the left halves %s, of the right halves %s\n",
@@ -127,6 +157,15 @@ func detailLines(b *strings.Builder, what string, p pdfResult, o cmpOptions) {
 		default:
 			fmt.Fprintf(b, "- %s: page %s is judged by its picture (%s): %.2f %% of the outline is more than %.2f pt off, limit %.2f %%\n",
 				what, pageLabel(p.TwoUp, i), wordSide(pg), 100*pg.Ink, o.Tol, 100*o.InkLimit)
+		}
+	}
+	if p.DrawnWords > 0 {
+		fmt.Fprintf(b, "- %s: %s without a partner in cand drawn in the reference and not counted: %s\n",
+			what, plural(p.DrawnWords, "word"), drawnPages(p))
+	}
+	for i, pg := range p.Page {
+		if pg.DrawnErr != "" {
+			fmt.Fprintf(b, "- %s: page %s: the words without a partner could not be looked for in the reference picture: %s\n", what, pageLabel(p.TwoUp, i), pg.DrawnErr)
 		}
 	}
 	if len(p.RefOnlySample) > 0 {
@@ -195,13 +234,41 @@ func pictureCell(p pdfResult) string {
 	return strings.Join(parts, ", ")
 }
 
+// drawnCell tells how many candidate words without a partner the reference
+// draws, in all and on each page (see drawnShift).
+func drawnCell(p pdfResult) string {
+	if p.DrawnWords == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%s: %s", plural(p.DrawnWords, "word"), drawnPages(p))
+}
+
+// drawnPages lists the pages with drawn words: the page, the number of
+// words and the largest of the shifts at which they were found.
+func drawnPages(p pdfResult) string {
+	var parts []string
+	for i, pg := range p.Page {
+		if pg.Drawn > 0 {
+			parts = append(parts, fmt.Sprintf("p%s %d (shift up to %.2f pt)", pageLabel(p.TwoUp, i), pg.Drawn, pg.DrawnShift))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func plural(n int, what string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", what)
+	}
+	return fmt.Sprintf("%d %ss", n, what)
+}
+
 // inkTable lists the picture difference of every page (-ink-all), next to
 // what the word comparison found on the page.
 func inkTable(b *strings.Builder, rows []row, o cmpOptions) {
 	b.WriteString("\n## Picture difference of every page\n\n")
 	b.WriteString("Only the pages marked picture decide a verdict. The other pages are drawn after the fit of their words.\n\n")
-	b.WriteString("| document | page | words ref/cand | unmatched ref/cand | max dev pt | picture diff % | judged by |\n")
-	b.WriteString("|---|---|---|---|---|---|---|\n")
+	b.WriteString("| document | page | words ref/cand | unmatched ref/cand | drawn | max dev pt | picture diff % | judged by |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|\n")
 	for _, r := range rows {
 		if r.PDF == nil {
 			continue
@@ -214,8 +281,8 @@ func inkTable(b *strings.Builder, rows []row, o cmpOptions) {
 			if pg.InkDone {
 				ink = fmt.Sprintf("%.2f", 100*pg.Ink)
 			}
-			fmt.Fprintf(b, "| %s | %s | %d/%d | %d/%d | %.2f | %s | %s |\n", cell(r.Name), pageLabel(r.PDF.TwoUp, i),
-				pg.RefWords, pg.CandWords, pg.RefOnly, pg.CandOnly, pg.MaxDev, cell(ink), by)
+			fmt.Fprintf(b, "| %s | %s | %d/%d | %d/%d | %d | %.2f | %s | %s |\n", cell(r.Name), pageLabel(r.PDF.TwoUp, i),
+				pg.RefWords, pg.CandWords, pg.RefOnly, pg.CandOnly, pg.Drawn, pg.MaxDev, cell(ink), by)
 		}
 	}
 }
@@ -240,9 +307,50 @@ func shortResult(p pdfResult, o cmpOptions) string {
 	return fmt.Sprintf("%s: %d/%d p, %.2f pt, %d/%d unmatched, %d moved", v, p.RefPages, p.CandPages, p.MaxDev, p.RefOnly, p.CandOnly, p.PageMoves)
 }
 
+// pagesCell gives the page counts of a comparison. For a document compared
+// with its one-up reference it says so and adds the sheets of the two-up
+// reference and of the candidate.
+func pagesCell(p pdfResult, o cmpOptions) string {
+	s := fmt.Sprintf("%d/%d", p.RefPages, p.CandPages)
+	u := p.OneUp
+	if u == nil {
+		return s
+	}
+	s += fmt.Sprintf(", one-up ref; sheets %d/%d", u.RefSheets, u.CandSheets)
+	if u.SizeDiff > o.Tol {
+		s += fmt.Sprintf(", sheet %d is %.2f pt off in size", u.SizeSheet, u.SizeDiff)
+	}
+	if u.HalfErr != "" {
+		s += ", last half not empty"
+	}
+	return s
+}
+
+// sheetsLine compares the sheets of the candidate with those of the two-up
+// reference.
+func sheetsLine(u *oneUp, o cmpOptions) string {
+	s := fmt.Sprintf("sheets of the two-up reference and of the candidate: %d/%d", u.RefSheets, u.CandSheets)
+	switch {
+	case u.SizeSheet == 0:
+	case u.SizeDiff > o.Tol:
+		s += fmt.Sprintf("; sheet %d is %.2f x %.2f pt in the reference and %.2f x %.2f pt in the candidate, more than %.2f pt apart",
+			u.SizeSheet, u.RefSize.W, u.RefSize.H, u.CandSize.W, u.CandSize.H, o.Tol)
+	default:
+		s += fmt.Sprintf("; sizes differ by up to %.2f pt (sheet %d)", u.SizeDiff, u.SizeSheet)
+	}
+	if u.RefSheets != u.CandSheets {
+		s += "; the candidate does not print the sheets Hancom Office prints"
+	}
+	return s
+}
+
 func scaleCell(p pdfResult) string {
 	if p.TwoUp {
 		return twoUpCell(p)
+	}
+	if p.OneUp != nil && p.OneUp.Halved {
+		h := p.halfScales()
+		return fmt.Sprintf("halves: left %s, right %s", scaleRange(h.LeftMin, h.LeftMax, h.Left), scaleRange(h.RightMin, h.RightMax, h.Right))
 	}
 	if p.Matched == 0 {
 		return "-"

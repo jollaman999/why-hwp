@@ -306,11 +306,11 @@ func TestReportMarksPictureAndType3(t *testing.T) {
 	rep := renderReport(rows, o, "cand", false)
 	for _, want := range []string{
 		"4 of 5 documents pass (1 of them by picture).",
-		"| chart.hwpx | 1/1 | 0.00 | 0/0 | 0 | 0 | - | 0 |  | - | - | p1 0.39 %, 9 words not paired | pass (picture) |",
-		"| chart2.hwpx | 1/1 | 0.00 | 0/0 | 0 | 0 | - | 0 |  | - | - | p1 2.03 %, 9 words not paired | FAIL (picture) |",
-		"| type3.hwp | 1/1 | 0.00 | 0/0 | 0 | 0 | 1.0000 | 0 |  | - | 16 edges at baseline | - | pass |",
-		"| plain.hwp | 1/1 | 0.00 | 0/0 | 0 | 0 | 1.0000 | 0 |  | - | - | - | pass |",
-		"| nomutool.hwp | 1/1 | 0.00 | 0/0 | 0 | 0 | 1.0000 | 0 |  | - | box middle: mutool not found | - | pass |",
+		"| chart.hwpx | 1/1 | 0.00 | 0/0 | 0 | 0 | - | 0 |  | - | - | p1 0.39 %, 9 words not paired | - | pass (picture) |",
+		"| chart2.hwpx | 1/1 | 0.00 | 0/0 | 0 | 0 | - | 0 |  | - | - | p1 2.03 %, 9 words not paired | - | FAIL (picture) |",
+		"| type3.hwp | 1/1 | 0.00 | 0/0 | 0 | 0 | 1.0000 | 0 |  | - | 16 edges at baseline | - | - | pass |",
+		"| plain.hwp | 1/1 | 0.00 | 0/0 | 0 | 0 | 1.0000 | 0 |  | - | - | - | - | pass |",
+		"| nomutool.hwp | 1/1 | 0.00 | 0/0 | 0 | 0 | 1.0000 | 0 |  | - | box middle: mutool not found | - | - | pass |",
 		"- PDF: page 1 is judged by its picture (words in cand only, 9 not paired): 2.03 % of the outline is more than 1.00 pt off, limit 1.00 %",
 	} {
 		if !strings.Contains(rep, want) {
@@ -326,8 +326,8 @@ func TestReportMarksPictureAndType3(t *testing.T) {
 	rep = renderReport(rows[:4], o, "cand", false)
 	for _, want := range []string{
 		"## Picture difference of every page",
-		"| chart.hwpx | 1 | 0/9 | 0/9 | 0.00 | 0.39 | picture |",
-		"| plain.hwp | 1 | 3/3 | 0/0 | 0.00 | 0.04 | words |",
+		"| chart.hwpx | 1 | 0/9 | 0/9 | 0 | 0.00 | 0.39 | picture |",
+		"| plain.hwp | 1 | 3/3 | 0/0 | 0 | 0.00 | 0.04 | words |",
 	} {
 		if !strings.Contains(rep, want) {
 			t.Errorf("report with -ink-all lacks %q\n%s", want, rep)

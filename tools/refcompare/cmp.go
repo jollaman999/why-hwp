@@ -129,15 +129,37 @@ func compareDoc(name, refDir, candDir string, opt cmpOptions, rc *reconverter) r
 		r.Err = err.Error()
 		return r
 	}
+	// A document that prints two pages to a sheet is compared with its
+	// one-up reference (see compareOneUp); ref then gives only the sheets.
+	wordsPDF, words := refPDF, ref
+	oneUpPDF, err := oneUpRef(refDir, name)
+	if err != nil {
+		r.Err = err.Error()
+		return r
+	}
+	if oneUpPDF != "" {
+		wordsPDF = oneUpPDF
+		if words, err = readPDFWords(oneUpPDF); err != nil {
+			r.Err = err.Error()
+			return r
+		}
+	}
 	candPDF := filepath.Join(candDir, name+".pdf")
 	if _, err := os.Stat(candPDF); err != nil {
 		r.Err = "no candidate PDF"
 	} else if cand, err := readPDFWords(candPDF); err != nil {
 		r.Err = err.Error()
 	} else {
-		r.BaseNote = loadBaselines(refPDF, candPDF, ref, cand)
-		res := compareSheets(ref, cand, opt)
-		measureInk(refPDF, candPDF, &res, opt)
+		r.BaseNote = loadBaselines(wordsPDF, candPDF, words, cand)
+		var res pdfResult
+		if oneUpPDF != "" {
+			res = compareOneUp(ref, words, cand, opt)
+			checkTrimmedHalf(candPDF, &res)
+		} else {
+			res = compareSheets(ref, cand, opt)
+		}
+		measureInk(wordsPDF, candPDF, &res, opt)
+		measureDrawn(wordsPDF, candPDF, words, cand, &res, opt)
 		r.PDF = &res
 	}
 
@@ -168,6 +190,7 @@ func compareDoc(name, refDir, candDir string, opt cmpOptions, rc *reconverter) r
 			}
 			res := compareSheets(ref, words, opt)
 			measureInk(refPDF, pdf, &res, opt)
+			measureDrawn(refPDF, pdf, ref, words, &res, opt)
 			r.RT = &res
 		}
 	}

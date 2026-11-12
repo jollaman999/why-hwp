@@ -487,9 +487,9 @@ func TestReportTwoUp(t *testing.T) {
 	rep := renderReport(rows, o, "cand", false)
 	for _, want := range []string{
 		"2 of 3 documents pass.",
-		"| twoup.hwp | 2/2 | 0.00 | 0/0 | 0 | 0 | two-up: left 1.2909, right 1.2909 | 0 |  | - | - | - | pass |",
-		"| twoup-bad.hwp | 2/2 | 2.50 | 0/1 | 0 | 0 | two-up: left 1.2909, right 1.3091; halves differ on sheets 1, 2 | 0 |  | - | - | - | FAIL |",
-		"| plain.hwp | 1/1 | 0.00 | 0/0 | 0 | 0 | 1.0000 | 0 |  | - | - | - | pass |",
+		"| twoup.hwp | 2/2 | 0.00 | 0/0 | 0 | 0 | two-up: left 1.2909, right 1.2909 | 0 |  | - | - | - | - | pass |",
+		"| twoup-bad.hwp | 2/2 | 2.50 | 0/1 | 0 | 0 | two-up: left 1.2909, right 1.3091; halves differ on sheets 1, 2 | 0 |  | - | - | - | - | FAIL |",
+		"| plain.hwp | 1/1 | 0.00 | 0/0 | 0 | 0 | 1.0000 | 0 |  | - | - | - | - | pass |",
 		"- PDF: 2/2 sheets, 48/49 words, 48 matched (0 out of reading order), 0 on another page, 96 edges measured",
 		"- PDF: two pages to a sheet, compared half by half (L left, R right): scale of the left halves 1.2909, of the right halves 1.3091",
 		"- PDF: the halves of sheet 1 differ in scale: left 1.2909 from 24 edges, right 1.3091 from 24 edges",
@@ -508,7 +508,7 @@ func TestReportTwoUp(t *testing.T) {
 	o.InkAll = true
 	good.Page[1].InkDone, good.Page[1].Ink = true, 0.0004
 	rep = renderReport(rows[:1], o, "cand", false)
-	if want := "| twoup.hwp | 1R | 12/12 | 0/0 | 0.00 | 0.04 | words |"; !strings.Contains(rep, want) {
+	if want := "| twoup.hwp | 1R | 12/12 | 0/0 | 0 | 0.00 | 0.04 | words |"; !strings.Contains(rep, want) {
 		t.Errorf("report with -ink-all lacks %q\n%s", want, rep)
 	}
 }
