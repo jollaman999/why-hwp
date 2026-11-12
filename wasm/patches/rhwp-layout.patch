@@ -1,0 +1,646 @@
+# rhwp layout fixes for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - text_measurement.rs, font_metrics_technical_symbols.rs, font_metrics_data.rs:
+#   HCR Batang box-drawing characters advance 970/1000 em; bold text measures
+#   symbols with the regular face's advance unless the glyph is known missing.
+# - picture_footnote.rs: table and picture captions draw their bullet.
+# - typeset.rs: the first line of an hwpx column keeps its stored spacing-before.
+# - rendering.rs: text output puts a space after a list bullet.
+# - pdf.rs: PDF font fallback tries the SVG font-family list before database order.
+# - font_metrics_data.rs: "한컴 윤고딕 250" uses the Haan YGodic 250 widths.
+# - glyph_fit.rs: glyphs under negative letter spacing keep their own width.
+# - list_marker_geometry.rs: an ASCII bullet takes a half-em cell.
+# - punctuation_slots.rs: a space after Latin text advances with the Hangul em and ratio.
+# - equation/: arrows use the equation font; HYhwpEQ equations keep a thin space after a function name.
+# - composer/tests.rs, layout/tests.rs and the test modules above cover these changes.
+
+diff --git a/src/document_core/queries/rendering.rs b/src/document_core/queries/rendering.rs
+index 79a5ce23df..430795f319 100644
+--- a/src/document_core/queries/rendering.rs
++++ b/src/document_core/queries/rendering.rs
+@@ -8735,3 +8735,23 @@ impl DocumentCore {
+-        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+-
+-        fn collect_line_text(node: &RenderNode, out: &mut String, has_token: &mut bool) {
++        use crate::renderer::render_tree::{FieldMarkerType, RenderNode, RenderNodeType};
++        use crate::renderer::style_resolver::ResolvedStyleSet;
++
++        fn is_list_head_run(
++            tr: &crate::renderer::render_tree::TextRunNode,
++            styles: &ResolvedStyleSet,
++        ) -> bool {
++            tr.char_start.is_none()
++                && tr.char_shape_id.is_none()
++                && matches!(tr.field_marker, FieldMarkerType::None)
++                && !tr.text.is_empty()
++                && tr
++                    .para_shape_id
++                    .and_then(|id| styles.para_styles.get(id as usize))
++                    .is_some_and(|style| style.head_type != crate::model::style::HeadType::None)
++        }
++
++        fn collect_line_text(
++            node: &RenderNode,
++            out: &mut String,
++            has_token: &mut bool,
++            styles: &ResolvedStyleSet,
++        ) {
+@@ -8739,0 +8760 @@ impl DocumentCore {
++                    let list_head = !*has_token && is_list_head_run(tr, styles);
+@@ -8746,0 +8768,3 @@ impl DocumentCore {
++                    if list_head {
++                        out.push(' ');
++                    }
+@@ -8777 +8801 @@ impl DocumentCore {
+-                collect_line_text(child, out, has_token);
++                collect_line_text(child, out, has_token, styles);
+@@ -8781 +8805 @@ impl DocumentCore {
+-        fn collect_page_lines(node: &RenderNode, lines: &mut Vec<String>) {
++        fn collect_page_lines(node: &RenderNode, lines: &mut Vec<String>, styles: &ResolvedStyleSet) {
+@@ -8789 +8813 @@ impl DocumentCore {
+-                collect_line_text(node, &mut line, &mut has_token);
++                collect_line_text(node, &mut line, &mut has_token, styles);
+@@ -8798 +8822 @@ impl DocumentCore {
+-                collect_page_lines(child, lines);
++                collect_page_lines(child, lines, styles);
+@@ -8804 +8828 @@ impl DocumentCore {
+-        collect_page_lines(&tree.root, &mut lines);
++        collect_page_lines(&tree.root, &mut lines, &self.styles);
+diff --git a/src/renderer/composer/punctuation_slots.rs b/src/renderer/composer/punctuation_slots.rs
+index c4ba43d938..562cf12528 100644
+--- a/src/renderer/composer/punctuation_slots.rs
++++ b/src/renderer/composer/punctuation_slots.rs
+@@ -6 +6 @@ use crate::renderer::style_resolver::ResolvedCharStyle;
+-/// 반각 공백은 상속한 언어의 em·장평으로 전진하며 자간은 영문 슬롯을 쓴다.
++/// 반각 공백은 상속한 언어(영문이면 한글)의 em·장평으로 전진하며 자간은 영문 슬롯을 쓴다.
+@@ -9,0 +10 @@ fn space_origin(ch: char, inherited: usize, style: Option<&ResolvedCharStyle>) -
++    let origin = if inherited == 1 { 0 } else { inherited };
+@@ -11 +11,0 @@ fn space_origin(ch: char, inherited: usize, style: Option<&ResolvedCharStyle>) -
+-        && inherited != 1
+@@ -13,3 +13,3 @@ fn space_origin(ch: char, inherited: usize, style: Option<&ResolvedCharStyle>) -
+-        && (style.font_size_for_lang(inherited) != style.font_size_for_lang(1)
+-            || style.ratio_for_lang(inherited) != style.ratio_for_lang(1)))
+-    .then_some(inherited)
++        && (style.font_size_for_lang(origin) != style.font_size_for_lang(1)
++            || style.ratio_for_lang(origin) != style.ratio_for_lang(1)))
++    .then_some(origin)
+diff --git a/src/renderer/composer/tests.rs b/src/renderer/composer/tests.rs
+index 6f24f7d2ff..2d65ec89b7 100644
+--- a/src/renderer/composer/tests.rs
++++ b/src/renderer/composer/tests.rs
+@@ -2559,0 +2560,30 @@ fn recalculating_vpos_keeps_the_room_of_a_paragraph_without_stored_lines() {
++
++/// 영문 뒤 공백도 한글 슬롯의 em·장평으로 전진한다(한글 장평 98%·영문 100%).
++#[test]
++fn latin_neutral_space_advances_with_hangul_slot_ratio() {
++    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle, ResolvedStyleSet};
++    let styles = |ratios: Vec<f64>| ResolvedStyleSet {
++        char_styles: vec![ResolvedCharStyle {
++            font_size: 16.0,
++            ratio: 1.0,
++            ratios,
++            ..Default::default()
++        }],
++        para_styles: vec![ResolvedParaStyle::default()],
++        ..Default::default()
++    };
++    let mixed = styles(vec![0.98, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
++    for inherited in [0, 1] {
++        let style = punctuation_slots::character_style(' ', inherited, &mixed, 0);
++        let width = crate::renderer::layout::estimate_text_width_unrounded(" ", &style);
++        assert!(
++            (width - 16.0 * 0.5 * 0.98).abs() < 1e-6,
++            "상속 언어 {inherited}: 공백 {width}"
++        );
++    }
++    let same = styles(vec![1.0; 7]);
++    let style = punctuation_slots::character_style(' ', 1, &same, 0);
++    assert_eq!(style.font_space_em, None);
++    let width = crate::renderer::layout::estimate_text_width_unrounded(" ", &style);
++    assert!((width - 8.0).abs() < 1e-6, "같은 장평: 공백 {width}");
++}
+diff --git a/src/renderer/equation/layout/source_font_symbol.rs b/src/renderer/equation/layout/source_font_symbol.rs
+index 4f6b20517e..5e7de7281c 100644
+--- a/src/renderer/equation/layout/source_font_symbol.rs
++++ b/src/renderer/equation/layout/source_font_symbol.rs
+@@ -79 +79,6 @@ pub(super) fn layout(text: &str, fs: f64, dpi: f64) -> Option<LayoutBox> {
+-            kind: LayoutKind::MathSymbol(text.to_owned()),
++            kind: LayoutKind::FontGlyph {
++                text: text.to_owned(),
++                font_family: "HyhwpEQ, Latin Modern Math, STIX Two Text, STIX Two Math, Times New Roman, Times, serif",
++                paint: None,
++                outline: None,
++            },
+diff --git a/src/renderer/equation/parser.rs b/src/renderer/equation/parser.rs
+index 2c7a833788..869ef4837d 100644
+--- a/src/renderer/equation/parser.rs
++++ b/src/renderer/equation/parser.rs
+@@ -74,0 +75 @@ pub struct EqParser {
++    function_thin_space: bool,
+@@ -101,0 +103 @@ impl EqParser {
++            function_thin_space: false,
+@@ -137,0 +140,2 @@ impl EqParser {
++            function_thin_space: equation.font_name.eq_ignore_ascii_case("HYhwpEQ")
++                && !equation.uses_legacy_display(),
+@@ -995,0 +1000,25 @@ fn test_rm_p_left() {
++#[cfg(test)]
++#[test]
++fn test_document_function_thin_space() {
++    let equation = |version: &str| crate::model::control::Equation {
++        script: "sin `A".to_string(),
++        version_info: version.to_string(),
++        font_name: "HYhwpEQ".to_string(),
++        ..Default::default()
++    };
++    let modern = super::document_script::parse(&equation("Equation Version 60"));
++    assert!(
++        matches!(
++            &modern,
++            EqNode::Row(children)
++                if matches!(
++                    children.as_slice(),
++                    [EqNode::Function(name), EqNode::Space(SpaceKind::Thin), _] if name == "sin"
++                )
++        ),
++        "{modern:?}"
++    );
++    let legacy = super::document_script::parse(&equation(""));
++    assert!(!format!("{legacy:?}").contains("Space(Thin)"), "{legacy:?}");
++}
++
+diff --git a/src/renderer/equation/parser_commands.rs b/src/renderer/equation/parser_commands.rs
+index 63876b4614..9a6ff264a5 100644
+--- a/src/renderer/equation/parser_commands.rs
++++ b/src/renderer/equation/parser_commands.rs
+@@ -315,0 +316 @@ impl EqParser {
++                && !self.function_thin_space
+diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
+index 71c4b5153e..0f85fdc2aa 100644
+--- a/src/renderer/font_metrics_data.rs
++++ b/src/renderer/font_metrics_data.rs
+@@ -293,0 +294 @@ fn resolve_projected_metric_alias(name: &str) -> (&str, Option<&'static str>) {
++        None if name == "한컴 윤고딕 250" => ("Haan YGodic 250", None),
+@@ -438,0 +440 @@ fn static_metric_alias(name: &str) -> Option<&'static str> {
++        None if name == "한컴 윤고딕 250" => Some("Haan YGodic 250"),
+@@ -481,0 +484 @@ pub(crate) fn find_metric_decision<'a>(
++/// Bold 표가 수집하지 않았을 뿐 결측으로 확인되지 않은 글자는 이 표의 폭으로 잰다.
+@@ -719,0 +723 @@ mod tests {
++            ("한컴 윤고딕 250", "Haan YGodic 250"),
+diff --git a/src/renderer/font_metrics_technical_symbols.rs b/src/renderer/font_metrics_technical_symbols.rs
+index dc2e15ded8..1da6c59c23 100644
+--- a/src/renderer/font_metrics_technical_symbols.rs
++++ b/src/renderer/font_metrics_technical_symbols.rs
+@@ -84,0 +85,8 @@ fn verified_technical_symbol_entry(metric: &FontMetric, ch: char) -> Option<(boo
++    // HANBatang.ttf 0dbeb7b1…f014(HCR Batang Regular)의 상자 그리기 128자 cmap/hmtx는
++    // 모두 970/1000em이다. 한/글 2024 Print는 8pt `─` 48자를 7.76pt 간격으로 놓는다.
++    if (0x2500..=0x257F).contains(&(ch as u32))
++        && (metric.name, metric.em_size, metric.bold, metric.italic)
++            == ("HCR Batang", 1000, false, false)
++    {
++        return Some((true, 970));
++    }
+diff --git a/src/renderer/glyph_fit.rs b/src/renderer/glyph_fit.rs
+index 9c48d91cb5..c9cfd47f19 100644
+--- a/src/renderer/glyph_fit.rs
++++ b/src/renderer/glyph_fit.rs
+@@ -13,0 +14,8 @@ fn has_positive_source_tracking(style: &TextStyle) -> bool {
++fn has_source_tracking(style: &TextStyle) -> bool {
++    style.letter_spacing != 0.0
++        || style
++            .ascii_punct_latin
++            .as_ref()
++            .is_some_and(|latin| latin.letter_spacing != 0.0)
++}
++
+@@ -15 +23 @@ fn intrinsic_style(style: &TextStyle) -> Cow<'_, TextStyle> {
+-    if !has_positive_source_tracking(style) {
++    if !has_source_tracking(style) {
+@@ -19,3 +27 @@ fn intrinsic_style(style: &TextStyle) -> Cow<'_, TextStyle> {
+-    if intrinsic.letter_spacing > 0.0 {
+-        intrinsic.letter_spacing = 0.0;
+-    }
++    intrinsic.letter_spacing = 0.0;
+@@ -23,3 +29 @@ fn intrinsic_style(style: &TextStyle) -> Cow<'_, TextStyle> {
+-        if latin.letter_spacing > 0.0 {
+-            latin.letter_spacing = 0.0;
+-        }
++        latin.letter_spacing = 0.0;
+@@ -32 +36 @@ fn intrinsic_style(style: &TextStyle) -> Cow<'_, TextStyle> {
+-/// 원본의 양수 자간·커닝·배분 간격은 글자 원점에만 적용한다. 그 경계로 폭을
++/// 원본의 자간(양수·음수)·커닝·배분 간격은 글자 원점에만 적용한다. 그 경계로 폭을
+@@ -34 +38 @@ fn intrinsic_style(style: &TextStyle) -> Cow<'_, TextStyle> {
+-/// 기존 음수 간격의 최소 전진폭
++/// 음수 간격의 최소 전진폭
+@@ -42 +46 @@ pub(crate) fn glyph_fit_positions<'a>(
+-    let positive_source_tracking = has_positive_source_tracking(style);
++    let source_tracking = has_source_tracking(style);
+@@ -70 +74 @@ pub(crate) fn glyph_fit_positions<'a>(
+-        || positive_source_tracking
++        || source_tracking
+@@ -121,0 +126,26 @@ pub(crate) fn terminal_underline_positions(
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn negative_tracking_fits_glyph_to_intrinsic_advance() {
++        let style = TextStyle {
++            font_size: 20.0,
++            ratio: 1.0,
++            letter_spacing: -2.0,
++            ..Default::default()
++        };
++        let natural = layout::compute_char_positions(
++            "AB",
++            &TextStyle {
++                letter_spacing: 0.0,
++                ..style.clone()
++            },
++        );
++        let spaced = layout::compute_char_positions("AB", &style);
++        assert!(spaced[2] < natural[2] - 1.0, "{spaced:?} {natural:?}");
++        let fit = glyph_fit_positions("AB", &style, None, &spaced);
++        assert_eq!(fit.as_ref(), natural.as_slice());
++    }
++}
+diff --git a/src/renderer/layout/paragraph_layout/list_marker_geometry.rs b/src/renderer/layout/paragraph_layout/list_marker_geometry.rs
+index 567933e357..14820fa6dc 100644
+--- a/src/renderer/layout/paragraph_layout/list_marker_geometry.rs
++++ b/src/renderer/layout/paragraph_layout/list_marker_geometry.rs
+@@ -152,3 +152,4 @@ pub(super) fn list_marker_geometry_for(
+-    // ASCII 글머리표(`-`)는 글자 폭 그대로다(`footnote-01` 14pt 반각 706).
+-    let glyph_px = if bullet && !text.is_ascii() {
+-        style.font_size * text.chars().count() as f64
++    // ASCII 글머리표(`-`)는 반각 칸이다(`footnote-01` 14pt 반각 706).
++    let glyph_px = if bullet {
++        let cell_em = if text.is_ascii() { 0.5 } else { 1.0 };
++        style.font_size * cell_em * text.chars().count() as f64
+@@ -195,0 +197,24 @@ pub(super) fn list_marker_geometry_for(
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn bullet_area(text: &str) -> f64 {
++        let style = TextStyle {
++            font_size: 20.0,
++            ratio: 1.0,
++            ..Default::default()
++        };
++        let head = MarkerHead {
++            text_distance: 50,
++            ..Default::default()
++        };
++        list_marker_geometry_for(text, head, &style, 20.0, 0.0, true).first_line_px
++    }
++
++    #[test]
++    fn ascii_bullet_is_half_em_cell_and_other_bullet_full_em() {
++        assert!((bullet_area("-") - 20.0).abs() < 1e-9, "{}", bullet_area("-"));
++        assert!((bullet_area("\u{274d}") - 30.0).abs() < 1e-9, "{}", bullet_area("\u{274d}"));
++    }
++}
+diff --git a/src/renderer/layout/picture_footnote.rs b/src/renderer/layout/picture_footnote.rs
+index 9e73b8f56f..6b77af6bd4 100644
+--- a/src/renderer/layout/picture_footnote.rs
++++ b/src/renderer/layout/picture_footnote.rs
+@@ -1052,0 +1053,11 @@ impl LayoutEngine {
++            let bullet_head = styles
++                .para_styles
++                .get(para.para_shape_id as usize)
++                .is_some_and(|style| style.head_type == crate::model::style::HeadType::Bullet);
++            if bullet_head {
++                if let Some(bulleted) =
++                    self.apply_paragraph_numbering(Some(&composed), para, styles, 0)
++                {
++                    composed = bulleted;
++                }
++            }
+diff --git a/src/renderer/layout/tests.rs b/src/renderer/layout/tests.rs
+index 90955e945f..3085036587 100644
+--- a/src/renderer/layout/tests.rs
++++ b/src/renderer/layout/tests.rs
+@@ -3475,0 +3476,96 @@ fn source_fragment_tab_record_boundaries_preserve_dynamic_stop() {
++
++#[test]
++fn caption_bullet_paragraph_draws_marker_before_body() {
++    use crate::model::style::{Bullet, HeadType};
++    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
++
++    fn text_runs(node: &RenderNode, out: &mut Vec<(String, f64)>) {
++        if let RenderNodeType::TextRun(run) = &node.node_type {
++            out.push((run.text.clone(), node.bbox.x));
++        }
++        for child in &node.children {
++            text_runs(child, out);
++        }
++    }
++
++    let engine = LayoutEngine::with_default_dpi();
++    let mut tree = PageLayoutContext::new(0, 800.0, 1_100.0);
++    let area = LayoutRect {
++        x: 100.0,
++        y: 100.0,
++        width: 600.0,
++        height: 900.0,
++    };
++    let mut column = RenderNode::new(
++        tree.next_id(),
++        RenderNodeType::Column(0),
++        BoundingBox::new(area.x, area.y, area.width, area.height),
++    );
++    let caption = Caption {
++        direction: CaptionDirection::Bottom,
++        paragraphs: vec![Paragraph {
++            text: "상기".to_string(),
++            line_segs: vec![LineSeg {
++                line_height: 1100,
++                text_height: 1100,
++                baseline_distance: 935,
++                segment_width: 45000,
++                ..Default::default()
++            }],
++            ..Default::default()
++        }],
++        ..Default::default()
++    };
++    let styles = ResolvedStyleSet {
++        char_styles: vec![ResolvedCharStyle {
++            font_size: 14.0,
++            ..Default::default()
++        }],
++        para_styles: vec![ResolvedParaStyle {
++            head_type: HeadType::Bullet,
++            numbering_id: 1,
++            ..Default::default()
++        }],
++        bullets: vec![Bullet {
++            bullet_char: '※',
++            text_distance: 50,
++            attr: 1 << 3,
++            char_shape_id: u32::MAX,
++            ..Default::default()
++        }],
++        ..Default::default()
++    };
++
++    engine.layout_caption(
++        &mut tree,
++        &mut column,
++        &caption,
++        &styles,
++        &area,
++        area.x,
++        area.width,
++        area.y,
++        &mut crate::renderer::AutoNumberCounter::default(),
++        &[],
++        None,
++        None,
++    );
++
++    let mut runs = Vec::new();
++    text_runs(&column, &mut runs);
++    let marker_x = runs
++        .iter()
++        .find(|(text, _)| text == "※")
++        .map(|(_, x)| *x)
++        .expect("caption bullet marker run");
++    let body_x = runs
++        .iter()
++        .find(|(text, _)| text.contains("상기"))
++        .map(|(_, x)| *x)
++        .expect("caption body run");
++    assert!((marker_x - area.x).abs() < 0.5, "marker_x={marker_x}");
++    assert!(
++        body_x > marker_x + 14.0,
++        "marker_x={marker_x} body_x={body_x}"
++    );
++}
+diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
+index ce0578e58b..1316bdd430 100644
+--- a/src/renderer/layout/text_measurement.rs
++++ b/src/renderer/layout/text_measurement.rs
+@@ -1803 +1803,12 @@ fn measure_char_width_embedded_decision_for_font<'a>(
+-        let Some(glyph_w) = mm.metric.get_width(c) else {
++        // [#8079] 굵은 글자는 Bold 면으로 그리되 전진폭은 같은 family 보통 면의 값이다.
++        // 보통 표에 없는 글자는 Bold 폭을 그대로 쓴다(결측을 0 폭으로 만들지 않는다).
++        // Bold 표의 미수집은 결측이 아니다. 확인된 결측이 아닐 때만 보통 폭으로 잰다.
++        let regular_w = regular_bold_advance
++            .then(|| font_metrics_data::regular_advance_metric(mm.metric))
++            .flatten()
++            .and_then(|regular| regular.get_width(c));
++        let Some(glyph_w) = mm.metric.get_width(c).or_else(|| {
++            regular_w.filter(|_| {
++                font_metrics_data::verified_metric_has_glyph(mm.metric, c) != Some(false)
++            })
++        }) else {
+@@ -1812,7 +1823 @@ fn measure_char_width_embedded_decision_for_font<'a>(
+-        // [#8079] 굵은 글자는 Bold 면으로 그리되 전진폭은 같은 family 보통 면의 값이다.
+-        // 보통 표에 없는 글자는 Bold 폭을 그대로 쓴다(결측을 0 폭으로 만들지 않는다).
+-        let glyph_w = regular_bold_advance
+-            .then(|| font_metrics_data::regular_advance_metric(mm.metric))
+-            .flatten()
+-            .and_then(|regular| regular.get_width(c))
+-            .unwrap_or(glyph_w);
++        let glyph_w = regular_w.unwrap_or(glyph_w);
+@@ -2148,0 +2154,4 @@ fn char_width_decision_with_hft_tracking<'a>(
++        } else if chars[i] != c && ('\u{2500}'..='\u{257F}').contains(&c) {
++            // 원본 HNC 괘선 PUA는 표시용 Unicode 괘선과 다른 프로그램이다.
++            // 표시 기호의 hmtx로 원본 반각 전진을 덮어쓰지 않는다.
++            chars[i]
+@@ -4323,0 +4333,29 @@ mod tests {
++    #[test]
++    fn hcr_batang_symbol_slot_uses_font_hmtx() {
++        let m = EmbeddedTextMeasurer;
++        let advance = |text: &str, bold: bool| {
++            let style = TextStyle {
++                font_family: "함초롬바탕".into(),
++                font_size: 20.0,
++                ratio: 1.0,
++                bold,
++                ..Default::default()
++            };
++            let positions = m.compute_char_positions(text, &style);
++            (positions[2] - positions[1]) / style.font_size
++        };
++        for (text, bold, expected_em) in [
++            ("가─나", false, 0.97),
++            ("가─나", true, 0.97),
++            ("가₩나", false, 0.794),
++            ("가₩나", true, 0.794),
++            ("가\u{F080F}나", false, 0.5),
++        ] {
++            let em = advance(text, bold);
++            assert!(
++                (em - expected_em).abs() < 0.01,
++                "{text:?}(굵게={bold}) 둘째 글자 전진폭은 {expected_em}em, got {em:.3}em"
++            );
++        }
++    }
++
+diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
+index 2719bef245..b3c812649f 100644
+--- a/src/renderer/pdf.rs
++++ b/src/renderer/pdf.rs
+@@ -1659,0 +1660,73 @@ pub fn pdf_font_fallback_selector_with_limits(
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++#[derive(Debug, Default)]
++struct PdfFontFamilyChains {
++    by_face: std::collections::HashMap<usvg::fontdb::ID, Vec<String>>,
++}
++
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++impl PdfFontFamilyChains {
++    fn record(&mut self, id: usvg::fontdb::ID, families: &[usvg::FontFamily]) {
++        let names = families
++            .iter()
++            .filter_map(|family| match family {
++                usvg::FontFamily::Named(name) => Some(name.clone()),
++                _ => None,
++            })
++            .collect();
++        self.by_face.insert(id, names);
++    }
++
++    fn select(
++        &self,
++        c: char,
++        used_fonts: &[usvg::fontdb::ID],
++        fontdb: &usvg::fontdb::Database,
++    ) -> Option<usvg::fontdb::ID> {
++        let base_id = *used_fonts.first()?;
++        let base = fontdb.face(base_id)?;
++        self.by_face.get(&base_id)?.iter().find_map(|name| {
++            let id = fontdb.query(&usvg::fontdb::Query {
++                families: &[usvg::fontdb::Family::Name(name)],
++                weight: base.weight,
++                stretch: base.stretch,
++                style: base.style,
++            })?;
++            (!used_fonts.contains(&id) && pdf_font_face_has_char(fontdb, id, c)).then_some(id)
++        })
++    }
++}
++
++/// Font resolver for compatibility PDF conversion: a character missing from the
++/// selected face is looked up in the rest of the SVG `font-family` list first,
++/// then in the whole database ([`pdf_font_fallback_selector_with_limits`]).
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++#[doc(hidden)]
++pub fn pdf_font_resolver_with_limits(
++    max_chars: usize,
++    max_face_slots: usize,
++) -> usvg::FontResolver<'static> {
++    let chains = std::sync::Arc::new(std::sync::Mutex::new(PdfFontFamilyChains::default()));
++    let stock_select = usvg::FontResolver::default_font_selector();
++    let record_chains = chains.clone();
++    let select_font: usvg::FontSelectionFn<'static> = Box::new(move |font, fontdb| {
++        let id = stock_select(font, fontdb)?;
++        if let Ok(mut chains) = record_chains.lock() {
++            chains.record(id, font.families());
++        }
++        Some(id)
++    });
++    let indexed = pdf_font_fallback_selector_with_limits(max_chars, max_face_slots);
++    let select_fallback: usvg::FallbackSelectionFn<'static> =
++        Box::new(move |c, used_fonts, fontdb| {
++            let chained = chains
++                .lock()
++                .ok()
++                .and_then(|chains| chains.select(c, used_fonts, fontdb));
++            chained.or_else(|| indexed(c, used_fonts, fontdb))
++        });
++    usvg::FontResolver {
++        select_font,
++        select_fallback,
++    }
++}
++
+@@ -2204 +2277 @@ where
+-    options.font_resolver.select_fallback = pdf_font_fallback_selector_with_limits(
++    options.font_resolver = pdf_font_resolver_with_limits(
+@@ -2564,0 +2638,53 @@ mod tests {
++    #[test]
++    fn font_fallback_follows_svg_family_list_before_database_order() {
++        use usvg::fontdb::{Database, FaceInfo, Language, Source, Stretch, Style, Weight, ID};
++        let face = |database: &mut Database, bytes: &[u8], name: &str| {
++            database.push_face_info(FaceInfo {
++                id: ID::dummy(),
++                source: Source::Binary(std::sync::Arc::new(bytes.to_vec())),
++                index: 0,
++                families: vec![(name.to_string(), Language::English_UnitedStates)],
++                post_script_name: name.to_string(),
++                style: Style::Normal,
++                weight: Weight::NORMAL,
++                stretch: Stretch::Normal,
++                monospaced: false,
++            })
++        };
++        let glyph_font: &[u8] =
++            include_bytes!("../../tests/fixtures/fonts/RHWPBitmapSvgGlyphSmoke.ttf");
++        let base_font: &[u8] =
++            include_bytes!("../../tests/fixtures/fonts/RHWPExactKerningSmoke.ttf");
++        let missing = '\u{e100}';
++        let mut database = Database::new();
++        let base = face(&mut database, base_font, "base");
++        let first = face(&mut database, glyph_font, "first");
++        let listed = face(&mut database, glyph_font, "listed");
++        assert!(!pdf_font_face_has_char(&database, base, missing));
++        assert!(pdf_font_face_has_char(&database, listed, missing));
++
++        let resolver = pdf_font_resolver_with_limits(8, 32);
++        let mut database = std::sync::Arc::new(database);
++        let stock = usvg::FontResolver::default_fallback_selector();
++        assert_eq!(stock(missing, &[base], &mut database), Some(first));
++
++        let mut chains = PdfFontFamilyChains::default();
++        chains.record(
++            base,
++            &[
++                usvg::FontFamily::Named("base".to_string()),
++                usvg::FontFamily::Named("absent".to_string()),
++                usvg::FontFamily::Named("listed".to_string()),
++                usvg::FontFamily::Serif,
++            ],
++        );
++        assert_eq!(chains.select(missing, &[base], &database), Some(listed));
++        assert_eq!(chains.select(missing, &[base, listed], &database), None);
++
++        assert_eq!(
++            (resolver.select_fallback)(missing, &[base], &mut database),
++            Some(first),
++            "a face with no recorded family list keeps database order"
++        );
++    }
++
+diff --git a/src/renderer/typeset.rs b/src/renderer/typeset.rs
+index 52ebe112e2..07c28c4567 100755
+--- a/src/renderer/typeset.rs
++++ b/src/renderer/typeset.rs
+@@ -5249,0 +5250,10 @@ impl TypesetEngine {
++        let column_top_stored_spacing_before = st.profile.hwpx_stored_layout()
++            && st.col_count == 1
++            && st.current_items.is_empty()
++            && pre_height <= 0.5
++            && fmt.spacing_before > 0.0
++            && para.line_segs.first().is_some_and(|s0| {
++                !is_synthetic_line_seg(s0)
++                    && (hwpunit_to_px(s0.vertical_pos, self.dpi) - fmt.spacing_before).abs()
++                        <= self.dpi / 7200.0
++            });
+@@ -5262,0 +5273,6 @@ impl TypesetEngine {
++                    let source_origin = if column_top_stored_spacing_before {
++                        s0.vertical_pos
++                            - crate::renderer::px_to_hwpunit(fmt.spacing_before, self.dpi)
++                    } else {
++                        s0.vertical_pos
++                    };
+@@ -5264 +5280 @@ impl TypesetEngine {
+-                    st.record_vpos_page_origin(Some(s0.vertical_pos));
++                    st.record_vpos_page_origin(Some(source_origin));
+@@ -5693,0 +5710 @@ impl TypesetEngine {
++            && !column_top_stored_spacing_before

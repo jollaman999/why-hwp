@@ -13,7 +13,8 @@ This directory holds what is needed to rebuild that file.
 | File | What |
 |------|------|
 | `src/` | The engine: argument parsing and the commands below, on top of rhwp's library API |
-| `patch-rhwp.sh` | Changes rhwp needs to build and run under WASI |
+| `patch-rhwp.sh` | Changes rhwp needs to build and run under WASI, then applies `patches/` |
+| `patches/` | Diffs against rhwp: layout fixes found by comparing with Hancom Office 2024 |
 | `vendor/fontdb/` | fontdb 0.23.0 with one change for WASI (below), used in place of the crates.io copy |
 | `build.sh` | Fetches rhwp, patches it, builds, writes `engine.wasm.gz` and its SHA-256 |
 | `Cargo.lock` | Exact crate versions (taken from rhwp's own lock file) |
@@ -52,7 +53,7 @@ present, so the host repeats plan and install until the plan comes back empty.
 ## What the patch changes in rhwp
 
 rhwp is pinned to commit `7213ed1f96266b95e22cd5645a07851c9c18298e`.
-`patch-rhwp.sh` changes it in four ways:
+`patch-rhwp.sh` changes it in five ways:
 
 1. rhwp writes `target_arch = "wasm32"` to mean its browser build and switches
    off PDF export, fonts and file access there. WASI is also wasm32, so every
@@ -64,12 +65,44 @@ rhwp is pinned to commit `7213ed1f96266b95e22cd5645a07851c9c18298e`.
    under WASI. The WASI build reads the offset from `WHY_HWP_TZ_OFFSET_MIN`.
 4. The webfont supply gains a way to report the URLs an offline run missed and
    to accept a font downloaded by the host.
+5. Every `patches/*.patch` is applied with `git apply --unidiff-zero`, in name
+   order (below).
 
-The changes are a script rather than a diff because the first one rewrites
+The first four are a script rather than a diff because the first one rewrites
 313 lines in 49 files: a pattern says what was done in one line and still
 applies when rhwp moves those lines. Each step checks whether it is already
 applied and fails if it finds neither the old nor the new text, so running the
-script twice gives the same tree and an rhwp change cannot slip past it.
+script twice gives the same tree and an rhwp change cannot slip past it. Step 5
+does the same with `git apply --reverse --check`: a patch that reverses cleanly
+is skipped, and one that neither applies nor reverses stops the build.
+
+## Layout patches
+
+`patches/rhwp-layout.patch` changes how rhwp lays out and measures text. Each
+change was found by comparing word positions in rhwp's PDF with the PDF Hancom
+Office 2024 prints from the same document, on a computer that has the
+document's fonts, so that font substitution is not the cause. With it, 11 of 18
+test documents have every word within 1 pt of Hancom Office's position, up from 6.
+
+| Change | Before |
+|--------|--------|
+| HCR Batang (함초롬바탕) box-drawing characters (U+2500-U+257F) advance 970/1000 em, as the font's `hmtx` gives for all 128 of them and Hancom Office prints them. Hancom's own line-drawing private-use characters, which display as these, keep their half-em advance | rhwp's verified symbol widths had no entry for them |
+| Bold text measures a character with the regular face's advance when the bold width table lacks it and the glyph is not known to be missing | Such characters fell through to the bold face's missing-width path |
+| A table or picture caption paragraph with a bullet head draws its bullet before the text | The caption text was laid out without the bullet |
+| The first line of an hwpx single column, when its stored line position equals the paragraph's spacing-before, does not add that spacing again | The spacing-before was counted twice at the top of the column |
+| Text output puts a space after a list bullet | The bullet and the first word were joined in `txt` output |
+| PDF font fallback looks for a missing character in the rest of the SVG `font-family` list before the font database order | The database order alone chose the substitute |
+| "한컴 윤고딕 250" is measured with the Haan YGodic 250 widths | The Korean name matched no width table |
+| Glyphs under negative letter spacing are fitted to their natural advance | Only positive spacing was taken out of the glyph fit |
+| An ASCII bullet (`-`) takes a half-em cell, other bullets a full em | ASCII bullets took the glyph's own width |
+| A space after Latin text advances with the Hangul em and width ratio when they differ from the Latin ones | It used the Latin em and ratio |
+| Equation arrows are drawn as glyphs of the equation font list (HyhwpEQ, Latin Modern Math, ...); HYhwpEQ equations in the current format keep a thin space after a function name such as `sin` | Arrows were drawn as generic math symbols, and the thin space was dropped |
+
+The patch also adds rhwp unit tests for these changes. It is a zero-context
+diff because the surrounding rhwp lines contain em dashes, which this
+repository's commit check refuses. The comment at the top of the file lists
+the changes by source file. To change it, apply it to a tree that `patch-rhwp.sh`
+produced before this step, edit, and write a new diff with `git diff -U0`.
 
 ## fontdb
 
@@ -103,7 +136,10 @@ cargo test -p fontdb --lib
 
 ## Rebuilding
 
-Needs Rust 1.93.1 or newer with the `wasm32-wasip1` target, git, perl and gzip.
+Needs Rust 1.93.1 or newer with the `wasm32-wasip1` target, clang, git, perl
+and gzip. clang is the C compiler: the `ring` crate compiles C for
+`wasm32-wasip1`, and the usual system gcc cannot target WebAssembly. Set
+`CC_wasm32_wasip1` to use another clang.
 
 ```sh
 rustup target add wasm32-wasip1

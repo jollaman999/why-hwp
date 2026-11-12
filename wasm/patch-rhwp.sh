@@ -10,6 +10,7 @@
 set -euo pipefail
 
 src=${1:?usage: patch-rhwp.sh <rhwp-source-dir>}
+patch_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/patches
 cd "$src"
 
 fail() {
@@ -187,3 +188,18 @@ fn why_hwp_write(path: &Path, data: &[u8]) -> Result<(), String> {
 }
 EOF
 fi
+
+# 5. Apply wasm/patches/*.patch in name order. They are zero-context diffs
+#    against the tree the steps above produce. A patch that reverses cleanly is
+#    already applied; one that neither applies nor reverses fails the build.
+#    git apply takes paths from the enclosing repository's top, so stop it from
+#    looking above the source tree (wasm/rhwp-src sits inside this repository).
+export GIT_CEILING_DIRECTORIES=$(dirname "$(pwd -P)")
+for p in "$patch_dir"/*.patch; do
+	[ -e "$p" ] || continue
+	if git apply --unidiff-zero --reverse --check "$p" 2>/dev/null; then
+		continue
+	fi
+	git apply --unidiff-zero --check "$p" || fail "$p: does not apply and is not applied"
+	git apply --unidiff-zero "$p"
+done
