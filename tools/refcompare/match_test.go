@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -875,6 +876,184 @@ func TestComparePDFSplitWordMoved(t *testing.T) {
 	r := comparePDF(ref, cand, opt)
 	if r.pass(opt) || r.RefOnly != 0 || r.CandOnly != 0 || math.Abs(r.MaxDev-40) > 1e-9 {
 		t.Errorf("got %s, want every word paired and a failure with 40pt", r)
+	}
+}
+
+// tallQuotes returns two lines of a page as the two producers write them.
+// The reference has the quotation marks as words of a Type 3 font, whose
+// boxes are 34 pt high and reach from the first line to the second, and
+// starts a word wherever the font changes. The candidate, at 0.71 of the
+// size, has each mark in one word with its neighbours.
+func tallQuotes() (ref, cand *pdfWords) {
+	ref = &pdfWords{Pages: []pageSize{{595, 841}}}
+	cand = &pdfWords{Pages: []pageSize{{420.5, 595}}}
+	add := func(d *pdfWords, text string, x0, y0, x1, y1, base float64, type3 bool) {
+		d.Words = append(d.Words, word{text, 0, x0, y0, x1, y1})
+		d.Base = append(d.Base, wordBase{Y: base, OK: true, Type3: type3})
+	}
+	const line1, line2 = 126.48, 144.72
+	add(ref, "가나다", 73.68, 115.35, 110.76, 128.29, line1, false)
+	add(ref, "3141", 114.84, 120.32, 138.93, 128.75, line1, true)
+	add(ref, "라", 138.24, 115.35, 151.20, 128.29, line1, false)
+	add(ref, "5", 155.28, 120.32, 161.73, 128.75, line1, true)
+	add(ref, "마", 161.16, 115.35, 174.12, 128.29, line1, false)
+	add(ref, "92", 178.20, 120.32, 190.53, 128.75, line1, true)
+	add(ref, "바", 189.84, 115.35, 202.80, 128.29, line1, true)
+	add(ref, "사아자", 501.48, 115.35, 538.68, 128.29, line1, false)
+	add(ref, "「", 73.68, 120.10, 86.64, 153.79, line2, true)
+	add(ref, "차카타", 85.44, 133.59, 121.80, 146.53, line2, false)
+	add(ref, "파하거너", 125.52, 133.59, 173.64, 146.53, line2, true)
+	add(ref, "」", 172.32, 120.10, 185.28, 153.79, line2, true)
+	add(ref, "더", 184.08, 133.59, 197.04, 146.53, line2, false)
+	add(ref, "러머", 200.76, 133.59, 225.48, 146.53, line2, false)
+	add(ref, "버서어저", 229.08, 133.59, 277.20, 146.53, line2, true)
+
+	const cand1, cand2 = 89.82, 102.74
+	add(cand, "가나다", 52.34, 81.89, 78.73, 91.12, cand1, false)
+	add(cand, "3141라", 81.60, 83.07, 107.43, 92.45, cand1, false)
+	add(cand, "5마", 110.29, 83.07, 123.67, 92.45, cand1, false)
+	add(cand, "92바", 126.53, 83.07, 144.17, 92.45, cand1, false)
+	add(cand, "사아자", 356.01, 81.89, 382.40, 91.12, cand1, false)
+	add(cand, "「차카타", 52.34, 95.36, 86.51, 104.59, cand2, false)
+	add(cand, "파하거너」더", 89.11, 94.81, 139.91, 104.04, cand2, false)
+	add(cand, "러머", 142.50, 94.81, 160.04, 104.04, cand2, false)
+	add(cand, "버서어저", 162.64, 94.81, 197.01, 104.04, cand2, false)
+	return ref, cand
+}
+
+func TestComparePDFSplitWordAroundATallBox(t *testing.T) {
+	// The closing mark stands between "파하거너" and "더", but its box is
+	// so tall that reading order puts it on the first line, ahead of both.
+	// The three reference words are still the candidate's one word.
+	opt := cmpOptions{Tol: 1, Fit: fitScale}
+	ref, cand := tallQuotes()
+	a := explode(ref)
+	if slices.Index(a.order, 11) > slices.Index(a.order, 10) { // 」 and 파하거너
+		t.Fatalf("reading order has 」 after 파하거너; the test needs it on the line above")
+	}
+	r := comparePDF(ref, cand, opt)
+	if !r.pass(opt) || r.RefOnly != 0 || r.CandOnly != 0 || r.Matched != len(ref.Words) {
+		t.Fatalf("got %s, ref-only %v cand-only %v, want every word paired", r, r.RefOnlySample, r.CandOnlySample)
+	}
+	if r.MaxDev > 0.3 {
+		t.Errorf("max dev %.3f at %q, want the words in place", r.MaxDev, r.Worst.Text)
+	}
+
+	// The same without baselines: the marks are compared at the middle of
+	// their tall boxes, which is still on the second line.
+	ref, cand = tallQuotes()
+	ref.Base, cand.Base = nil, nil
+	if r := comparePDF(ref, cand, opt); r.RefOnly != 0 || r.CandOnly != 0 {
+		t.Errorf("without baselines: got %s, ref-only %v cand-only %v, want every word paired", r, r.RefOnlySample, r.CandOnlySample)
+	}
+
+	// The other way round: the candidate has the tall boxes.
+	cand, ref = tallQuotes()
+	if r := comparePDF(ref, cand, opt); !r.pass(opt) || r.RefOnly != 0 || r.CandOnly != 0 {
+		t.Errorf("tall boxes in the candidate: got %s, ref-only %v cand-only %v, want every word paired", r, r.RefOnlySample, r.CandOnlySample)
+	}
+}
+
+func TestComparePDFSplitWordInReadingOrderFirst(t *testing.T) {
+	// "가나" stands above and to the right of "다라", and the candidate has
+	// one word over both. From the left the two read "다라가나"; in
+	// reading order they are the candidate's word, and that order is
+	// tried first. Reading order of the whole page does not pair them:
+	// the candidate has "마" and "바" on one line with its word.
+	ref := &pdfWords{Pages: []pageSize{{595, 842}}, Words: []word{
+		{"가나", 0, 110, 296, 130, 306}, {"마", 0, 200, 296, 210, 306},
+		{"다라", 0, 100, 303, 120, 313}, {"바", 0, 200, 303, 210, 313},
+	}}
+	cand := &pdfWords{Pages: []pageSize{{595, 842}}, Words: []word{
+		{"가나다라", 0, 100, 299, 130, 311}, {"마", 0, 200, 296, 210, 306}, {"바", 0, 200, 303, 210, 313},
+	}}
+	a, b := explode(ref), explode(cand)
+	if order, _ := pairChars(a, b); len(order) != 4 {
+		t.Fatalf("reading order alone pairs %d characters; the test needs it to leave 다라 out (4)", len(order))
+	}
+	opt := cmpOptions{Tol: 1, Fit: fitNone}
+	if r := comparePDF(ref, cand, opt); r.RefOnly != 0 || r.CandOnly != 0 || r.Matched != 4 {
+		t.Errorf("got %s, ref-only %v cand-only %v, want every word paired", r, r.RefOnlySample, r.CandOnlySample)
+	}
+}
+
+func TestComparePDFSplitWordAroundATallBoxStillFails(t *testing.T) {
+	opt := cmpOptions{Tol: 1, Fit: fitScale}
+	const joined = 6 // index of the candidate's "파하거너」더"
+	texts := func(ws []located) []string {
+		var out []string
+		for _, w := range ws {
+			out = append(out, w.Text)
+		}
+		return out
+	}
+	// A character is missing: the reference word that holds it is left
+	// without a partner. A character is another one, or two have changed
+	// places: the words are not one word split differently, reading order
+	// pairs them, and the mark, which it has on the line above, is left
+	// over too.
+	for _, c := range []struct {
+		text              string
+		refOnly, candOnly []string
+	}{
+		{"파하거너더", []string{"」"}, nil},
+		{"파하거너」", []string{"더"}, nil},
+		{"하거너」더", []string{"파하거너"}, nil},
+		{"파하거너」도", []string{"」", "더"}, []string{"파하거너」도"}},
+		{"파하고너」더", []string{"」", "파하거너"}, []string{"파하고너」더"}},
+		{"파하거너』더", []string{"」"}, []string{"파하거너』더"}},
+		{"파하거너더」", []string{"」"}, []string{"파하거너더」"}},
+	} {
+		ref, cand := tallQuotes()
+		cand.Words[joined].Text = c.text
+		r := comparePDF(ref, cand, opt)
+		if r.pass(opt) || !slices.Equal(texts(r.RefOnlySample), c.refOnly) || !slices.Equal(texts(r.CandOnlySample), c.candOnly) {
+			t.Errorf("%s: got %s, ref-only %v cand-only %v, want a failure with %v and %v", c.text, r, r.RefOnlySample, r.CandOnlySample, c.refOnly, c.candOnly)
+		}
+	}
+	// The word is 2 pt to the right, or only its last character is: every
+	// word has a partner and the move is measured at the edges.
+	for _, c := range []struct {
+		name     string
+		dx0, dx1 float64
+	}{{"word moved", 2, 2}, {"word moved left", -2, -2}, {"last character moved", 0, 2}, {"first character moved", -2, 0}} {
+		ref, cand := tallQuotes()
+		cand.Words[joined].X0 += c.dx0
+		cand.Words[joined].X1 += c.dx1
+		r := comparePDF(ref, cand, opt)
+		if r.pass(opt) || r.RefOnly != 0 || r.CandOnly != 0 || math.Abs(r.MaxDev-2) > 0.25 {
+			t.Errorf("%s: got %s at %q, want every word paired and a failure near 2pt", c.name, r, r.Worst.Text)
+		}
+		if w := r.Worst.Text; w != "파하거너" && w != "더" {
+			t.Errorf("%s: largest deviation at %q, want it at an end of the split word", c.name, w)
+		}
+	}
+	// Words that overlap and hold each other's characters in another
+	// order are not one word split differently.
+	ref := tableDoc(0, 0, nil)
+	cand := tableDoc(0, 0, nil)
+	ref.Words = append(ref.Words, word{"나", 0, 100, 300, 110, 310}, word{"가", 0, 110, 300, 120, 310})
+	cand.Words = append(cand.Words, word{"가나", 0, 100, 300, 120, 310})
+	none := cmpOptions{Tol: 1, Fit: fitNone}
+	if r := comparePDF(ref, cand, none); r.RefOnly != 1 || r.CandOnly != 1 {
+		t.Errorf("나+가 on 가나: got %s, want a word without a partner on each side", r)
+	}
+}
+
+func TestGroupChars(t *testing.T) {
+	d := &pdfWords{Pages: []pageSize{{595, 842}}, Words: []word{
+		{"다", 0, 80, 100, 90, 110},
+		{"가", 0, 60, 100, 95, 110},
+		{"나", 0, 60, 100, 70, 110},
+	}}
+	c := &charSeq{order: []int{0, 1, 2}, text: []string{"다", "가", "나"}, start: []int{0, 1, 2, 3}}
+	text, idx := groupChars(d, c, []int{2, 0, 1}, false)
+	if strings.Join(text, "") != "다가나" || !slices.Equal(idx, []int{0, 1, 2}) {
+		t.Errorf("reading order: %v %v, want 다가나", text, idx)
+	}
+	text, idx = groupChars(d, c, []int{2, 0, 1}, true)
+	if strings.Join(text, "") != "가나다" || !slices.Equal(idx, []int{1, 2, 0}) {
+		t.Errorf("from the left: %v %v, want 가나다 with the two at 60 in reading order", text, idx)
 	}
 }
 

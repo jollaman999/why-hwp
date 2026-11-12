@@ -456,7 +456,11 @@ func alignChars(at, bt []string) (pairs, subst [][2]int) {
 //     character by character, with substitutions (see alignChars), when
 //     the group is one word split differently: every character of the
 //     shorter side is paired and it is at least half as long as the other.
-//     "5)" on top of "7)" is not such a group.
+//     "5)" on top of "7)" is not such a group. The words of a group are
+//     taken in reading order, and from the left (see groupChars) when that
+//     order does not show one word: readingOrder can put a word in a tall
+//     box (see pairY) on the line above, ahead of the words it stands
+//     between.
 //  4. Words with the same text anywhere on the page are paired so that the
 //     sum of their distances is smallest (see assign). These are words that
 //     moved; the distance to their own new place is measured, not that to
@@ -633,18 +637,21 @@ func pairByPlace(ref, cand *pdfWords, a, b *charSeq, order, orderSubst [][2]int,
 			if len(g[0]) == 0 || len(g[1]) == 0 {
 				continue
 			}
-			ga, ia := groupChars(a, g[0])
-			gb, ib := groupChars(b, g[1])
-			p, s := alignChars(ga, gb)
-			short, long := min(len(ga), len(gb)), max(len(ga), len(gb))
-			if len(p)+len(s) < short || 2*short < long {
-				continue
-			}
-			for _, x := range p {
-				add(ia[x[0]], ib[x[1]], false)
-			}
-			for _, x := range s {
-				add(ia[x[0]], ib[x[1]], true)
+			for _, fromLeft := range []bool{false, true} {
+				ga, ia := groupChars(ref, a, g[0], fromLeft)
+				gb, ib := groupChars(cand, b, g[1], fromLeft)
+				p, s := alignChars(ga, gb)
+				short, long := min(len(ga), len(gb)), max(len(ga), len(gb))
+				if len(p)+len(s) < short || 2*short < long {
+					continue
+				}
+				for _, x := range p {
+					add(ia[x[0]], ib[x[1]], false)
+				}
+				for _, x := range s {
+					add(ia[x[0]], ib[x[1]], true)
+				}
+				break
 			}
 		}
 	}
@@ -669,10 +676,17 @@ func pairByPlace(ref, cand *pdfWords, a, b *charSeq, order, orderSubst [][2]int,
 	return pairs, subst
 }
 
-// groupChars returns the characters of the words at the order positions ps
-// (sorted, so in reading order) and their indexes in c.
-func groupChars(c *charSeq, ps []int) ([]string, []int) {
+// groupChars returns the characters of the words of d at the order
+// positions ps and their indexes in c. The words are taken in reading
+// order, or with fromLeft by their left edges (in reading order where
+// those are the same).
+func groupChars(d *pdfWords, c *charSeq, ps []int, fromLeft bool) ([]string, []int) {
 	sort.Ints(ps)
+	if fromLeft {
+		sort.SliceStable(ps, func(i, j int) bool {
+			return d.Words[c.order[ps[i]]].X0 < d.Words[c.order[ps[j]]].X0
+		})
+	}
 	var text []string
 	var idx []int
 	for _, pos := range ps {

@@ -123,7 +123,12 @@ passes, 1 when one fails or cannot be compared, 2 for bad usage.
       (`온·오` against `온·` + `오`): the words that overlap are paired
       character by character, provided every character of the shorter side
       pairs and that side is at least half as long as the other. `5)` on top
-      of `7)` is not paired.
+      of `7)` is not paired. The overlapping words are taken in reading order
+      and, when that is not one word, from the left to the right: a word in a
+      tall Type 3 box (see *Type 3 fonts*) has its middle between two lines
+      and can come out on the line above, ahead of the words it stands
+      between (`가나` + `」` + `다` against `가나」다`, with `」` read before
+      `가나`).
    3. Same text anywhere on the page, so that the sum of the distances is
       smallest. These are words that moved, and the distance to their own new
       place is what is measured.
