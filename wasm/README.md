@@ -39,7 +39,7 @@ Exit codes: 0 success, 1 failure (one line on stderr), 2 usage.
 | Command | Does |
 |---------|------|
 | `convert --to hwp\|hwpx\|pdf\|txt --in <file> --out <file>` | Converts. PDF fonts come from `/fonts` and the `RHWP_FONT_PATH` folders |
-| `font-plan --in <file>` | Prints the fonts the document needs that neither `/fonts` nor the `RHWP_FONT_PATH` folders have: `[{"url":..., "sha256":... or null}]` |
+| `font-plan --in <file>` | Prints the fonts the document needs that neither `/fonts` nor the `RHWP_FONT_PATH` folders have, plus the PDF fallback font below when it is needed: `[{"url":..., "sha256":... or null}]` |
 | `font-install --url <url> --file <file>` | Checks a downloaded font against rhwp's font ledger and stores it in `/fonts` |
 | `svg2png --in <svg> --out <png> --width <px> --height <px> [--font <file> ...]` | Draws the SVG on white at that size, with only the given fonts |
 | `version` | `why-hwp-engine <version> rhwp <commit> resvg <version>` |
@@ -49,6 +49,16 @@ HTTP client cannot run inside WebAssembly. So the host does the download:
 `font-plan` lists the URLs, the host fetches them into `/dl`, and `font-install`
 verifies and caches each one. Some fonts are only asked for once another one is
 present, so the host repeats plan and install until the plan comes back empty.
+
+rhwp's PDF stage leaves out a text run when no family in its `font-family`
+list is in the font database. The lists end in `serif`, `sans-serif` or
+`monospace`, which rhwp points at Noto Serif CJK KR, Noto Sans CJK KR and
+Noto Sans Mono CJK KR, so on a computer without those fonts a run whose named
+fonts are all missing disappears. When one of the three is not available,
+`font-plan` also asks for rhwp's public Noto Sans KR (its generic webfont), and
+`convert` points the missing generic families at it. Its cache folder is added
+at the end of `RHWP_FONT_PATH`, so it only supplies characters no other font
+has.
 
 ## What the patch changes in rhwp
 

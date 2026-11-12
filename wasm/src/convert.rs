@@ -79,6 +79,7 @@ fn to_pdf(doc: &mut DocumentCore, data: &[u8], input: &str) -> Result<Vec<u8>> {
             unavailable.join(", ")
         );
     }
+    crate::fonts::use_pdf_fallback(&mut options);
     // Linked pictures next to the document, as rhwp does for non-HML input.
     if !matches!(
         rhwp::parser::detect_format(data),
