@@ -1,0 +1,279 @@
+# rhwp HFT quote width, picture band spacing and print fill fixes for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch, rhwp-layout2.patch, rhwp-layout3.patch,
+# rhwp-layout4.patch and rhwp-layout5.patch; apply this after
+# rhwp-layout5.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - font_metrics_overlays.rs: the plain 한양중고딕 (Hanyang Junggothic) HFT
+#   double quotes U+201C and U+201D advance 375/1000 em, the width in the
+#   font's own advance table and in the Type 3 font Hangul 2024 prints. They
+#   were measured as half of the substitute font's full-width glyph (0.5 em),
+#   which pushed the rest of the line 0.125 em right per quote.
+# - float_placement.rs, layout.rs: when an empty paragraph holds one
+#   top-and-bottom picture anchored to it and the picture's band takes the
+#   paragraph's own line (stored segment width 0), Hangul puts the first line
+#   of the next paragraph at the band's bottom; that paragraph's spacing before
+#   is spent inside the band. The spacing was added below the band a second
+#   time. It is taken back only when the next paragraph's stored first line
+#   sits at the band's bottom, so documents without stored lines, or with a
+#   stored line elsewhere, lay out as before.
+# - document_core/queries/rendering.rs, paint/builder.rs: in a print (PDF)
+#   render, glyphs of a declared HFT font are projected through the precise
+#   device matrix of Hangul's printer (on A4 a 0.99946 x 0.99891 scale on each
+#   glyph group) until the document paints its first solid fill. Which
+#   rectangles count as that fill now always follows Hangul 2024, where a table
+#   cell or paragraph background counts. It followed the document's
+#   compatibility generation, and under the older rule a document whose only
+#   fills are such backgrounds kept the scale on every later page, which
+#   Hangul 2024 does not print.
+# - layout/text_measurement.rs and float_placement.rs cover the quote width
+#   and the band spacing.
+diff --git a/src/document_core/queries/rendering.rs b/src/document_core/queries/rendering.rs
+index 824f88b84..22eebca34 100644
+--- a/src/document_core/queries/rendering.rs
++++ b/src/document_core/queries/rendering.rs
+@@ -1583,4 +1583 @@ impl DocumentCore {
+-                    Ok(LayerBuilder::page_has_print_solid_fill(
+-                        tree,
+-                        hangul2024_print,
+-                    ))
++                    Ok(LayerBuilder::page_has_print_solid_fill(tree, true))
+diff --git a/src/paint/builder.rs b/src/paint/builder.rs
+index 7dd91eae3..dbec6d43a 100644
+--- a/src/paint/builder.rs
++++ b/src/paint/builder.rs
+@@ -262 +262 @@ impl LayerBuilder {
+-            self.hangul2024_print,
++            true,
+diff --git a/src/renderer/float_placement.rs b/src/renderer/float_placement.rs
+index 20ffb3b4e..a0be77694 100644
+--- a/src/renderer/float_placement.rs
++++ b/src/renderer/float_placement.rs
+@@ -4289,0 +4290,68 @@ pub(crate) fn empty_host_float_successor_absorbed_spacing_px(
++/// 글 없는 host 의 문단 기준 자리차지 그림 띠가 host 줄을 흡수하면(`sw=0`) 한/글은 다음 문단의
++/// 첫 줄을 띠 바닥에 놓는다. host 의 뒤 간격과 다음 문단의 앞 간격은 띠 안에서 소비된다
++/// (자리차지 표 띠의 #6761 과 같은 규칙: 첫 줄 top = max(흐름 + 앞 간격, 띠 바닥)).
++/// 근거는 한글 2024 저장 사다리와 그 PDF 다: host vpos 48653 + 그림 14302 = 다음 문단(앞 간격
++/// 200HU) vpos 62955, host vpos 50217 + 그림 16758 = 다음 문단(앞 간격 200HU) vpos 66975 이고
++/// PDF 글줄 기준선도 그 저장 줄과 같다. 배치는 띠 바닥에 앞 간격을 더해 2.67px 아래에 그렸다.
++///
++/// 다음 문단의 저장 첫 줄이 지금 커서(띠 바닥)와 같은 자리를 증언할 때만 앞 간격을 돌려준다.
++/// 저장 줄이 없거나 다른 자리를 가리키면 종전대로 둔다.
++pub(crate) fn empty_host_picture_successor_absorbed_spacing_px(
++    previous_item: Option<&crate::renderer::pagination::PageItem>,
++    paragraphs: &[Paragraph],
++    para_index: usize,
++    spacing_before: f64,
++    stored_layout: bool,
++    flow_from_body_top: f64,
++    dpi: f64,
++) -> f64 {
++    use crate::model::paragraph::{ColumnBreakType, LineSeg};
++    use crate::renderer::pagination::PageItem;
++    if !stored_layout
++        || !spacing_before.is_finite()
++        || spacing_before <= 0.0
++        || !flow_from_body_top.is_finite()
++    {
++        return 0.0;
++    }
++    let Some(PageItem::Shape {
++        para_index: owner,
++        control_index: 0,
++    }) = previous_item
++    else {
++        return 0.0;
++    };
++    if owner.checked_add(1) != Some(para_index) {
++        return 0.0;
++    }
++    let (Some(host), Some(para)) = (paragraphs.get(*owner), paragraphs.get(para_index)) else {
++        return 0.0;
++    };
++    let [Control::Picture(picture)] = host.controls.as_slice() else {
++        return 0.0;
++    };
++    if picture.caption.is_some()
++        || !crate::renderer::empty_host_line_absorbed_by_topbottom_float(host, &picture.common)
++        || host.stored_text_partition_is_dirty()
++        || host.cell_format_vpos_dirty
++        || para.stored_text_partition_is_dirty()
++        || para.cell_format_vpos_dirty
++        || para.column_type != ColumnBreakType::None
++    {
++        return 0.0;
++    }
++    let Some(line) = para
++        .line_segs
++        .first()
++        .filter(|line| line.tag & LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0 && line.vertical_pos > 0)
++    else {
++        return 0.0;
++    };
++    let saved_top = hwpunit_to_px(line.vertical_pos, dpi);
++    if (saved_top - flow_from_body_top).abs() <= 0.5 {
++        spacing_before
++    } else {
++        0.0
++    }
++}
++
+@@ -10396,0 +10465,75 @@ mod tests {
++
++    #[test]
++    fn empty_host_picture_band_absorbs_successor_spacing_before_at_stored_line() {
++        use crate::renderer::pagination::PageItem;
++        // 한글 2024 저장 사다리: host vpos 48653 + 그림 14302 = 다음 문단(앞 간격 200HU) vpos 62955.
++        let host = Paragraph {
++            controls: vec![Control::Picture(Box::new(Picture {
++                common: CommonObjAttr {
++                    width: 48190,
++                    height: 14302,
++                    vert_align: VertAlign::Top,
++                    ..base_common()
++                },
++                ..Default::default()
++            }))],
++            line_segs: vec![LineSeg {
++                vertical_pos: 48653,
++                line_height: 1200,
++                segment_width: 0,
++                ..Default::default()
++            }],
++            ..Default::default()
++        };
++        let next = Paragraph {
++            line_segs: vec![LineSeg {
++                vertical_pos: 62955,
++                line_height: 600,
++                line_spacing: 180,
++                segment_width: 48188,
++                ..Default::default()
++            }],
++            ..Default::default()
++        };
++        let paragraphs = vec![host.clone(), next.clone()];
++        let shape = PageItem::Shape {
++            para_index: 0,
++            control_index: 0,
++        };
++        let before = hwpunit_to_px(200, 96.0);
++        let band_bottom = hwpunit_to_px(48653 + 14302, 96.0);
++        let absorbed = |paragraphs: &[Paragraph], item: &PageItem, stored: bool, before: f64, flow: f64| {
++            empty_host_picture_successor_absorbed_spacing_px(
++                Some(item),
++                paragraphs,
++                1,
++                before,
++                stored,
++                flow,
++                96.0,
++            )
++        };
++        assert_eq!(absorbed(&paragraphs, &shape, true, before, band_bottom), before);
++        // 커서가 저장 줄과 다른 자리면 앞 간격을 그대로 둔다.
++        assert_eq!(absorbed(&paragraphs, &shape, true, before, band_bottom + 1.0), 0.0);
++        assert_eq!(absorbed(&paragraphs, &shape, true, before, band_bottom - before), 0.0);
++        assert_eq!(absorbed(&paragraphs, &shape, false, before, band_bottom), 0.0);
++        assert_eq!(absorbed(&paragraphs, &shape, true, 0.0, band_bottom), 0.0);
++        let paragraph_item = PageItem::FullParagraph { para_index: 0 };
++        assert_eq!(absorbed(&paragraphs, &paragraph_item, true, before, band_bottom), 0.0);
++        // host 줄이 띠에 흡수되지 않았으면(`sw > 0`) 이 규칙의 대상이 아니다.
++        let mut own_line = host.clone();
++        own_line.line_segs[0].segment_width = 48188;
++        assert_eq!(
++            absorbed(&[own_line, next.clone()], &shape, true, before, band_bottom),
++            0.0
++        );
++        let mut treat_as_char = host;
++        if let Control::Picture(picture) = &mut treat_as_char.controls[0] {
++            picture.common.treat_as_char = true;
++        }
++        assert_eq!(
++            absorbed(&[treat_as_char, next], &shape, true, before, band_bottom),
++            0.0
++        );
++    }
+diff --git a/src/renderer/font_metrics_overlays.rs b/src/renderer/font_metrics_overlays.rs
+index a6302808c..fccd2cec0 100644
+--- a/src/renderer/font_metrics_overlays.rs
++++ b/src/renderer/font_metrics_overlays.rs
+@@ -201,0 +202,6 @@ static HCI_TULIP_REGULAR_ADVANCES: &[(char, u16)] = &[
++// 큰따옴표201C/201D는375/1000이다. memo-field-hwp5 한컴2024 Print(한 장 한 쪽)의
++// 한양중고딕 Type3 T5: ToUnicode 201C/201D, Widths375, FontMatrix.001이고 같은 글꼴의
++// ASCII·따옴표63자가 원본 영문 HFT의 전진폭 표와 모두 같다. 그 표의 HNC 코드
++// 0x81/0x82(큰따옴표)는375, 0x83/0x84(작은따옴표)는225다.
++// 원본 HFT SHA-256: 067cf9d952613a01de01290080016b1b8ffecb7c077e430d0f8c3aa2a71f0dd0.
++// 표시 대체 글꼴의 전각을 반으로 누른0.5em으로 재면 따옴표마다 뒤 글자가0.125em 밀린다.
+@@ -251,2 +257,8 @@ pub(crate) fn declared_original_glyph_advance_em(
+-        (face == "한양중고딕" && !bold && !italic && matches!(character, '\u{2018}' | '\u{2019}'))
+-            .then_some(225.0 / 1000.0)
++        if face != "한양중고딕" || bold || italic {
++            return None;
++        }
++        match character {
++            '\u{2018}' | '\u{2019}' => Some(225.0 / 1000.0),
++            '\u{201C}' | '\u{201D}' => Some(375.0 / 1000.0),
++            _ => None,
++        }
+diff --git a/src/renderer/layout.rs b/src/renderer/layout.rs
+index 94810a02c..654cae4e5 100644
+--- a/src/renderer/layout.rs
++++ b/src/renderer/layout.rs
+@@ -10275,0 +10276,16 @@ impl LayoutEngine {
++                    let absorbed = if absorbed > 0.0 {
++                        absorbed
++                    } else {
++                        crate::renderer::float_placement::empty_host_picture_successor_absorbed_spacing_px(
++                            item_ordinal
++                                .checked_sub(1)
++                                .and_then(|index| col_content.items.get(index)),
++                            paragraphs,
++                            item_para,
++                            spacing_before,
++                            self.profile.get().hwp5_stored_pagination_layout()
++                                && !self.profile.get().session_edited(),
++                            y_offset - col_area.y,
++                            self.dpi,
++                        )
++                    };
+diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
+index f7cfdb28e..45c4fe6fc 100644
+--- a/src/renderer/layout/text_measurement.rs
++++ b/src/renderer/layout/text_measurement.rs
+@@ -4175,0 +4176,34 @@ mod tests {
++    #[test]
++    fn hanyang_junggothic_hft_curly_quotes_use_program_advance() {
++        let m = EmbeddedTextMeasurer;
++        let advance = |c: char| {
++            let style = TextStyle {
++                font_family: "한양중고딕".to_string(),
++                font_size: 20.0,
++                ratio: 1.0,
++                source_font_is_hft: true,
++                original_glyph_metric_family: Some(std::sync::Arc::new("한양중고딕".to_string())),
++                ..Default::default()
++            };
++            let positions = m.compute_char_positions(&format!("가{c}나"), &style);
++            positions[2] - positions[1]
++        };
++        // 한컴 2024 Print의 한양중고딕 Type3 /Widths: 큰따옴표 375, 작은따옴표 225.
++        for c in ['\u{201C}', '\u{201D}'] {
++            let width = advance(c);
++            assert!(
++                (width - 0.375 * 20.0).abs() < 0.03,
++                "U+{:04X} {width}",
++                c as u32
++            );
++        }
++        for c in ['\u{2018}', '\u{2019}'] {
++            let width = advance(c);
++            assert!(
++                (width - 0.225 * 20.0).abs() < 0.03,
++                "U+{:04X} {width}",
++                c as u32
++            );
++        }
++    }
++

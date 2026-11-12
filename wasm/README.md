@@ -162,12 +162,47 @@ more than 1 pt off instead of 411.
 | A right-aligned line leaves trailing ideographic spaces (U+3000) out of the width it aligns, as it does trailing spaces | The ideographic space was aligned with the text, which left the line about 6.5 pt to the left on the two-up sheet |
 | `–` (U+2013), `≥` (U+2265), `「` and `」` (U+300C, U+300D) of an HFT font advance a full em | `–` advanced half an em, and the text after such a character sat 3.5 pt to 5 pt to the left on the two-up sheet |
 
+`patches/rhwp-layout6.patch` is applied after `rhwp-layout5.patch`. The count
+stays at 15 of 18. In the 40-page document printed two pages per sheet 115 word
+edges are more than 1 pt off instead of 235, none of them vertically (50 were),
+and the largest deviation is 4.82 pt instead of 4.85 pt. In the third failing
+document the largest deviation is 3.47 pt instead of 3.54 pt. The PDFs of the
+other 16 documents are the same byte for byte.
+
+The first two changes bring the 40-page document to 109 such edges. The third
+moves the HFT text of that document and of the third failing one, and in this
+comparison it gains and loses. The scale that fits the right-hand pages of the
+two-up sheets to Hancom Office's pages is 0.7100 to 0.7103 instead of 0.7093 to
+0.7103, and on four of the five pages with chart labels that Hancom Office
+draws as outlines the labels lie within 0.25 pt to 0.50 pt of its shapes
+instead of 0.38 pt to 0.88 pt. But one line that was about 1 pt to the right
+(two edges at 1.01 pt and 1.03 pt) is 1.06 pt to 1.12 pt to the right (8 more
+edges), and three words have no partner where every word had one: a `」` that
+was read from the PDF as a word of its own is read as part of the word around
+it, at the same place, and one chart label no longer passes the outline check.
+rhwp's test `issue_7445_hft_glyph_paint_frame` asserts the older rule for a
+document laid out as Hangul 2020 prints it and fails on that assertion with
+this patch; the patch leaves the test as it is.
+
+| Change | Before |
+|--------|--------|
+| The double quotes `“` and `”` (U+201C, U+201D) of the plain 한양중고딕 (Hanyang Junggothic) HFT font advance 375/1000 em, the width in the font's advance table and in the Type 3 font Hancom Office prints | They advanced half an em, so the text after each quote sat 0.125 em to the right. On two pages of the two-up document 76 word edges were more than 1 pt off |
+| The first line of a paragraph that follows an empty paragraph holding one top-and-bottom picture sits at the bottom of the picture's band, when the picture takes the empty paragraph's own line and the stored first line of the next paragraph is at that place. The paragraph's spacing before is spent inside the band | The spacing before was added below the band a second time. The lines after two such pictures of the two-up document were more than 1 pt low (50 word edges) |
+| In a PDF, glyphs of an HFT font are painted through the printer's precise device matrix until the document's first solid fill. What counts as that fill follows Hancom Office 2024 for every document: a table cell or paragraph background counts | It followed the document's layout generation, and outside the 2024 generation such backgrounds did not count. A document whose only fills are backgrounds kept the matrix, a 0.99946 x 0.99891 scale on each group of HFT glyphs of an A4 page, on every page |
+
 The patches also add rhwp unit tests for these changes. They are zero-context
 diffs because the surrounding rhwp lines contain em dashes, which this
 repository's commit check refuses. The comment at the top of each file lists
 the changes by source file. To change one, apply it to a tree that
 `patch-rhwp.sh` produced up to that patch, edit, and write a new diff with
 `git diff -U0`.
+
+A later patch does not change the lines an earlier patch added, and does not
+insert in the middle of them; it inserts next to them. `patch-rhwp.sh` tells
+that a patch is already applied by checking that it reverses cleanly. When a
+later patch has changed or split the lines of an earlier one, the earlier one
+no longer reverses, so running `patch-rhwp.sh` on the same tree again takes it
+for not applied and fails.
 
 ## fontdb
 
