@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/jollaman999/why-hwp/internal/apply"
+	"github.com/jollaman999/why-hwp/internal/engine"
+	"github.com/jollaman999/why-hwp/internal/hwp"
 )
 
 func init() {
@@ -28,12 +31,15 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	noTrack := fset.Bool("no-track", false, "edit without recording tracked changes")
 	force := fset.Bool("force", false, "overwrite an existing output file")
 	fset.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: why-hwp apply -spec spec.json -o out.hwpx [-author NAME] [-date RFC3339] [-no-track] [-force] <in.hwpx>")
+		fmt.Fprintln(stderr, "Usage: why-hwp apply -spec spec.json -o out.hwpx [-author NAME] [-date RFC3339] [-no-track] [-force] <in.hwpx|in.hwp>")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Applies the ops in the spec to a copy of the document. Locations are the")
 		fmt.Fprintln(stderr, "ones 'why-hwp text' prints for the input; ops do not renumber each other.")
 		fmt.Fprintln(stderr, "Ops: set_text, replace, insert_after, insert_before, delete, image.")
 		fmt.Fprintln(stderr, "Image paths in the spec are relative to the spec file.")
+		fmt.Fprintln(stderr, "An .hwp input is converted to HWPX with the built-in engine first; the")
+		fmt.Fprintln(stderr, "conversion can lose parts of the document, so check the output with")
+		fmt.Fprintln(stderr, "'why-hwp verify -orig in.hwp out.hwpx'.")
 		fmt.Fprintln(stderr)
 		fset.PrintDefaults()
 	}
@@ -52,12 +58,13 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "why-hwp apply: "+format+"\n", a...)
 		return code
 	}
+	isHWP := false
 	switch strings.ToLower(filepath.Ext(in)) {
 	case ".hwpx":
 	case ".hwp":
-		return fail(2, "%s is an HWP binary file; convert it first: why-hwp convert -to hwpx %s", in, in)
+		isHWP = true
 	default:
-		return fail(2, "unsupported input %q (want .hwpx)", filepath.Ext(in))
+		return fail(2, "unsupported input %q (want .hwpx or .hwp)", filepath.Ext(in))
 	}
 	if *specPath == "" || *out == "" {
 		return fail(2, "-spec and -o are required")
@@ -96,11 +103,27 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(2, "%s: %v", *specPath, err)
 	}
-	src, err := os.ReadFile(in)
+	src := in
+	if isHWP {
+		if _, err := hwp.Read(in); err != nil {
+			return fail(1, "%s: %v", in, err)
+		}
+		tmp, err := os.MkdirTemp("", "why-hwp-apply-")
+		if err != nil {
+			return fail(1, "%v", err)
+		}
+		defer os.RemoveAll(tmp)
+		src = filepath.Join(tmp, "input.hwpx")
+		if err := engine.Convert(context.Background(), in, src, "hwpx"); err != nil {
+			return fail(1, "%s: convert to HWPX: %v", in, err)
+		}
+		fmt.Fprintf(stderr, "why-hwp apply: converted %s to HWPX with the built-in engine; the conversion can lose parts of the document, check the result with why-hwp verify -orig %s %s\n", in, in, *out)
+	}
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return fail(1, "%v", err)
 	}
-	res, err := apply.Apply(src, spec, apply.Options{
+	res, err := apply.Apply(data, spec, apply.Options{
 		Track:   !*noTrack,
 		Author:  *author,
 		Date:    when,

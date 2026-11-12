@@ -59,10 +59,10 @@ why-hwp info [-format plain|json] [-view accepted|original|markup] <파일>
 ### apply
 
 ```sh
-why-hwp apply -spec edits.json -o out.hwpx -author 이름 [-date RFC3339] [-no-track] [-force] in.hwpx
+why-hwp apply -spec edits.json -o out.hwpx -author 이름 [-date RFC3339] [-no-track] [-force] in.hwpx|in.hwp
 ```
 
-명세의 편집을 변경 추적으로 남긴 HWPX 사본을 만듭니다(`-no-track` 이면 추적 없이 고칩니다). 위치는 입력을 `why-hwp text` 로 읽었을 때의 loc 이고, 모든 연산이 입력 기준 번호를 씁니다. 연산: `set_text` {loc, text}, `replace` {loc, find, with, all}, `insert_after` / `insert_before` {loc, paras:[{text, like}]}, `delete` {loc}, `image` {after 또는 loc, src(PNG), width_mm, like}. 새 문단은 `like`(없으면 `loc`) 문단의 문단·스타일·글자 모양을 따릅니다. 고치지 않은 문단은 바이트 그대로 두고, 메모를 지키며, PNG 는 손대지 않고 넣습니다. `.hwp` 입력은 먼저 `why-hwp convert -to hwpx` 로 바꿉니다. 예시: [`testdata/apply/spec.json`](testdata/apply/spec.json).
+명세의 편집을 변경 추적으로 남긴 HWPX 사본을 만듭니다(`-no-track` 이면 추적 없이 고칩니다). 위치는 입력을 `why-hwp text` 로 읽었을 때의 loc 이고, 모든 연산이 입력 기준 번호를 씁니다. 연산: `set_text` {loc, text}, `replace` {loc, find, with, all}, `insert_after` / `insert_before` {loc, paras:[{text, like}]}, `delete` {loc}, `image` {after 또는 loc, src(PNG), width_mm, like}. 새 문단은 `like`(없으면 `loc`) 문단의 문단·스타일·글자 모양을 따릅니다. 고치지 않은 문단은 바이트 그대로 두고, 메모를 지키며, PNG 는 손대지 않고 넣습니다. `.hwp` 입력은 내장 엔진으로 임시 폴더에 HWPX 를 만든 뒤 그 사본을 고칩니다. 출력은 늘 `.hwpx` 이고, 위치는 `.hwp` 파일을 `why-hwp text` 로 읽었을 때의 loc 입니다. 변환에서 문서의 일부가 빠질 수 있어서 apply 가 stderr 로 알려 주므로, 결과를 `why-hwp verify -orig in.hwp out.hwpx` 로 확인합니다. 암호·DRM·배포용 문서는 `text` 처럼 변환 전에 거부합니다. 예시: [`testdata/apply/spec.json`](testdata/apply/spec.json).
 
 ### verify
 

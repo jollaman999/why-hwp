@@ -59,10 +59,10 @@ Shows sections, paragraphs, tables and their size, owner marks such as `(A)` or 
 ### apply
 
 ```sh
-why-hwp apply -spec edits.json -o out.hwpx -author NAME [-date RFC3339] [-no-track] [-force] in.hwpx
+why-hwp apply -spec edits.json -o out.hwpx -author NAME [-date RFC3339] [-no-track] [-force] in.hwpx|in.hwp
 ```
 
-Writes a copy of an HWPX document with the edits in the spec recorded as tracked changes (use `-no-track` to edit without them). Locations are the ones `why-hwp text` prints for the input, and every op uses the input's numbering. Ops: `set_text` {loc, text}, `replace` {loc, find, with, all}, `insert_after` / `insert_before` {loc, paras:[{text, like}]}, `delete` {loc}, `image` {after or loc, src (PNG), width_mm, like}. New paragraphs copy the paragraph, style and character shapes of `like` (or of `loc`). Paragraphs that are not edited keep their bytes; memos are kept; PNGs are embedded unchanged. An `.hwp` input must be converted with `why-hwp convert -to hwpx` first. Example: [`testdata/apply/spec.json`](testdata/apply/spec.json).
+Writes a copy of an HWPX document with the edits in the spec recorded as tracked changes (use `-no-track` to edit without them). Locations are the ones `why-hwp text` prints for the input, and every op uses the input's numbering. Ops: `set_text` {loc, text}, `replace` {loc, find, with, all}, `insert_after` / `insert_before` {loc, paras:[{text, like}]}, `delete` {loc}, `image` {after or loc, src (PNG), width_mm, like}. New paragraphs copy the paragraph, style and character shapes of `like` (or of `loc`). Paragraphs that are not edited keep their bytes; memos are kept; PNGs are embedded unchanged. An `.hwp` input is first converted to HWPX in a temporary folder with the built-in engine, and the edits are applied to that copy; the output is always `.hwpx`, and locations are the ones `why-hwp text` prints for the `.hwp` file. The conversion can lose parts of the document, so apply says so on stderr; check the result with `why-hwp verify -orig in.hwp out.hwpx`. Password-protected, DRM and distribution documents are refused before conversion, as in `text`. Example: [`testdata/apply/spec.json`](testdata/apply/spec.json).
 
 ### verify
 
