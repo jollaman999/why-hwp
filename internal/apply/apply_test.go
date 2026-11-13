@@ -367,6 +367,71 @@ func TestInsertLike(t *testing.T) {
 	}
 }
 
+// TestInsertCharShape puts paragraphs with mixed character shapes after
+// s0/p0 of the sample and checks the shape each new paragraph takes:
+// insert_after the last run, insert_before the first run with text or a
+// control, like the first run with text.
+func TestInsertCharShape(t *testing.T) {
+	src := readSample(t)
+	raw := part(t, src, "Contents/section0.xml")
+	const pOpen = `<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">`
+	run := func(c, body string) string {
+		if body == "-" {
+			return `<hp:run charPrIDRef="` + c + `"/>`
+		}
+		return `<hp:run charPrIDRef="` + c + `">` + body + `</hp:run>`
+	}
+	text := func(s string) string { return "<hp:t>" + s + "</hp:t>" }
+	paras := pOpen + run("5", text("가")) + run("6", text("나")) + "</hp:p>" + // s0/p1
+		pOpen + run("5", text("다")) + run("6", "-") + "</hp:p>" + // s0/p2
+		pOpen + run("5", text("라")) + run("6", "<hp:t/>") + "</hp:p>" + // s0/p3
+		pOpen + run("2", "-") + run("5", text("마")) + run("6", text("바")) + "</hp:p>" + // s0/p4
+		pOpen + run("2", "<hp:t/>") + run("5", text("사")) + "</hp:p>" + // s0/p5
+		pOpen + run("2", `<hp:ctrl><hp:bookmark name="b"/></hp:ctrl>`) + run("5", text("아")) + "</hp:p>" // s0/p6
+	end := strings.Index(raw, "</hp:p>") + len("</hp:p>")
+	if strings.Count(raw[:end], "<hp:p ") != 1 {
+		t.Fatal("s0/p0 is not a flat paragraph")
+	}
+	src = withSection(t, src, raw[:end]+paras+raw[end:])
+	if got := texts(t, src)["s0/p6"]; got != "아" {
+		t.Fatalf("s0/p6 = %q", got)
+	}
+	for _, track := range []bool{true, false} {
+		res := applyOps(t, src, track,
+			Op{Op: "insert_after", Loc: "s0/p1", Paras: []NewPara{{Text: "A1"}, {Text: "A2"}}},
+			Op{Op: "insert_after", Loc: "s0/p2", Paras: []NewPara{{Text: "B"}}},
+			Op{Op: "insert_after", Loc: "s0/p3", Paras: []NewPara{{Text: "C"}, {Text: "L", Like: "s0/p4"}}},
+			Op{Op: "insert_before", Loc: "s0/p1", Paras: []NewPara{{Text: "D"}}},
+			Op{Op: "insert_before", Loc: "s0/p4", Paras: []NewPara{{Text: "E"}}},
+			Op{Op: "insert_before", Loc: "s0/p5", Paras: []NewPara{{Text: "F"}}},
+			Op{Op: "insert_before", Loc: "s0/p6", Paras: []NewPara{{Text: "G"}}},
+			Op{Op: "image", After: "s0/p2", Src: "figure.png", WidthMM: 10},
+		)
+		got := texts(t, res.Data)
+		want := []struct{ text, charPr string }{
+			{"D", "5"}, {"가나", ""}, {"A1", "6"}, {"A2", "6"},
+			{"다", ""}, {"B", "6"}, {"", "6"},
+			{"라", ""}, {"C", "6"}, {"L", "5"},
+			{"E", "5"}, {"마바", ""},
+			{"F", "5"}, {"사", ""},
+			{"G", "2"}, {"아", ""},
+		}
+		for i, w := range want {
+			loc := "s0/p" + strconv.Itoa(i+1)
+			if got[loc] != w.text {
+				t.Fatalf("track=%v %s = %q, want %q", track, loc, got[loc], w.text)
+			}
+			if w.charPr == "" {
+				continue
+			}
+			x := paraXML(t, res.Data, loc)
+			if !strings.HasPrefix(x, pOpen+`<hp:run charPrIDRef="`+w.charPr+`">`) {
+				t.Errorf("track=%v %s (%q) want charPr %s: %s", track, loc, w.text, w.charPr, x)
+			}
+		}
+	}
+}
+
 func TestDelete(t *testing.T) {
 	src := readSample(t)
 	res := applyOps(t, src, true, Op{Op: "delete", Loc: "s0/p2"})

@@ -591,13 +591,17 @@ func (ed *editor) run(o *Op) error {
 			return err
 		}
 		for _, np := range o.Paras {
-			shape := p
+			shape, from := p, charEnd
+			if o.Op == "insert_before" {
+				from = charStart
+			}
 			if np.Like != "" {
 				if shape, _, err = ed.resolve(np.Like); err != nil {
 					return fmt.Errorf("like: %w", err)
 				}
+				from = charFirstText
 			}
-			x := ed.newPara(p.sec, shape, np.Text)
+			x := ed.newPara(p.sec, shape, from, np.Text)
 			if o.Op == "insert_after" {
 				e.after = append(e.after, x)
 			} else {
@@ -681,13 +685,14 @@ func (ed *editor) run(o *Op) error {
 		}
 		pfx := p.sec.pfx
 		if o.After != "" {
-			shape := p
+			shape, from := p, charEnd
 			if o.Like != "" {
 				if shape, _, err = ed.resolve(o.Like); err != nil {
 					return fmt.Errorf("like: %w", err)
 				}
+				from = charFirstText
 			}
-			e.after = append(e.after, ed.picPara(p.sec, shape, pic))
+			e.after = append(e.after, ed.picPara(p.sec, shape, from, pic))
 			return nil
 		}
 		if e.owner == "delete" {
@@ -730,10 +735,27 @@ func (ed *editor) claim(p *para, op string) (*paraEdit, error) {
 	return e, nil
 }
 
+// charFrom says which run of the shape paragraph gives a new paragraph its
+// character shape.
+type charFrom int
+
+const (
+	// charFirstText is the first run that has text, else the first run
+	// (a paragraph copied with like).
+	charFirstText charFrom = iota
+	// charEnd is the last run, which holds the shape of the paragraph mark:
+	// Hancom Office gives a paragraph started by Enter at the end of p that
+	// shape, even when the last run has no text.
+	charEnd
+	// charStart is the first run that has text or a control, else the
+	// first run: Hancom Office gives a paragraph started by Enter at the
+	// start of p the shape of p's first character.
+	charStart
+)
+
 // shapes returns the paragraph shape, style and character shape to copy
-// from p: the character shape of the first run that has text, else of the
-// first run.
-func shapes(p *para) (paraPr, style, charPr string) {
+// from p, the character shape taken as from says.
+func shapes(p *para, from charFrom) (paraPr, style, charPr string) {
 	paraPr, style, charPr = p.paraPr, p.style, "0"
 	if paraPr == "" {
 		paraPr = "0"
@@ -744,10 +766,24 @@ func shapes(p *para) (paraPr, style, charPr string) {
 	if len(p.runs) > 0 {
 		charPr = p.runs[0].charPr
 	}
-	for _, ts := range p.ts {
-		if ts.run >= 0 && ts.contentEnd > ts.tagEnd {
-			charPr = p.runs[ts.run].charPr
-			break
+	switch from {
+	case charEnd:
+		if len(p.runs) > 0 {
+			charPr = p.runs[len(p.runs)-1].charPr
+		}
+	case charStart:
+		for i := range p.runs {
+			if runHasChar(p, i) {
+				charPr = p.runs[i].charPr
+				break
+			}
+		}
+	default:
+		for _, ts := range p.ts {
+			if ts.run >= 0 && ts.contentEnd > ts.tagEnd {
+				charPr = p.runs[ts.run].charPr
+				break
+			}
 		}
 	}
 	if charPr == "" {
@@ -756,8 +792,26 @@ func shapes(p *para) (paraPr, style, charPr string) {
 	return
 }
 
-func (ed *editor) newPara(s *section, shape *para, text string) string {
-	pp, st, cp := shapes(shape)
+// runHasChar reports whether run i of p holds text or an element other than
+// an empty hp:t (a control, table or picture).
+func runHasChar(p *para, i int) bool {
+	r := p.runs[i]
+	raw := p.sec.raw
+	pos := r.tagEnd
+	for _, ts := range p.ts {
+		if ts.run != i || ts.start < pos || ts.end > r.closeStart {
+			continue
+		}
+		if ts.contentEnd > ts.tagEnd || bytes.IndexByte(raw[pos:ts.start], '<') >= 0 {
+			return true
+		}
+		pos = ts.end
+	}
+	return bytes.IndexByte(raw[pos:r.closeStart], '<') >= 0
+}
+
+func (ed *editor) newPara(s *section, shape *para, from charFrom, text string) string {
+	pp, st, cp := shapes(shape, from)
 	pfx := s.pfx
 	var body string
 	switch {
@@ -770,8 +824,8 @@ func (ed *editor) newPara(s *section, shape *para, text string) string {
 	return paraOpen(pfx, pp, st) + body + "</" + pfx + ":p>"
 }
 
-func (ed *editor) picPara(s *section, shape *para, pic string) string {
-	pp, st, cp := shapes(shape)
+func (ed *editor) picPara(s *section, shape *para, from charFrom, pic string) string {
+	pp, st, cp := shapes(shape, from)
 	pfx := s.pfx
 	return paraOpen(pfx, pp, st) + fmt.Sprintf(`<%s:run charPrIDRef="%s">`, pfx, cp) + ed.picContent(pfx, pic, true) + "</" + pfx + ":run></" + pfx + ":p>"
 }
