@@ -1,0 +1,78 @@
+# rhwp footnote marker width fix for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch, rhwp-layout2.patch, rhwp-layout3.patch,
+# rhwp-layout4.patch, rhwp-layout5.patch, rhwp-layout6.patch and
+# rhwp-layout7.patch; apply this after rhwp-layout7.patch.
+# Zero-context diff (apply with git apply --unidiff-zero). Every hunk inserts
+# lines or changes lines of rhwp itself, away from the lines of the earlier
+# patches.
+#
+# - layout/paragraph_layout.rs: when the width of a line is estimated for
+#   justification and alignment (estimate_line_run_widths), every footnote or
+#   endnote marker on the line adds the width of its number. The text style
+#   made for that number kept the display font family of the run but dropped
+#   its metric font family and the flag that those metrics are trusted. Where
+#   the document's font is not installed and another font is displayed in its
+#   place, the number was measured with the widths of the displayed font
+#   instead of the requested one, so the line was estimated too wide and
+#   justification shrank its spaces. The number is now measured with the
+#   metrics the text of the run uses. Placing and drawing the marker do not
+#   change, nor does anything when the requested font is installed.
+# - layout/paragraph_layout.rs covers the measuring style with a test: a
+#   marker whose run displays another font in place of HumanMyeongjo measures
+#   as wide as one displayed in HumanMyeongjo.
+diff --git a/src/renderer/layout/paragraph_layout.rs b/src/renderer/layout/paragraph_layout.rs
+index a333fbda2..775905610 100755
+--- a/src/renderer/layout/paragraph_layout.rs
++++ b/src/renderer/layout/paragraph_layout.rs
+@@ -1687,0 +1688,10 @@ pub(super) fn note_marker_text_from_control(
++fn note_marker_measure_style(base: &TextStyle, font_size: f64) -> TextStyle {
++    TextStyle {
++        font_size,
++        font_family: base.font_family.clone(),
++        metric_font_family: base.metric_font_family.clone(),
++        font_metric_trusted: base.font_metric_trusted,
++        ..Default::default()
++    }
++}
++
+@@ -11325,5 +11335 @@ impl LayoutEngine {
+-                    let sup_ts = TextStyle {
+-                        font_size: sup_size,
+-                        font_family: ts.font_family.clone(),
+-                        ..Default::default()
+-                    };
++                    let sup_ts = note_marker_measure_style(&ts, sup_size);
+@@ -13274,0 +13281,32 @@ mod pua_mapping_tests {
++
++#[cfg(test)]
++mod note_marker_measure_style_tests {
++    use super::{estimate_text_width_exact, note_marker_measure_style, TextStyle};
++
++    #[test]
++    fn substituted_display_family_measures_with_the_requested_face() {
++        let base = |display: &str| TextStyle {
++            font_family: display.to_string(),
++            metric_font_family: (display != "휴먼명조").then(|| "휴먼명조".to_string()),
++            font_size: 20.0,
++            ratio: 1.0,
++            font_metric_trusted: true,
++            ..Default::default()
++        };
++        let width = |display: &str| {
++            estimate_text_width_exact("8)", &note_marker_measure_style(&base(display), 15.0))
++        };
++        let requested = width("휴먼명조");
++        assert!(
++            (requested - 15.0 * (0.5 + 0.312)).abs() < 0.05,
++            "휴먼명조 {requested:.3}px"
++        );
++        for display in ["NotoSansKR-Regular", "Noto Serif CJK KR"] {
++            let substituted = width(display);
++            assert!(
++                (substituted - requested).abs() < 0.01,
++                "{display} {substituted:.3}px, 휴먼명조 {requested:.3}px"
++            );
++        }
++    }
++}

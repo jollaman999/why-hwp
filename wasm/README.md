@@ -224,6 +224,21 @@ as they are.
 | The dagger `†` (U+2020) of an HFT font advances a full em when no width is known for it, like the HFT symbols of `rhwp-layout5.patch` | It was measured as narrow punctuation, and the centred text of a table cell that ends in a dagger sat 1.1 pt to 1.2 pt to the right |
 | `․` and `‧` (U+2024, U+2027) that the document's font lacks advance 178/1024 em, the width of the font Hancom Office takes them from (Haansoft Batang), also when the document's font is not installed and another font is displayed in its place. Batang gains the same entry for `‧` | When the document's font was replaced, the two characters advanced a full em or 0.3 em. On Linux a word that holds a `․` was 11.99 pt off in the two footnote documents |
 
+`patches/rhwp-layout8.patch` is applied after `rhwp-layout7.patch` and changes
+nothing where the document's fonts are installed: the PDF, TXT and HWP or HWPX
+outputs of the 18 documents are the same byte for byte, and the count stays at
+15 of 18. On a Linux computer without those fonts, with default settings, 9 of
+18 documents pass before and after. The largest deviation of the two footnote
+documents is 2.28 pt, at a footnote number on page 2, instead of 4.61 pt. In
+the two-up document the words of one line move by 0.2 pt at most, and 152 word
+edges are more than 1 pt off before and after. The PDFs of the other 15
+documents, the HWP, HWPX and TXT outputs of all 18 and the PDFs of 12 HWP 3.0
+samples of rhwp are the same byte for byte.
+
+| Change | Before |
+|--------|--------|
+| When the width of a line is estimated for justification and alignment, the number of a footnote or endnote marker on the line is measured with the metrics the text of its run uses, those of the font the document asks for | The style made for the number kept the font displayed in place of a missing one but lost the requested font's metrics. On Linux the words on lines with a marker in the two footnote documents were up to 4.61 pt off |
+
 The patches also add rhwp unit tests for these changes. They are zero-context
 diffs because the surrounding rhwp lines contain em dashes, which this
 repository's commit check refuses. The comment at the top of each file lists
