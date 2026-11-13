@@ -1,0 +1,238 @@
+# rhwp ASCII punctuation font slot, HFT dagger and missing dot width fixes for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch, rhwp-layout2.patch, rhwp-layout3.patch,
+# rhwp-layout4.patch, rhwp-layout5.patch and rhwp-layout6.patch; apply this
+# after rhwp-layout6.patch.
+# Zero-context diff (apply with git apply --unidiff-zero). Every hunk only
+# inserts lines, next to the lines of the earlier patches and not among them.
+#
+# - style_resolver.rs: Hangul 2024 always prints ASCII punctuation with the
+#   font of the character shape's Latin slot, also inside Hangul text. rhwp
+#   gives the punctuation that slot when the shape's Hangul and Latin fonts
+#   differ, but did so only when the width table of the Latin font holds no
+#   Hangul. With a Latin font that has Hangul glyphs as well, the punctuation
+#   kept the Hangul slot and was measured with the Hangul font's widths. When
+#   the styles of a document are resolved, the two fonts differing is now
+#   enough. Checked by printing test documents that differ only in the pair
+#   of fonts with Hangul 2024: the character before the punctuation, whether
+#   the Latin font has Hangul glyphs and whether either font is an HFT font
+#   make no difference. Those documents were HWP5 and HWPX ones, so a
+#   document whose source is an HWP 3.0 file keeps the older condition, and
+#   rhwp's own test of HWP 3.0 punctuation (hft_outline_font_contract) holds
+#   as it is.
+# - layout/text_measurement.rs: the dagger U+2020 of an HFT font advances a
+#   full em when no width is known for it, like the HFT symbols of
+#   rhwp-layout5.patch. The Type 3 font Hangul 2024 prints for it has width
+#   1000. It was measured as narrow punctuation.
+# - font_metrics_data.rs, layout/text_measurement.rs: U+2024 and U+2027 that
+#   the requested font lacks advance with the width of the font Hangul 2024
+#   takes them from (Haansoft Batang, 178/1024 em), also when the requested
+#   font is not installed and another font is displayed in its place. The
+#   fallback chain was then the displayed font's, the supplier was lost and
+#   the two characters advanced a full em or 0.3 em. Batang, whose bold text
+#   uses the plain font program, gains the supplier entry for U+2027.
+# - style_resolver/tests.rs and layout/text_measurement.rs cover the
+#   punctuation rule for HWP5, HWPX and HWP 3.0 sources and the two dots.
+
+diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
+index ead17c705..453fbac4b 100644
+--- a/src/renderer/font_metrics_data.rs
++++ b/src/renderer/font_metrics_data.rs
+@@ -235,0 +236,4 @@ pub(crate) fn verified_missing_glyph_supplier(
++        // batang.ttc의 Batang cmap에는 U+2027도 없다. memo-field-hwp5 한컴2024 Print 7쪽은
++        // 굵은 바탕 사이의 `‧`를 Haansoft Batang 178/1024em 글리프로 출력한다. Batang에는
++        // Bold 프로그램이 없어 보통·굵게가 같은 cmap이다.
++        ("Batang", 1024, false, false, '\u{2027}') => Some("Haansoft Batang"),
+diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
+index 45c4fe6fc..dfeccddcf 100644
+--- a/src/renderer/layout/text_measurement.rs
++++ b/src/renderer/layout/text_measurement.rs
+@@ -2393,0 +2394,53 @@ fn char_width_decision_with_hft_tracking<'a>(
++        // 원 face가 없어 표시 family만 대체된 경우 위 체인은 대체 글꼴의 것이라 원 face의
++        // 확인된 결측 공급자를 잃는다. 원 face를 그릴 때와 같은 공급자의 내장 폭으로 전진한다.
++        // footnote.hwp 한컴2024 Print 2·3쪽: 휴먼명조 사이의 `‧`·`․`는 Haansoft Batang
++        // 178/1024em이고 HMKMM.TTF의 cmap에는 둘 다 없다. HFT 계약과 형식 미확인 슬롯의
++        // 전각 한점 리더는 위와 같은 조건으로 보존한다. 공급자 프로그램도 없는 환경이므로
++        // paint 공급자 선택(declaredGlyphFallbackMetric)으로 표시하지 않고 폭만 쓴다.
++        if embedded.width_px.is_none()
++            && metric_family != display_family
++            && latin.is_none()
++            && matches!(c, '\u{2024}' | '\u{2027}')
++            && !style.source_font_is_hft
++            && !source_hft_metric
++            && !style.hft_hangul_face
++            && !style.hft_fullwidth_dot
++            && (c != '\u{2024}'
++                || style.glyph_fallback_advance_explicit
++                || style.font_metric_trusted)
++            && (embedded.metric.is_some_and(|found| {
++                (found.metric.bold == style.bold || found.bold_fallback)
++                    && found.metric.italic == style.italic
++                    && font_metrics_data::verified_metric_has_glyph(found.metric, c) == Some(false)
++            }) || font_metrics_data::verified_named_program_has_glyph(
++                measured_family,
++                style.bold,
++                style.italic,
++                c,
++            ) == Some(false))
++        {
++            for family in font_metrics_data::verified_program_glyph_fallback_families(measured_family)
++            {
++                let fallback = measure_char_width_embedded_decision_for_font(
++                    family,
++                    style.bold,
++                    style.italic,
++                    c,
++                    font_size,
++                    false,
++                    false,
++                    regular_bold_advance,
++                );
++                if fallback.width_px.is_some()
++                    && fallback.metric.is_some_and(|found| {
++                        (found.metric.bold == style.bold || found.bold_fallback)
++                            && found.metric.italic == style.italic
++                            && font_metrics_data::verified_metric_has_glyph(found.metric, c)
++                                == Some(true)
++                    })
++                {
++                    embedded = fallback;
++                    break;
++                }
++            }
++        }
+@@ -2497,0 +2551,3 @@ fn char_width_decision_with_hft_tracking<'a>(
++            // U+2020도 같다. memo-field-hwp5 한컴2024 Print 28쪽의 굵은 한양중고딕 기호
++            // Type3 T14(※ – ≥와 같은 글꼴)에서 Widths1000이다.
++            || (style.source_font_is_hft && c == '\u{2020}')
+@@ -4526,0 +4583,49 @@ mod tests {
++    /// 요청 face에 없는 `․`(U+2024)·`‧`(U+2027)는 확인된 공급자 Haansoft Batang의
++    /// 178/1024em으로 전진한다. 표시 family가 대체 글꼴로 바뀌어도 같다.
++    /// footnote.hwp 한컴2024 Print 2·3쪽(휴먼명조), memo-field-hwp5 7쪽(굵은 바탕).
++    #[test]
++    fn test_missing_dots_advance_with_the_verified_supplier() {
++        let m = EmbeddedTextMeasurer;
++        let advance = |style: TextStyle, c: char| {
++            let positions = m.compute_char_positions(&format!("가{c}나"), &style);
++            assert!(positions.len() >= 3, "세 글자의 원점이 모두 있어야 한다");
++            (positions[2] - positions[1]) / style.font_size
++        };
++        let human = |display: &str, trusted: bool| TextStyle {
++            font_family: display.to_string(),
++            metric_font_family: (display != "휴먼명조").then(|| "휴먼명조".to_string()),
++            font_size: 20.0,
++            ratio: 1.0,
++            font_metric_trusted: trusted,
++            ..Default::default()
++        };
++        let supplier_em = 178.0 / 1024.0;
++        for display in ["휴먼명조", "NotoSansKR-Regular"] {
++            for c in ['\u{2024}', '\u{2027}'] {
++                let em = advance(human(display, true), c);
++                assert!(
++                    (em - supplier_em).abs() < 0.005,
++                    "{display} U+{:04X} {em:.4}em",
++                    c as u32
++                );
++            }
++            // 형식 미확인 슬롯의 한점 리더는 종전 전각 대체 기호 폭이다.
++            let em = advance(human(display, false), '\u{2024}');
++            assert!((em - 1.0).abs() < 0.005, "{display} untrusted {em:.4}em");
++        }
++        for bold in [false, true] {
++            let style = TextStyle {
++                font_family: "바탕".to_string(),
++                font_size: 20.0,
++                ratio: 1.0,
++                bold,
++                ..Default::default()
++            };
++            let em = advance(style, '\u{2027}');
++            assert!(
++                (em - supplier_em).abs() < 0.005,
++                "바탕(굵게={bold}) U+2027 {em:.4}em"
++            );
++        }
++    }
++
+diff --git a/src/renderer/style_resolver.rs b/src/renderer/style_resolver.rs
+index 359eb83a5..701ee75a6 100644
+--- a/src/renderer/style_resolver.rs
++++ b/src/renderer/style_resolver.rs
+@@ -55,0 +56,19 @@ pub(crate) fn try_resolve_styles_for_document<S: storage::Storage>(
++    if !styles.source_hwp3_native {
++        // 한컴 2024 Print는 HWP5·HWPX 문서의 ASCII 구두점을 항상 영문 슬롯 글꼴로 찍는다.
++        // 한글·영문 face가 다르면 영문 폭 표에 한글이 있어도 영문 슬롯을 쓴다. 앞 글자,
++        // 영문 글꼴의 한글 유무, HFT 여부는 결과를 바꾸지 않는다. 이 확인은 HWP5·HWPX
++        // 문서로 한 것이라 원본 HWP3 문서는 글자 모양 해소의 종전 조건을 그대로 둔다.
++        fn primary(chain: &str) -> &str {
++            chain
++                .split(',')
++                .next()
++                .unwrap_or("")
++                .trim()
++                .trim_matches(|c| c == '\'' || c == '"')
++        }
++        for style in &mut styles.char_styles {
++            if let [hangul, latin, ..] = style.font_families.as_slice() {
++                style.ascii_punct_latin_slot |= primary(hangul) != primary(latin);
++            }
++        }
++    }
+diff --git a/src/renderer/style_resolver/tests.rs b/src/renderer/style_resolver/tests.rs
+index 939eba709..736860127 100644
+--- a/src/renderer/style_resolver/tests.rs
++++ b/src/renderer/style_resolver/tests.rs
+@@ -486,0 +487,52 @@ fn test_font_family_for_lang_fallback() {
++
++/// 한글·영문 face가 다르면 영문 글꼴에 한글 글리프가 있어도 ASCII 구두점은 영문 슬롯을 쓴다.
++/// 원본 HWP3 문서는 영문 폭 표에 한글이 없을 때만 영문 슬롯을 쓰는 종전 조건을 유지한다.
++#[test]
++fn test_ascii_punct_latin_slot_follows_face_difference() {
++    use crate::model::provenance::SourceFormat;
++    let face = |name: &str| Font {
++        name: name.to_string(),
++        alt_type: 1,
++        ..Default::default()
++    };
++    let doc_info = || DocInfo {
++        font_faces: vec![
++            vec![face("바탕")],
++            vec![face("바탕"), face("휴먼명조"), face("Times New Roman")],
++        ],
++        char_shapes: (0..3)
++            .map(|latin| CharShape {
++                font_ids: [0, latin, 0, 0, 0, 0, 0],
++                base_size: 1000,
++                ratios: [100; 7],
++                ..Default::default()
++            })
++            .collect(),
++        ..Default::default()
++    };
++    let slots = |styles: ResolvedStyleSet| -> Vec<bool> {
++        styles
++            .char_styles
++            .iter()
++            .map(|cs| cs.ascii_punct_latin_slot)
++            .collect()
++    };
++    let document_slots = |format: SourceFormat| {
++        let mut document = Document::default();
++        document.provenance.format = format;
++        document.doc_info = doc_info();
++        assert_eq!(
++            document.layout_profile().hwp3_native_layout(),
++            format == SourceFormat::Hwp3
++        );
++        slots(resolve_styles_for_document(&document, DEFAULT_DPI))
++    };
++    assert_eq!(document_slots(SourceFormat::Hwp5), [false, true, true]);
++    assert_eq!(document_slots(SourceFormat::Hwpx), [false, true, true]);
++    assert_eq!(document_slots(SourceFormat::Hwp3), [false, false, true]);
++    // 문서 출처 없이 글자 모양만 해소하면 종전 조건이다.
++    assert_eq!(
++        slots(resolve_styles(&doc_info(), DEFAULT_DPI)),
++        [false, false, true]
++    );
++}

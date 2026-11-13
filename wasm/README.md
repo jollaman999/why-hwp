@@ -190,6 +190,40 @@ this patch; the patch leaves the test as it is.
 | The first line of a paragraph that follows an empty paragraph holding one top-and-bottom picture sits at the bottom of the picture's band, when the picture takes the empty paragraph's own line and the stored first line of the next paragraph is at that place. The paragraph's spacing before is spent inside the band | The spacing before was added below the band a second time. The lines after two such pictures of the two-up document were more than 1 pt low (50 word edges) |
 | In a PDF, glyphs of an HFT font are painted through the printer's precise device matrix until the document's first solid fill. What counts as that fill follows Hancom Office 2024 for every document: a table cell or paragraph background counts | It followed the document's layout generation, and outside the 2024 generation such backgrounds did not count. A document whose only fills are backgrounds kept the matrix, a 0.99946 x 0.99891 scale on each group of HFT glyphs of an A4 page, on every page |
 
+`patches/rhwp-layout7.patch` is applied after `rhwp-layout6.patch`. The count
+stays at 15 of 18. In the 40-page document printed two pages per sheet 28 word
+edges are more than 1 pt off instead of 115: gone are the 82 on its last two
+pages and 5 in a table cell of page 28 whose text ends in a dagger. The
+largest deviation stays at 4.82 pt. The PDFs of the other 17 documents are the
+same byte for byte.
+
+The last change matters most where the document's fonts are not installed. On
+a Linux computer without them, with default settings, 9 of 18 documents pass
+before and after. The largest deviation of the two footnote documents is
+4.61 pt instead of 11.99 pt, the two-up document has 152 word edges more than
+1 pt off instead of 252, and the PDFs of the other 15 documents are the same
+byte for byte.
+
+The documents printed for the first change were HWP5 and HWPX ones, so a
+document whose source is an HWP 3.0 file keeps the older condition. rhwp's test
+of that condition (`hft_outline_font_contract`) passes as it is, and the PDFs
+of 12 HWP 3.0 samples of rhwp are the same byte for byte with and without this
+patch.
+
+Ten of the 28 edges that remain are on one line of page 8, after a pair of
+bold `‘` `’` of the 한양중고딕 (Hanyang Junggothic) HFT font. Giving the bold
+quotes the widths of the plain ones (225/1000 em) brings all ten within 1 pt,
+but rhwp's test `declared_hft_quote_preserves_ttf_and_unmeasured_style_boundaries`
+(`issue_7445_original_font_program_ownership`) asserts that the font's own
+width table is not used for a bold quote, so the patch leaves the bold quotes
+as they are.
+
+| Change | Before |
+|--------|--------|
+| ASCII punctuation in Hangul text is measured with the font of the character shape's Latin slot whenever that font differs from the Hangul one, as Hancom Office 2024 always prints it. Checked by printing test documents that differ only in the pair of fonts: the character before the punctuation, whether the Latin font has Hangul glyphs and whether either font is an HFT font make no difference. A document whose source is an HWP 3.0 file is left as it was | The Latin font was used only when its width table holds no Hangul. With a Latin font that has Hangul glyphs as well, the punctuation was measured with the Hangul font's widths. On the last two pages of the two-up document the words after such punctuation were 1.0 pt to 3.2 pt off (82 word edges) |
+| The dagger `†` (U+2020) of an HFT font advances a full em when no width is known for it, like the HFT symbols of `rhwp-layout5.patch` | It was measured as narrow punctuation, and the centred text of a table cell that ends in a dagger sat 1.1 pt to 1.2 pt to the right |
+| `․` and `‧` (U+2024, U+2027) that the document's font lacks advance 178/1024 em, the width of the font Hancom Office takes them from (Haansoft Batang), also when the document's font is not installed and another font is displayed in its place. Batang gains the same entry for `‧` | When the document's font was replaced, the two characters advanced a full em or 0.3 em. On Linux a word that holds a `․` was 11.99 pt off in the two footnote documents |
+
 The patches also add rhwp unit tests for these changes. They are zero-context
 diffs because the surrounding rhwp lines contain em dashes, which this
 repository's commit check refuses. The comment at the top of each file lists
