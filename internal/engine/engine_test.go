@@ -330,10 +330,12 @@ func newCacheTree(t *testing.T) *cacheTree {
 		filepath.Join(c.root, otherKey),
 		filepath.Join(c.root, "wazero-v1.12.0-amd64-linux"),
 		filepath.Join(c.root, "wazero-v0.0.0-amd64-linux"))
+	inUseKey := cacheKey(sumOf([]byte("engine still compiling")))
 	c.kept = []string{
 		write(filepath.Join(c.key, "wazero-v1.12.0-amd64-linux", "dddd"), old),
 		write(filepath.Join("busy", "wazero-v1.13.0-amd64-linux", "eeee.2.tmp"), now),
 		write(filepath.Join("wazero-v1.11.0-amd64-linux", "ffff.3.tmp"), now),
+		write(filepath.Join(inUseKey, "wazero-v1.12.0-amd64-linux", "gggg"), old),
 	}
 
 	outside := filepath.Join(base, "fonts")
@@ -349,6 +351,21 @@ func newCacheTree(t *testing.T) *cacheTree {
 	if os.Symlink(outside, link) == nil && os.Symlink(outside, inner) == nil {
 		c.outsideLinkDest = outside
 		c.gone = append(c.gone, link, inner)
+	}
+
+	fresh := now.Add(-staleTempAge + time.Minute)
+	for name, mtime := range map[string]time.Time{
+		otherKey:                     old,
+		"wazero-v1.12.0-amd64-linux": old,
+		"wazero-v0.0.0-amd64-linux":  old,
+		c.key:                        old,
+		"busy":                       old,
+		"wazero-v1.11.0-amd64-linux": old,
+		inUseKey:                     fresh,
+	} {
+		if err := os.Chtimes(filepath.Join(c.root, name), mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return c
 }
@@ -399,10 +416,43 @@ func TestCompileCachedRemovesOldCaches(t *testing.T) {
 	for _, ent := range ents {
 		names = append(names, ent.Name())
 	}
-	want := []string{"busy", c.key, "wazero-v1.11.0-amd64-linux"}
+	want := []string{"busy", c.key, "wazero-v1.11.0-amd64-linux", cacheKey(sumOf([]byte("engine still compiling")))}
 	sort.Strings(want)
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Errorf("cache root holds %v, want %v", names, want)
+	}
+}
+
+// TestCompileCachedMarksInUse compiles twice so that the second compile hits
+// the cache and writes nothing into the directory: only the in-use mark can
+// then change its modification time.
+func TestCompileCachedMarksInUse(t *testing.T) {
+	root := t.TempDir()
+	key := cacheKey(sumOf([]byte("now")))
+	dir := filepath.Join(root, key)
+	for i := 0; i < 2; i++ {
+		old := time.Now().Add(-2 * staleTempAge)
+		if i > 0 {
+			if err := os.Chtimes(dir, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+		start := time.Now()
+		e, err := compileCached(context.Background(), emptyModule, root, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.rt.Close(context.Background())
+		fi, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if age := start.Sub(fi.ModTime()); age > time.Minute {
+			t.Errorf("compile %d: cache directory modified %v before the compile, want marked in use", i+1, age)
+		}
+	}
+	if !hasCacheEntry(dir) {
+		t.Fatal("no cache entry was written")
 	}
 }
 

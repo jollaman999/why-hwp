@@ -109,9 +109,12 @@ func compileEmbedded() (*engine, error) {
 	return compileCached(context.Background(), wasm, compileCacheRoot(), cacheKey(engineSum))
 }
 
-// compileCached compiles wasm with the compilation cache root/key. Once the
-// compile has succeeded and left its entry there, the caches of other builds
-// in root are deleted. root "" compiles without a cache.
+// compileCached compiles wasm with the compilation cache root/key. It first
+// sets the modification time of root/key to now, marking the directory as in
+// use so that removeOldCaches in a process of another build leaves it alone
+// while this compile runs. Once the compile has succeeded and left its entry
+// there, the caches of other builds in root are deleted. root "" compiles
+// without a cache.
 func compileCached(ctx context.Context, wasm []byte, root, key string) (*engine, error) {
 	dir := ""
 	if root != "" {
@@ -119,7 +122,9 @@ func compileCached(ctx context.Context, wasm []byte, root, key string) (*engine,
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			dir = ""
 		} else {
-			removeStaleTemp(dir, time.Now())
+			now := time.Now()
+			os.Chtimes(dir, now, now)
+			removeStaleTemp(dir, now)
 		}
 	}
 	e, err := newEngine(ctx, wasm, dir)
@@ -242,9 +247,13 @@ func hasCacheEntry(dir string) bool {
 // removeOldCaches deletes everything in root, the compilation cache root,
 // except the directory keep: the caches of other engine builds and the
 // wazero-<version>-<arch>-<os> directories that older releases wrote straight
-// into root. Symbolic links are removed, not followed. A directory or file
-// holding a "*.tmp" file younger than staleTempAge is left alone, since
-// another process may be writing it. Errors are ignored.
+// into root. Symbolic links are removed, not followed. An entry modified
+// within staleTempAge is left alone, since a process of another build may be
+// compiling into it: compileCached marks its directory in use by setting its
+// modification time when it starts, and a compile is assumed to take less
+// than staleTempAge. A directory or file holding a "*.tmp" file younger than
+// staleTempAge is left alone too, since another process may be writing it
+// (releases before the in-use mark write only that). Errors are ignored.
 //
 // Another release may still be reading an entry deleted here: Linux and
 // macOS keep an open file readable after it is deleted, Windows may refuse
@@ -256,7 +265,7 @@ func removeOldCaches(root, keep string, now time.Time) {
 			continue
 		}
 		p := filepath.Join(root, ent.Name())
-		if ent.Type()&os.ModeSymlink == 0 && hasFreshTemp(p, now) {
+		if ent.Type()&os.ModeSymlink == 0 && (recentlyModified(ent, now) || hasFreshTemp(p, now)) {
 			continue
 		}
 		if ent.IsDir() {
@@ -265,6 +274,13 @@ func removeOldCaches(root, keep string, now time.Time) {
 			os.Remove(p)
 		}
 	}
+}
+
+// recentlyModified reports whether ent was modified not longer than
+// staleTempAge before now.
+func recentlyModified(ent fs.DirEntry, now time.Time) bool {
+	info, err := ent.Info()
+	return err == nil && now.Sub(info.ModTime()) <= staleTempAge
 }
 
 // hasFreshTemp reports whether p is, or is a directory holding, a "*.tmp"
@@ -288,8 +304,10 @@ func hasFreshTemp(p string, now time.Time) bool {
 }
 
 // staleTempAge is how old a "*.tmp" file in the compilation cache must be
-// before removeStaleTemp deletes it. Younger ones may still be written by
-// another process.
+// before removeStaleTemp deletes it, and how long ago the cache directory of
+// another build must have been marked in use before removeOldCaches deletes
+// it. Younger ones may still be written by another process; a compile is
+// assumed to take less than this.
 const staleTempAge = time.Hour
 
 // removeStaleTemp deletes "*.tmp" regular files older than staleTempAge in
