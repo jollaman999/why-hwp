@@ -33,7 +33,17 @@ func (r *Report) WritePlain(w io.Writer) error {
 		}
 		ew.printf("  changes       %s\n", line)
 		if r.PreservationChecked {
-			ew.printf("  preservation  %s\n", plural(len(r.Preserved), "violation"))
+			failed := 0
+			for _, f := range r.Preserved {
+				if f.Severity == Violation {
+					failed++
+				}
+			}
+			line := plural(failed, "violation")
+			if allowed := len(r.Preserved) - failed; allowed > 0 {
+				line += fmt.Sprintf(", %d allowed by -allow", allowed)
+			}
+			ew.printf("  preservation  %s\n", line)
 		} else {
 			ew.printf("  preservation  not checked (md or txt)\n")
 		}
@@ -92,7 +102,11 @@ func (r *Report) WritePlain(w io.Writer) error {
 		for _, f := range r.Preserved {
 			switch f.What {
 			case "memo":
-				ew.printf("%s memo at %s is gone or changed: %s\n", mark(f.Severity), f.Loc, lineEscaper.Replace(f.Orig))
+				note := ""
+				if f.Severity != Violation {
+					note = "  [allowed by -allow]"
+				}
+				ew.printf("%s memo at %s is gone or changed: %s%s\n", mark(f.Severity), f.Loc, lineEscaper.Replace(f.Orig), note)
 			case "memoEnd":
 				ew.printf("%s memo at %s lost its field end: %s\n", mark(f.Severity), f.Loc, lineEscaper.Replace(f.Orig))
 			case "table":

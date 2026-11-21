@@ -196,6 +196,82 @@ func TestMemoRemoved(t *testing.T) {
 	}
 }
 
+// A memo:LOC line allows the memo of the original at LOC to be gone; a
+// plain location line does not, and neither covers a lost field end.
+func TestAllowMemo(t *testing.T) {
+	a, err := ParseAllow(strings.NewReader("s0/p3\nmemo:s0/p7\nmemo: s1/*\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		loc         string
+		change, mem bool
+	}{
+		{"s0/p3", true, false},
+		{"s0/p7", false, true},
+		{"s1/p2", false, true},
+		{"s0/p8", false, false},
+		{"", false, false},
+	} {
+		if got := a.Match(c.loc); got != c.change {
+			t.Errorf("Match(%q) = %v", c.loc, got)
+		}
+		if got := a.MatchMemo(c.loc); got != c.mem {
+			t.Errorf("MatchMemo(%q) = %v", c.loc, got)
+		}
+	}
+	if (*AllowList)(nil).MatchMemo("s0/p7") {
+		t.Error("nil allow list allows a memo")
+	}
+	if _, err := ParseAllow(strings.NewReader("s0/p1\nmemo:  \n")); err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("empty memo pattern: err = %v", err)
+	}
+
+	memo := regexp.MustCompile(`(?s)<hp:ctrl><hp:fieldBegin [^>]*type="MEMO".*?</hp:fieldBegin></hp:ctrl>`)
+	end := regexp.MustCompile(`<hp:ctrl><hp:fieldEnd [^>]*/></hp:ctrl>`)
+	orig := mustLoad(t, sampleHWPX)
+	gone := mustLoad(t, rewriteHWPX(t, func(s string) string {
+		return end.ReplaceAllString(memo.ReplaceAllString(s, ""), "")
+	}))
+	open := mustLoad(t, rewriteHWPX(t, func(s string) string { return end.ReplaceAllString(s, "") }))
+	allow := func(s string) *AllowList {
+		a, err := ParseAllow(strings.NewReader(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+
+	r := Check(orig, gone, Options{Allow: allow("memo:s0/p7\n")})
+	want := Finding{What: "memo", Loc: "s0/p7", Orig: "가짜 메모: 표현을 다듬을 것", Severity: Info}
+	if len(r.Preserved) != 1 || r.Preserved[0] != want || r.Violations != 0 {
+		t.Fatalf("memo:s0/p7: violations %d, preservation = %+v", r.Violations, r.Preserved)
+	}
+	out := plain(t, r)
+	for _, s := range []string{
+		"PASS: 0 violations",
+		"  preservation  0 violations, 1 allowed by -allow\n",
+		"  memo at s0/p7 is gone or changed: 가짜 메모: 표현을 다듬을 것  [allowed by -allow]\n",
+	} {
+		if !strings.Contains(out, s) {
+			t.Errorf("plain lacks %q:\n%s", s, out)
+		}
+	}
+
+	for name, a := range map[string]*AllowList{
+		"location line": allow("s0/p7\n"),
+		"other memo":    allow("memo:s0/p6\n"),
+	} {
+		if r := Check(orig, gone, Options{Allow: a}); r.Violations != 1 || r.Preserved[0].Severity != Violation {
+			t.Errorf("%s: violations %d, preservation = %+v", name, r.Violations, r.Preserved)
+		}
+	}
+	r = Check(orig, open, Options{Allow: allow("memo:s0/p7\n")})
+	if len(r.Preserved) != 1 || r.Preserved[0].What != "memoEnd" || r.Violations != 1 {
+		t.Errorf("field end lost under memo:s0/p7: violations %d, preservation = %+v", r.Violations, r.Preserved)
+	}
+}
+
 func TestMemoEndLost(t *testing.T) {
 	end := regexp.MustCompile(`<hp:ctrl><hp:fieldEnd [^>]*/></hp:ctrl>`)
 	edited := rewriteHWPX(t, func(s string) string { return end.ReplaceAllString(s, "") })

@@ -28,19 +28,32 @@ const (
 // AllowList is the set of locations a writer may change. A pattern that
 // ends in "*" matches every location starting with the part before it; any
 // other pattern matches one location exactly, and a pattern that names a
-// table cell also matches the paragraphs of that cell (cell/pN).
+// table cell also matches the paragraphs of that cell (cell/pN). Memo
+// patterns, written "memo:" and a pattern, name the locations of original
+// memos that may be gone.
 type AllowList struct {
 	patterns []string
+	memos    []string
 }
+
+// memoPrefix starts an allow-list line that allows memos to be gone.
+const memoPrefix = "memo:"
 
 // ParseAllow reads one pattern per line. Blank lines and lines starting
 // with "#" are skipped.
 func ParseAllow(r io.Reader) (*AllowList, error) {
 	a := &AllowList{patterns: []string{}}
 	sc := bufio.NewScanner(r)
-	for sc.Scan() {
+	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(strings.TrimPrefix(sc.Text(), utf8BOM))
 		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, memoPrefix); ok {
+			if rest = strings.TrimSpace(rest); rest == "" {
+				return nil, fmt.Errorf("line %d: %q names no memo location", n, line)
+			}
+			a.memos = append(a.memos, rest)
 			continue
 		}
 		a.patterns = append(a.patterns, line)
@@ -48,12 +61,22 @@ func ParseAllow(r io.Reader) (*AllowList, error) {
 	return a, sc.Err()
 }
 
-// Match reports whether loc is allowed.
+// Match reports whether loc is allowed to change.
 func (a *AllowList) Match(loc string) bool {
+	return matchPatterns(a.patterns, loc)
+}
+
+// MatchMemo reports whether the memo of the original at loc is allowed to
+// be gone.
+func (a *AllowList) MatchMemo(loc string) bool {
+	return a != nil && matchPatterns(a.memos, loc)
+}
+
+func matchPatterns(patterns []string, loc string) bool {
 	if loc == "" {
 		return false
 	}
-	for _, p := range a.patterns {
+	for _, p := range patterns {
 		if prefix, ok := strings.CutSuffix(p, "*"); ok {
 			if strings.HasPrefix(loc, prefix) {
 				return true
@@ -206,7 +229,7 @@ func Check(orig, cur *model.Document, opt Options) *Report {
 			r.Notes = append(r.Notes, "the documents differ too much to align every block; the differing middle part was paired by position")
 		}
 		r.changes(orig, cur, pairs, opt.Allow, unchanged)
-		r.preservation(orig, cur, pairs)
+		r.preservation(orig, cur, pairs, opt.Allow)
 		r.numbers(orig, cur)
 		r.trackNotes(orig, cur)
 	} else {
@@ -284,8 +307,9 @@ func (r *Report) changes(orig, cur *model.Document, pairs []pair, allow *AllowLi
 func isTextFormat(f string) bool { return f == "md" || f == "txt" }
 
 // preservation checks that memos, tables, pictures and tracked changes of
-// the original are still there.
-func (r *Report) preservation(orig, cur *model.Document, pairs []pair) {
+// the original are still there. A memo gone from a location allow lists as
+// a memo location is reported as info.
+func (r *Report) preservation(orig, cur *model.Document, pairs []pair, allow *AllowList) {
 	if isTextFormat(orig.Format) || isTextFormat(cur.Format) {
 		r.Notes = append(r.Notes, "md and txt files carry no memos, tables, pictures or tracked changes; preservation checks skipped")
 		return
@@ -314,7 +338,11 @@ func (r *Report) preservation(orig, cur *model.Document, pairs []pair) {
 			left[m.Text]--
 			continue
 		}
-		add("memo", m.Loc, m.Text, "", Violation)
+		sev := Violation
+		if allow.MatchMemo(m.Loc) {
+			sev = Info
+		}
+		add("memo", m.Loc, m.Text, "", sev)
 	}
 	r.memoEnds(osum.Memos, nsum.Memos)
 
