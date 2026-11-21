@@ -1,0 +1,97 @@
+# rhwp memo field end for why-hwp: pair an HWPX fieldEnd with its fieldBegin by beginIDRef.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch to rhwp-ztrackchange4.patch; apply this after
+# rhwp-ztrackchange4.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - The HWPX paragraph parser closed a fieldEnd on the last open fieldBegin of
+#   the paragraph. When two memos start at the same place and only the first
+#   one ends in the paragraph (an HWPX that Hancom Office 2024 writes for rhwp
+#   sample issue5169: begin memo 1, begin memo 3, fieldEnd beginIDRef = memo 1),
+#   the end went to memo 3. An HWP save then wrote the memo end marker for
+#   memo 3 (sixth code unit 3) where Hancom Office writes 1, and Hancom Office
+#   read the saved file with the memo end on memo 3. The parser now closes the
+#   open fieldBegin whose id equals beginIDRef and keeps the last-open rule
+#   for beginIDRef 0 or an id that is not open in the paragraph.
+diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
+--- a/src/parser/hwpx/section.rs
++++ b/src/parser/hwpx/section.rs
+@@ -1090 +1090,12 @@
+-                if let Some((start_char_idx, begin_control_idx)) = field_stack.pop() {
++                let begin_pos = field_stack.iter().rposition(|&(_, idx)| {
++                    begin_id_ref != 0
++                        && matches!(
++                            para.controls.get(idx),
++                            Some(Control::Field(f)) if f.field_id == begin_id_ref
++                        )
++                });
++                let begin = match begin_pos {
++                    Some(pos) => Some(field_stack.remove(pos)),
++                    None => field_stack.pop(),
++                };
++                if let Some((start_char_idx, begin_control_idx)) = begin {
+@@ -9563,0 +9575,64 @@
++    #[test]
++    fn test_parse_field_end_pairs_with_begin_id_ref_not_last_begin() {
++        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
++<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
++        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
++  <hp:p paraPrIDRef="0" styleIDRef="0">
++    <hp:run charPrIDRef="0">
++      <hp:ctrl>
++        <hp:fieldBegin type="MEMO" id="1421961891" fieldid="623209829"/>
++      </hp:ctrl>
++      <hp:ctrl>
++        <hp:fieldBegin type="MEMO" id="1421961892" fieldid="623209829"/>
++      </hp:ctrl>
++      <hp:t>ABC</hp:t>
++      <hp:ctrl>
++        <hp:fieldEnd beginIDRef="1421961891" fieldid="623209829"/>
++      </hp:ctrl>
++      <hp:t>D</hp:t>
++    </hp:run>
++  </hp:p>
++</hs:sec>"#;
++
++        let section = parse_hwpx_section(xml).unwrap();
++        let para = &section.paragraphs[0];
++
++        assert_eq!(para.text, "ABCD");
++        assert_eq!(para.controls.len(), 2);
++        assert_eq!(para.field_ranges.len(), 1);
++        let range = &para.field_ranges[0];
++        assert_eq!(range.control_idx, 0);
++        assert_eq!(range.start_char_idx, 0);
++        assert_eq!(range.end_char_idx, 3);
++        assert_eq!(range.inner_slot_count, 1);
++        assert!(para.orphan_field_ends.is_empty());
++    }
++
++    #[test]
++    fn test_parse_field_end_without_begin_id_ref_closes_last_begin() {
++        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
++<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
++        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
++  <hp:p paraPrIDRef="0" styleIDRef="0">
++    <hp:run charPrIDRef="0">
++      <hp:ctrl>
++        <hp:fieldBegin type="MEMO" id="1421961891" fieldid="623209829"/>
++      </hp:ctrl>
++      <hp:ctrl>
++        <hp:fieldBegin type="MEMO" id="1421961892" fieldid="623209829"/>
++      </hp:ctrl>
++      <hp:t>ABC</hp:t>
++      <hp:ctrl>
++        <hp:fieldEnd fieldid="623209829"/>
++      </hp:ctrl>
++    </hp:run>
++  </hp:p>
++</hs:sec>"#;
++
++        let section = parse_hwpx_section(xml).unwrap();
++        let para = &section.paragraphs[0];
++
++        assert_eq!(para.field_ranges.len(), 1);
++        assert_eq!(para.field_ranges[0].control_idx, 1);
++    }
++

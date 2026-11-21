@@ -304,7 +304,7 @@ was edited after loading and its hidden tracked changes cannot be written".
 deleted text not joined to the text around it, and HWP to HWPX to HWP keeps the
 229 and 30.
 
-`patches/rhwp-ztrackchange4.patch`, applied last, writes the memo shape a section uses
+`patches/rhwp-ztrackchange4.patch` writes the memo shape a section uses
 (`secPr/@memoShapeIDRef`) into the HWP section definition, at byte 30 of the
 record, where `rhwp-trackchange2.patch` reads it. It was written as 0. The HWP
 made from the 4-change HWPX and from the HWPX Hancom Office saves from the
@@ -313,6 +313,15 @@ memo shapes that no section uses and numbers the rest from 1; the patch keeps
 them all, so a section that uses the second of two shapes refers to 2 where
 Hancom Office refers to 1 for the same shape. Of the 18 documents only the HWP
 made from oss-result.hwpx changes.
+
+`patches/rhwp-ztrackchange5.patch`, applied last, pairs an HWPX `fieldEnd`
+with the open `fieldBegin` whose id is its `beginIDRef`. It closed the last
+open one, so in the HWPX Hancom Office saves from the 229-change sample, where
+memo 1 and memo 3 begin in the same paragraph and memo 1 ends there, the end
+went to memo 3 in the HWP and the HWPX written from it. Hancom Office now reads
+the end as memo 1's, as in the HWP it writes itself. Of the 18 documents no
+output changes, and neither does any HWP or HWPX written from rhwp's 783
+public HWPX samples.
 
 Of the 18 documents the layout patches were measured with, the PDF, TXT and
 HWP outputs are the same byte for byte before and after the three patches. The
