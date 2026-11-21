@@ -134,6 +134,77 @@ func TestHostFontMounts(t *testing.T) {
 	}
 }
 
+// symlink makes link point to target, skipping the test where links cannot
+// be made (Windows without the privilege).
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot make symbolic links: %v", err)
+	}
+}
+
+func writeFiles(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, p := range paths {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestWithLinkTargets(t *testing.T) {
+	root := realDir(t.TempDir())
+	j := func(elem ...string) string { return filepath.Join(append([]string{root}, elem...)...) }
+	r1, r2 := j("r1"), j("r2")
+	writeFiles(t,
+		j("r1", "sub", "l.ttf"),
+		j("r2", "r.ttf"),
+		j("o1", "a.ttf"),
+		j("o2", "fonts.dir"),
+		j("o3", "c.ttf"),
+		j("o4", "e.otf"),
+		j("o5", "Identity-H"),
+		j("o6", "k.ttf"),
+		j("o6", "sub", "s.ttf"),
+	)
+	symlink(t, filepath.Join("..", "o1", "a.ttf"), j("r1", "a-file.ttf"))
+	symlink(t, j("o1", "a.ttf"), j("r1", "b-again.ttf"))
+	symlink(t, j("o2", "fonts.dir"), j("r1", "c-nonfont"))
+	symlink(t, j("o3"), j("r1", "d-dir"))
+	symlink(t, j("o4", "e.otf"), j("o3", "e.otf"))
+	symlink(t, r1, j("o3", "back"))
+	symlink(t, ".", j("o3", "self"))
+	symlink(t, j("o5"), j("r1", "e-empty"))
+	symlink(t, j("r2", "r.ttf"), j("r1", "f-in-r2.ttf"))
+	symlink(t, j("missing.ttf"), j("r1", "g-broken.ttf"))
+	symlink(t, "h-loop2", j("r1", "h-loop1"))
+	symlink(t, "h-loop1", j("r1", "h-loop2"))
+	symlink(t, filepath.Join("sub", "l.ttf"), j("r1", "i-local.ttf"))
+	symlink(t, j("o6", "sub"), j("r1", "j-sub"))
+	symlink(t, j("o6", "k.ttf"), j("r1", "k.ttf"))
+
+	got := withLinkTargets([]string{r1, r2})
+	want := []string{r1, j("o1"), j("o3"), j("o4"), j("o6"), r2}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("withLinkTargets:\n got %q\nwant %q", got, want)
+	}
+
+	if got := withLinkTargets([]string{r2}); !reflect.DeepEqual(got, []string{r2}) {
+		t.Errorf("withLinkTargets without links = %q, want %q", got, []string{r2})
+	}
+
+	linked := j("linked-root")
+	symlink(t, r1, linked)
+	got = withLinkTargets([]string{linked})
+	want = []string{linked, j("o1"), j("o3"), j("o4"), r2, j("o6")}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("withLinkTargets on a linked folder:\n got %q\nwant %q", got, want)
+	}
+}
+
 // withFace copies sample.hwpx with every font face renamed to face.
 func withFace(t *testing.T, face, dst string) {
 	t.Helper()
@@ -219,5 +290,14 @@ func TestConvertUsesHostFont(t *testing.T) {
 	}
 	if convert("") {
 		t.Errorf("PDF made without %s names %s", EnvFontDirs, name)
+	}
+
+	linked := filepath.Join(dir, "linked")
+	if err := os.Mkdir(linked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlink(t, filepath.Join(fonts, "sans-subset.ttf"), filepath.Join(linked, "sans-subset.ttf"))
+	if !convert(linked) {
+		t.Errorf("PDF made with %s=%s (a link to a font outside it) does not name %s", EnvFontDirs, linked, name)
 	}
 }
