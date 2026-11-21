@@ -20,7 +20,7 @@ func init() {
 var lineEscaper = strings.NewReplacer("\r", `\r`, "\n", `\n`, "\t", `\t`)
 
 func runText(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("text", flag.ContinueOnError)
+	fs := newFlagSet("text", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	format := fs.String("format", "plain", "output format: plain or json")
 	view := viewFlag(fs)

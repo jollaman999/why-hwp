@@ -18,7 +18,7 @@ func init() {
 }
 
 func runSVG2PNG(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("svg2png", flag.ContinueOnError)
+	fs := newFlagSet("svg2png", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	widthMM := fs.Float64("width-mm", 0, "output width in millimetres (height follows the SVG aspect ratio)")
 	widthPx := fs.Int("width-px", 0, "output width in pixels (height follows the SVG aspect ratio)")

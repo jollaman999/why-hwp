@@ -14,7 +14,7 @@ func init() {
 }
 
 func runInfo(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("info", flag.ContinueOnError)
+	fs := newFlagSet("info", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	format := fs.String("format", "plain", "output format: plain or json")
 	view := viewFlag(fs)

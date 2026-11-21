@@ -21,7 +21,7 @@ func init() {
 }
 
 func runRender(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("render", flag.ContinueOnError)
+	fs := newFlagSet("render", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	pagesFlag := fs.String("pages", "", "pages to render, such as 1-3 or 1,4,7-9 (default: every page)")
 	dpi := fs.Int("dpi", 150, "resolution in dots per inch")

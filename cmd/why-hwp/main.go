@@ -2,10 +2,12 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -23,6 +25,10 @@ type command struct {
 // commands is filled by the cmd_*.go files in this package, one file per
 // subcommand, so subcommands can be added without touching this file.
 var commands = map[string]command{}
+
+// newFlagSet creates the FlagSet of a command. Tests replace it to see the
+// flags each command defines.
+var newFlagSet = flag.NewFlagSet
 
 func register(name, summary string, run func(args []string, stdout, stderr io.Writer) int) {
 	if _, dup := commands[name]; dup {
@@ -54,27 +60,77 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := args[1:]
 	if runtime.GOOS == "windows" {
-		rest = msysPathArgs(rest)
+		rest = msysPathArgs(name, rest)
 	}
 	return cmd.run(rest, stdout, stderr)
 }
 
+// argFlags lists a command's flags by how msysPathArgs treats them.
+type argFlags struct {
+	paths []string // flags whose value is a file or folder path
+	bools []string // flags that take no value
+}
+
+// commandArgFlags holds argFlags for every command. Every command takes
+// only file paths as positional arguments. main_test.go checks this table
+// against the flags the commands define.
+var commandArgFlags = map[string]argFlags{
+	"apply":    {paths: []string{"spec", "o"}, bools: []string{"no-track", "force"}},
+	"convert":  {paths: []string{"o"}, bools: []string{"force"}},
+	"info":     {},
+	"render":   {paths: []string{"o"}, bools: []string{"force"}},
+	"svg2png":  {paths: []string{"o"}, bools: []string{"trim"}},
+	"svgcheck": {paths: []string{"regular", "bold"}},
+	"svgfont":  {paths: []string{"regular", "bold", "o"}, bools: []string{"w"}},
+	"text":     {},
+	"verify":   {paths: []string{"orig", "allow", "banned"}, bools: []string{"ignore-case"}},
+	"version":  {},
+}
+
 // msysPathArgs rewrites MSYS drive paths such as /c/dir/file.hwp to
-// C:\dir\file.hwp, both as bare arguments and as -flag=value values.
+// C:\dir\file.hwp in the arguments of command name that hold paths: the
+// positional arguments and the values of its path flags, given as
+// -flag value or -flag=value. Other flag values are kept as they are.
 // Git Bash normally does this before it starts a native program, but it
 // leaves an argument untouched when it contains glob characters like '['.
-func msysPathArgs(args []string) []string {
-	out := make([]string, len(args))
-	for i, a := range args {
-		if strings.HasPrefix(a, "-") {
-			if eq := strings.IndexByte(a, '='); eq > 0 {
-				out[i] = a[:eq+1] + msysPath(a[eq+1:])
-				continue
-			}
+// Arguments are walked the way the flag package parses them.
+func msysPathArgs(name string, args []string) []string {
+	af := commandArgFlags[name]
+	out := slices.Clone(args)
+	for i := 0; i < len(out); i++ {
+		a := out[i]
+		if a == "--" {
+			msysPaths(out[i+1:])
+			break
 		}
-		out[i] = msysPath(a)
+		if len(a) < 2 || a[0] != '-' {
+			msysPaths(out[i:])
+			break
+		}
+		flagName := strings.TrimPrefix(a[1:], "-")
+		if eq := strings.IndexByte(flagName, '='); eq >= 0 {
+			if slices.Contains(af.paths, flagName[:eq]) {
+				at := strings.IndexByte(a, '=')
+				out[i] = a[:at+1] + msysPath(a[at+1:])
+			}
+			continue
+		}
+		if slices.Contains(af.bools, flagName) || i+1 == len(out) {
+			continue
+		}
+		i++
+		if slices.Contains(af.paths, flagName) {
+			out[i] = msysPath(out[i])
+		}
 	}
 	return out
+}
+
+// msysPaths applies msysPath to every element of args in place.
+func msysPaths(args []string) {
+	for i, a := range args {
+		args[i] = msysPath(a)
+	}
 }
 
 // msysPath returns s in Windows form when it starts with /X/ or is exactly

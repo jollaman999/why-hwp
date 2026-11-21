@@ -11,7 +11,7 @@ func init() {
 }
 
 func runVersion(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs := newFlagSet("version", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {

@@ -23,7 +23,7 @@ func init() {
 }
 
 func runConvert(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("convert", flag.ContinueOnError)
+	fs := newFlagSet("convert", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	to := fs.String("to", "", "output format: hwp, hwpx, pdf or txt (default: from the -o extension)")
 	out := fs.String("o", "", "output path (default: input path with the -to extension)")

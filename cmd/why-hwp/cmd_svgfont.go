@@ -28,7 +28,7 @@ func fontFinder(log io.Writer) svgtool.FontFinder {
 }
 
 func runSVGFont(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("svgfont", flag.ContinueOnError)
+	fs := newFlagSet("svgfont", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	regular := fs.String("regular", "", "regular TrueType font (default: $"+svgtool.EnvFontRegular+", then the OS font folders, the why-hwp font cache and a NanumGothic download)")
 	bold := fs.String("bold", "", "bold TrueType font (default: $"+svgtool.EnvFontBold+", then the OS font folders, the why-hwp font cache and a NanumGothic download)")

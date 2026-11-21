@@ -17,7 +17,7 @@ func init() {
 }
 
 func runVerify(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
+	fs := newFlagSet("verify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	format := fs.String("format", "plain", "output format: plain or json")
 	origName := fs.String("orig", "", "original document to compare against")

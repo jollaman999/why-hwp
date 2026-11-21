@@ -22,7 +22,7 @@ func init() {
 }
 
 func runApply(args []string, stdout, stderr io.Writer) int {
-	fset := flag.NewFlagSet("apply", flag.ContinueOnError)
+	fset := newFlagSet("apply", flag.ContinueOnError)
 	fset.SetOutput(stderr)
 	specPath := fset.String("spec", "", "JSON edit spec (required)")
 	out := fset.String("o", "", "output .hwpx path (required)")
