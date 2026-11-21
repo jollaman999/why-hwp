@@ -39,7 +39,7 @@ func runText(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Tracked changes follow -view: accepted keeps inserted text and leaves")
 		fmt.Fprintln(stderr, "out deleted text, original does the reverse, markup shows both as")
 		fmt.Fprintln(stderr, "[+inserted+] and [-deleted-]. Locations are the same in every view; a")
-		fmt.Fprintln(stderr, "paragraph the view does not have has no line. .hwp files have no views.")
+		fmt.Fprintln(stderr, "paragraph the view does not have has no line. .hwp files have views too.")
 		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
 	}

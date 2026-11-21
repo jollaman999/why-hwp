@@ -61,12 +61,20 @@ const (
 	tagTrackChange  = tagBegin + 80
 	tagParaHeader   = tagBegin + 50
 	tagParaText     = tagBegin + 51
+	tagParaRangeTag = tagBegin + 54
 	tagCtrlHeader   = tagBegin + 55
 	tagListHeader   = tagBegin + 56
 	tagShapeComp    = tagBegin + 60
 	tagTable        = tagBegin + 61
 	tagShapePicture = tagBegin + 69
 	tagMemoList     = tagBegin + 77
+)
+
+// Range tag kinds of tracked insertions and deletions (DocInfo
+// TRACK_CHANGE kinds; not in the 1.3 specification).
+const (
+	rangeInsert = 0x10
+	rangeDelete = 0x11
 )
 
 // idMapTrackChange is the index of the track-change count in
@@ -161,7 +169,7 @@ func Parse(ra io.ReaderAt) (*model.Document, error) {
 	sum.Sections = len(sections)
 	w := &walker{doc: doc}
 	for i, name := range sections {
-		data, err := stream(streams, name, compressed)
+		data, err := sectionStream(streams, name, compressed)
 		if err != nil {
 			return nil, err
 		}
@@ -197,6 +205,22 @@ func stream(streams map[string][]byte, name string, compressed bool) ([]byte, er
 		return nil, fmt.Errorf("%s: inflate: %w", name, err)
 	}
 	return out, nil
+}
+
+// sectionStream returns the records of the BodyText section name. A
+// document with tracked changes also keeps each section, change history
+// included, in ViewText/SectionN, while BodyText has it as shown. HWPX
+// has the history, so the ViewText copy is read when it holds paragraph
+// records. rhwp, which converts HWP to HWPX, reads it the same way.
+func sectionStream(streams map[string][]byte, name string, compressed bool) ([]byte, error) {
+	view := "ViewText/" + strings.TrimPrefix(name, "BodyText/")
+	if _, ok := streams[view]; ok {
+		if b, err := stream(streams, view, compressed); err == nil && len(b) >= 4 &&
+			int(binary.LittleEndian.Uint32(b)&0x3ff) == tagParaHeader {
+			return b, nil
+		}
+	}
+	return stream(streams, name, compressed)
 }
 
 // sectionNames lists BodyText/SectionN streams in section order.
@@ -475,16 +499,18 @@ type walker struct {
 	doc         *model.Document
 	memoAnchors []memoAnchor
 	memoBodies  []memoBody
+	outer       model.Change // change of the object whose paragraphs are being read
 }
 
 type memoAnchor struct {
-	idx int // index in Summary.Memos
-	num int // memo number from the field record, -1 if absent
+	idx    int          // index in Summary.Memos
+	num    int          // memo number from the field record, -1 if absent
+	change model.Change // change of the field
 }
 
 type memoBody struct {
-	num  int
-	text string
+	num   int
+	paras []*node
 }
 
 // block adds the block of one paragraph at loc. The cell blocks of its
@@ -493,10 +519,19 @@ type memoBody struct {
 func (w *walker) block(n *node, loc, inner string, kind model.Kind) {
 	bi := len(w.doc.Blocks)
 	w.doc.Blocks = append(w.doc.Blocks, model.Block{Loc: loc, Kind: kind})
-	text, box := w.para(n, inner)
-	w.doc.Blocks[bi].Text = text
-	if box != "" {
-		w.doc.Blocks = append(w.doc.Blocks, model.Block{Loc: loc + model.BoxSuffix, Kind: model.KindBox, Text: box})
+	pr := w.para(n, inner)
+	b := &w.doc.Blocks[bi]
+	b.Text = pr.spans.Text(model.ViewAccepted)
+	if pr.spans.Changed() {
+		b.Spans = pr.spans
+	}
+	b.Break, b.Whole = pr.brk, pr.whole
+	if pr.box.Len() > 0 {
+		box := model.Block{Loc: loc + model.BoxSuffix, Kind: model.KindBox, Text: pr.box.Text(model.ViewAccepted)}
+		if pr.box.Changed() {
+			box.Spans = pr.box
+		}
+		w.doc.Blocks = append(w.doc.Blocks, box)
 	}
 }
 
@@ -533,19 +568,19 @@ func (w *walker) memoList(nodes []*node, i int) int {
 	if d := nodes[i].data; len(d) >= 4 {
 		num = int(binary.LittleEndian.Uint32(d))
 	}
-	var lines []string
+	var paras []*node
 	j := i + 1
 	for ; j < len(nodes); j++ {
 		switch nodes[j].tag {
 		case tagListHeader:
 			continue
 		case tagParaHeader:
-			lines = append(lines, plainText(nodes[j]))
+			paras = append(paras, nodes[j])
 			continue
 		}
 		break
 	}
-	w.memoBodies = append(w.memoBodies, memoBody{num: num, text: strings.Join(lines, "\n")})
+	w.memoBodies = append(w.memoBodies, memoBody{num: num, paras: paras})
 	return j - 1
 }
 
@@ -554,25 +589,31 @@ func (w *walker) memoList(nodes []*node, i int) int {
 func (w *walker) pairMemos() {
 	memos := w.doc.Summary.Memos
 	used := make([]bool, len(w.memoBodies))
-	for _, a := range w.memoAnchors {
+	paired := make([]bool, len(w.memoAnchors))
+	pair := func(i int, a memoAnchor, b memoBody) {
+		sp := joinLines(b.paras, a.change)
+		memos[a.idx].Text = sp.Text(model.ViewAccepted)
+		paired[i] = sp.Len() > 0
+	}
+	for i, a := range w.memoAnchors {
 		for j, b := range w.memoBodies {
 			if !used[j] && a.num >= 0 && b.num == a.num {
-				memos[a.idx].Text = b.text
+				pair(i, a, b)
 				used[j] = true
 				break
 			}
 		}
 	}
 	next := 0
-	for _, a := range w.memoAnchors {
-		if memos[a.idx].Text != "" {
+	for i, a := range w.memoAnchors {
+		if paired[i] {
 			continue
 		}
 		for next < len(used) && used[next] {
 			next++
 		}
 		if next < len(used) {
-			memos[a.idx].Text = w.memoBodies[next].text
+			pair(i, a, w.memoBodies[next])
 			used[next] = true
 		}
 	}
@@ -592,20 +633,85 @@ func paraText(n *node) []uint16 {
 	return nil
 }
 
-// plainText is the text of one paragraph without its controls.
-func plainText(n *node) string {
+// trackRange is one tracked insertion or deletion of a paragraph: the
+// UTF-16 positions start..end of its PARA_TEXT.
+type trackRange struct {
+	start, end uint32
+	change     model.Change
+}
+
+// changes are the tracked insertions and deletions of one paragraph.
+type changes struct {
+	ranges []trackRange
+	brk    model.Change // change that takes the paragraph break
+	outer  model.Change // change of the object the paragraph is in
+}
+
+// paraChanges reads the insertion (kind 0x10) and deletion (kind 0x11)
+// range tags of a PARA_HEADER node. A range tag (4.3.5) is start, end and
+// a tag whose top byte is the kind. The break is taken the way the HWPX
+// export of the same document marks it, so that a paragraph has the same
+// changes read from either file: only when the range is the paragraph's
+// one change range and ends at its character count, which counts the
+// paragraph end character.
+func paraChanges(n *node) changes {
+	var cs changes
+	for _, k := range n.kids {
+		if k.tag != tagParaRangeTag {
+			continue
+		}
+		for d := k.data; len(d) >= 12; d = d[12:] {
+			start := binary.LittleEndian.Uint32(d)
+			end := binary.LittleEndian.Uint32(d[4:])
+			var c model.Change
+			switch binary.LittleEndian.Uint32(d[8:]) >> 24 {
+			case rangeInsert:
+				c = model.Inserted
+			case rangeDelete:
+				c = model.Deleted
+			default:
+				continue
+			}
+			if start <= end {
+				cs.ranges = append(cs.ranges, trackRange{start, end, c})
+			}
+		}
+	}
+	if len(cs.ranges) == 1 && len(n.data) >= 4 && cs.ranges[0].end == binary.LittleEndian.Uint32(n.data)&0x7fffffff {
+		cs.brk = cs.ranges[0].change
+	}
+	return cs
+}
+
+// at returns the change of the code unit at position i.
+func (cs changes) at(i int) model.Change {
+	c := cs.outer
+	for _, r := range cs.ranges {
+		if uint32(i) >= r.start && uint32(i) < r.end {
+			c |= r.change
+		}
+	}
+	return c
+}
+
+// plainText is the text of one paragraph without its controls, and the
+// change that takes its break. outer is the change of the object the
+// paragraph is in, which covers all of it.
+func plainText(n *node, outer model.Change) (model.Spans, model.Change) {
+	cs := paraChanges(n)
+	cs.outer = outer
 	var t textBuilder
 	u := paraText(n)
 	for i := 0; i < len(u); {
 		c := u[i]
 		if c >= 32 {
-			t.unit(c)
+			t.unit(c, cs.at(i))
 			i++
 			continue
 		}
 		if ctrlClass(c) != ctrlChar {
 			if c == 9 {
-				t.str("\t")
+				t.str("\t", cs.at(i))
 			}
 			i += 8
 			continue
@@ -613,71 +719,129 @@ func plainText(n *node) string {
 		if c == 13 {
 			break
 		}
-		t.char(c)
+		t.char(c, cs.at(i))
 		i++
 	}
-	return t.String()
+	return t.spans(), cs.brk | outer
 }
 
-// textBuilder collects UTF-16 code units and strings in order.
+// joinLines joins the text of a paragraph list in an object with change
+// outer, one line per paragraph. The line break after a paragraph has the
+// change that takes its break.
+func joinLines(paras []*node, outer model.Change) model.Spans {
+	var out model.Spans
+	var brk model.Change
+	for i, p := range paras {
+		if i > 0 {
+			out.Add("\n", brk)
+		}
+		var line model.Spans
+		line, brk = plainText(p, outer)
+		out.Append(line)
+	}
+	return out
+}
+
+// textBuilder collects UTF-16 code units and strings in order, split by
+// change, and keeps the change that covers all of them.
 type textBuilder struct {
-	sb  strings.Builder
-	run []uint16
+	sp    model.Spans
+	run   []uint16
+	runC  model.Change
+	cover model.Change
+	any   bool
 }
 
-func (t *textBuilder) unit(c uint16) { t.run = append(t.run, c) }
+func (t *textBuilder) unit(c uint16, ch model.Change) {
+	if len(t.run) > 0 && t.runC != ch {
+		t.flush()
+	}
+	t.run = append(t.run, c)
+	t.runC = ch
+	t.content(ch)
+}
 
 func (t *textBuilder) flush() {
 	if len(t.run) > 0 {
-		t.sb.WriteString(string(utf16.Decode(t.run)))
+		t.sp.Add(string(utf16.Decode(t.run)), t.runC)
 		t.run = t.run[:0]
 	}
 }
 
-func (t *textBuilder) str(s string) {
+func (t *textBuilder) str(s string, ch model.Change) {
 	t.flush()
-	t.sb.WriteString(s)
+	t.sp.Add(s, ch)
+	t.content(ch)
+}
+
+// content notes a piece of paragraph content with change ch.
+func (t *textBuilder) content(ch model.Change) {
+	if !t.any {
+		t.cover, t.any = ch, true
+		return
+	}
+	t.cover &= ch
+}
+
+// covered returns the change that covers all content, or every change
+// when there is none.
+func (t *textBuilder) covered() model.Change {
+	if !t.any {
+		return model.Inserted | model.Deleted
+	}
+	return t.cover
 }
 
 // char writes a char-class control: line break, hyphen and the two kinds
 // of fixed space; others write nothing.
-func (t *textBuilder) char(c uint16) {
+func (t *textBuilder) char(c uint16, ch model.Change) {
 	switch c {
 	case 10:
-		t.str("\n")
+		t.str("\n", ch)
 	case 24:
-		t.str("-")
+		t.str("-", ch)
 	case 30, 31:
-		t.str(" ")
+		t.str(" ", ch)
 	}
 }
 
-func (t *textBuilder) Len() int { return t.sb.Len() + len(t.run) }
-
-func (t *textBuilder) String() string {
+func (t *textBuilder) spans() model.Spans {
 	t.flush()
-	return t.sb.String()
+	return t.sp
+}
+
+// paraResult is the text of one paragraph.
+type paraResult struct {
+	spans model.Spans
+	box   model.Spans  // text of the text boxes anchored in it, one line per paragraph
+	brk   model.Change // change that takes the paragraph break
+	whole model.Change // change that covers the whole paragraph, break included
 }
 
 // para returns the text of one paragraph and, apart from it, the text of
 // the text boxes anchored in it, one line per text-box paragraph. Tables
 // in it are added to the document as cell blocks under loc/tN, pictures
 // and memo anchors to the summary.
-func (w *walker) para(n *node, loc string) (text, box string) {
+func (w *walker) para(n *node, loc string) paraResult {
 	var ctrls []*node
 	for _, k := range n.kids {
 		if k.tag == tagCtrlHeader {
 			ctrls = append(ctrls, k)
 		}
 	}
+	cs := paraChanges(n)
+	cs.outer = w.outer
+	if len(cs.ranges) > 0 {
+		w.doc.Tracked = true
+	}
 	var t textBuilder
-	var boxes []string
+	var box model.Spans
 	u := paraText(n)
 	tables, ci := 0, 0
 	for i := 0; i < len(u); {
 		c := u[i]
 		if c >= 32 {
-			t.unit(c)
+			t.unit(c, cs.at(i))
 			i++
 			continue
 		}
@@ -688,12 +852,12 @@ func (w *walker) para(n *node, loc string) (text, box string) {
 				continue
 			}
 			if c == 10 || c == 24 || c == 30 || c == 31 {
-				t.char(c)
+				t.char(c, cs.at(i))
 			}
 			i++
 		case ctrlInline:
 			if c == 9 {
-				t.str("\t")
+				t.str("\t", cs.at(i))
 			}
 			i += 8
 		case ctrlExtended:
@@ -706,19 +870,29 @@ func (w *walker) para(n *node, loc string) (text, box string) {
 				ctrl = ctrls[ci]
 			}
 			ci++
+			ch := cs.at(i)
 			i += 8
+			if c == 11 {
+				t.content(ch)
+			}
 			if ctrl == nil {
 				continue
 			}
 			switch {
 			case c == 3 && id == fieldMemo:
-				w.memoAnchor(loc, ctrl)
+				w.memoAnchor(loc, ctrl, ch)
 			case c == 11 && ctrlHeaderID(ctrl) == ctrlTable:
+				outer := w.outer
+				w.outer = ch
 				w.table(ctrl, fmt.Sprintf("%s/t%d", loc, tables))
+				w.outer = outer
 				tables++
 			case c == 11 && ctrlHeaderID(ctrl) == ctrlShape:
-				if b := w.shape(ctrl, loc); b != "" {
-					boxes = append(boxes, b)
+				if b := w.shape(ctrl, loc, ch); b.Len() > 0 {
+					if box.Len() > 0 {
+						box.Add("\n", ch)
+					}
+					box.Append(b)
 				}
 			}
 			// Headers, footers, footnotes, endnotes, hidden comments and
@@ -726,7 +900,8 @@ func (w *walker) para(n *node, loc string) (text, box string) {
 			// of the paragraph text.
 		}
 	}
-	return t.String(), strings.Join(boxes, "\n")
+	brk := cs.brk | w.outer
+	return paraResult{spans: t.spans(), box: box, brk: brk, whole: t.covered() & brk}
 }
 
 func ctrlHeaderID(n *node) uint32 {
@@ -738,7 +913,8 @@ func ctrlHeaderID(n *node) uint32 {
 
 // memoAnchor records a memo field. Its CTRL_HEADER is a field start
 // (spec section 4.3.10 item 15, table 152); Hwp writes a memo number after the id.
-func (w *walker) memoAnchor(loc string, ctrl *node) {
+// change is the change of the field, which covers the memo text.
+func (w *walker) memoAnchor(loc string, ctrl *node, change model.Change) {
 	num := -1
 	rd := &reader{b: ctrl.data}
 	rd.take(4 + 4 + 1)
@@ -748,7 +924,7 @@ func (w *walker) memoAnchor(loc string, ctrl *node) {
 		num = int(binary.LittleEndian.Uint32(b))
 	}
 	sum := &w.doc.Summary
-	w.memoAnchors = append(w.memoAnchors, memoAnchor{idx: len(sum.Memos), num: num})
+	w.memoAnchors = append(w.memoAnchors, memoAnchor{idx: len(sum.Memos), num: num, change: change})
 	sum.Memos = append(sum.Memos, model.Memo{Loc: loc})
 }
 
@@ -807,10 +983,12 @@ func (w *walker) cell(lh *node, paras []*node, tblLoc string) {
 }
 
 // shape reads a 'gso ' control. Every picture inside it (groups
-// included) is recorded at loc, and the text of any text box is returned.
+// included) is recorded at loc, and the text of its text boxes is
+// returned, nothing when they have none. change is the change of the
+// control, which covers the text boxes.
 // A LIST_HEADER directly under the control is the caption and is skipped.
-func (w *walker) shape(ctrl *node, loc string) string {
-	var lines []string
+func (w *walker) shape(ctrl *node, loc string, change model.Change) model.Spans {
+	var paras []*node
 	var walk func(nodes []*node)
 	walk = func(nodes []*node) {
 		for i := 0; i < len(nodes); i++ {
@@ -821,7 +999,7 @@ func (w *walker) shape(ctrl *node, loc string) string {
 			case tagListHeader:
 				j := i + 1
 				for ; j < len(nodes) && nodes[j].tag == tagParaHeader; j++ {
-					lines = append(lines, plainText(nodes[j]))
+					paras = append(paras, nodes[j])
 				}
 				i = j - 1
 				continue
@@ -834,10 +1012,12 @@ func (w *walker) shape(ctrl *node, loc string) string {
 			walk([]*node{k})
 		}
 	}
-	if strings.Join(lines, "") == "" {
-		return ""
+	for _, p := range paras {
+		if sp, _ := plainText(p, change); sp.Len() > 0 {
+			return joinLines(paras, change)
+		}
 	}
-	return strings.Join(lines, "\n")
+	return nil
 }
 
 // pictureRef returns the BinItem id of HWPTAG_SHAPE_COMPONENT_PICTURE

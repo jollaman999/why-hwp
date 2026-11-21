@@ -178,14 +178,14 @@ func TestParaText(t *testing.T) {
 		{record: record{tag: tagCtrlHeader, level: 1, data: field}},
 	}}
 	w := &walker{doc: &model.Document{}}
-	if got, box := w.para(para, "s0/p0"); got != "A\tB\nC- DE\U0001F600" || box != "" {
-		t.Errorf("para = %q, box = %q", got, box)
+	if got := w.para(para, "s0/p0"); got.spans.Text(model.ViewAccepted) != "A\tB\nC- DE\U0001F600" || got.box != nil || got.spans.Changed() {
+		t.Errorf("para = %+v", got)
 	}
 	if len(w.memoAnchors) != 1 || w.memoAnchors[0].num != 7 || w.doc.Summary.Memos[0].Loc != "s0/p0" {
 		t.Errorf("memo anchors = %+v, memos = %+v", w.memoAnchors, w.doc.Summary.Memos)
 	}
-	if got := plainText(para); got != "A\tB\nC- DE\U0001F600" {
-		t.Errorf("plainText = %q", got)
+	if got, brk := plainText(para, 0); got.Text(model.ViewMarkup) != "A\tB\nC- DE\U0001F600" || brk != 0 {
+		t.Errorf("plainText = %q, %v", got.Text(model.ViewMarkup), brk)
 	}
 }
 
@@ -247,5 +247,93 @@ func TestCellParagraphsAndTextBox(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("blocks:\n got %q\nwant %q", got, want)
+	}
+}
+
+// trackedPara builds a paragraph whose header gives its character count
+// and whose range tags are kind, start, end triples.
+func trackedPara(u []uint16, tags [][3]uint32, ctrls ...*node) *node {
+	n := textPara(u, ctrls...)
+	n.data = binary.LittleEndian.AppendUint32(nil, uint32(len(u)))
+	var rt []byte
+	for _, tg := range tags {
+		rt = binary.LittleEndian.AppendUint32(rt, tg[1])
+		rt = binary.LittleEndian.AppendUint32(rt, tg[2])
+		rt = binary.LittleEndian.AppendUint32(rt, tg[0]<<24|1)
+	}
+	n.kids = append(n.kids, &node{record: record{tag: tagParaRangeTag, data: rt}})
+	return n
+}
+
+// Insertion and deletion range tags become spans. The break is taken only
+// by a paragraph's one change range that ends at its character count, as
+// the HWPX export marks it, and a table inside a change passes it on to
+// its cells.
+func TestTrackedChanges(t *testing.T) {
+	tbl := &node{record: record{tag: tagCtrlHeader, data: binary.LittleEndian.AppendUint32(nil, ctrlTable)}, kids: []*node{
+		{record: record{tag: tagTable, data: make([]byte, 8)}},
+		{record: record{tag: tagListHeader, data: make([]byte, 12)}},
+		textPara(units("cell")),
+	}}
+	anchor := append([]uint16{11, 0, 0, 0, 0, 0, 0, 11}, units("")...)
+	w := &walker{doc: &model.Document{}}
+	w.section(0, []*node{
+		trackedPara(units("ABCD"), [][3]uint32{{rangeDelete, 2, 5}, {rangeInsert, 0, 2}}),
+		trackedPara(units("EF"), [][3]uint32{{rangeDelete, 0, 3}}),
+		trackedPara(units("GH"), [][3]uint32{{rangeInsert, 2, 3}, {0x12, 0, 3}}),
+		trackedPara(anchor, [][3]uint32{{rangeDelete, 0, 9}}, tbl),
+		trackedPara(units("IJ"), nil),
+	})
+	if !w.doc.Tracked {
+		t.Error("document not marked tracked")
+	}
+	type blk struct {
+		loc, text, markup string
+		brk, whole        model.Change
+	}
+	var got []blk
+	for _, b := range w.doc.Blocks {
+		got = append(got, blk{b.Loc, b.Text, b.Spans.Text(model.ViewMarkup), b.Break, b.Whole})
+	}
+	want := []blk{
+		{"s0/p0", "AB", "[+AB+][-CD-]", 0, 0},
+		{"s0/p1", "", "[-EF-]", model.Deleted, model.Deleted},
+		{"s0/p2", "GH", "", model.Inserted, 0},
+		{"s0/p3", "", "", model.Deleted, model.Deleted},
+		{"s0/p3/t0/r0/c0", "", "[-cell-]", model.Deleted, model.Deleted},
+		{"s0/p4", "IJ", "", 0, 0},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("blocks:\n got %+v\nwant %+v", got, want)
+	}
+
+	var view []string
+	for _, b := range w.doc.InView(model.ViewAccepted).Blocks {
+		view = append(view, b.Loc+" "+b.Text)
+	}
+	if want := []string{"s0/p0 AB", "s0/p2 GH", "s0/p3/t0/r0/c0 ", "s0/p4 IJ"}; !reflect.DeepEqual(view, want) {
+		t.Errorf("accepted view = %q, want %q", view, want)
+	}
+}
+
+// A ViewText section that holds paragraph records is read instead of the
+// BodyText one; anything else there falls back to BodyText.
+func TestSectionStream(t *testing.T) {
+	body := binary.LittleEndian.AppendUint32(nil, uint32(tagParaHeader))
+	view := binary.LittleEndian.AppendUint32(nil, uint32(tagParaHeader|1<<20))
+	view = append(view, 0)
+	for _, tc := range []struct {
+		name    string
+		streams map[string][]byte
+		want    []byte
+	}{
+		{"view text", map[string][]byte{"BodyText/Section0": body, "ViewText/Section0": view}, view},
+		{"no view text", map[string][]byte{"BodyText/Section0": body}, body},
+		{"not paragraphs", map[string][]byte{"BodyText/Section0": body, "ViewText/Section0": {1, 2, 3, 4, 5}}, body},
+	} {
+		got, err := sectionStream(tc.streams, "BodyText/Section0", false)
+		if err != nil || !bytes.Equal(got, tc.want) {
+			t.Errorf("%s: got % x, %v, want % x", tc.name, got, err, tc.want)
+		}
 	}
 }

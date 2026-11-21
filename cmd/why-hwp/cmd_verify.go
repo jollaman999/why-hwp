@@ -40,7 +40,7 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "en dashes, and em dashes in blocks equal to the original, only warn.")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Both documents are read in -view (default accepted: every tracked change")
-		fmt.Fprintln(stderr, "accepted, see why-hwp text -h). .hwp files have no views.")
+		fmt.Fprintln(stderr, "accepted, see why-hwp text -h). .hwp files have views too.")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Exit status: 0 no violations (warnings allowed), 1 violations,")
 		fmt.Fprintln(stderr, "2 usage error or a file that cannot be read.")

@@ -23,7 +23,7 @@ func runInfo(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Shows sections, paragraphs, tables, owner marks such as (A) or (A/B),")
 		fmt.Fprintln(stderr, "memos, tracked changes, styles and pictures. Owner marks are counted in")
-		fmt.Fprintln(stderr, "the text of -view (see why-hwp text -h); .hwp files have no views.")
+		fmt.Fprintln(stderr, "the text of -view (see why-hwp text -h); .hwp files have views too.")
 		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
 	}
