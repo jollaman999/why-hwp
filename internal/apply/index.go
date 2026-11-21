@@ -22,6 +22,21 @@ type section struct {
 	paras []*para
 	byLoc map[string]*para
 	cells map[string]*container
+	ends  map[string]fieldEnd // field ends by the id of their fieldBegin
+}
+
+// memo is one memo anchored in a paragraph: an hp:fieldBegin of type MEMO,
+// which holds the memo body, and the hp:fieldEnd that closes its range.
+type memo struct {
+	id      string
+	text    string // body paragraphs joined by "\n"
+	span    [2]int // fieldBegin, or the hp:ctrl that holds only it
+	deleted bool
+}
+
+type fieldEnd struct {
+	p    *para
+	span [2]int // fieldEnd, or the hp:ctrl that holds only it
 }
 
 // container is the list of paragraphs that are siblings: a section body
@@ -48,7 +63,9 @@ type para struct {
 	runs   []run
 	ts     []tslot
 
-	hasSecPr, hasTable, hasMemo, hasPic bool
+	memos []*memo
+
+	hasSecPr, hasTable, hasPic bool
 
 	edit *paraEdit
 }
@@ -66,7 +83,7 @@ type tslot struct {
 }
 
 func indexSection(idx int, name string, raw []byte) (*section, error) {
-	s := &section{idx: idx, name: name, raw: raw, byLoc: map[string]*para{}, cells: map[string]*container{}}
+	s := &section{idx: idx, name: name, raw: raw, byLoc: map[string]*para{}, cells: map[string]*container{}, ends: map[string]fieldEnd{}}
 	var err error
 	if s.pfx, err = rootPrefix(raw, nsParagraph); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
@@ -117,6 +134,71 @@ func (ix *indexer) selfClosing(off int) bool {
 	return off >= 2 && ix.raw[off-2] == '/' && ix.raw[off-1] == '>'
 }
 
+// span returns the byte range of the element that started at start and was
+// just read to its end. When it is the first child of the hp:ctrl at
+// ctrlStart and nothing follows it there, the range is that of the hp:ctrl.
+func (ix *indexer) span(start int, first bool, ctrlStart int) [2]int {
+	end := ix.off()
+	if first {
+		name := ix.raw[ctrlStart+1:]
+		if k := bytes.IndexAny(name, " \t\r\n/>"); k >= 0 {
+			name = name[:k]
+		}
+		rest := bytes.TrimLeft(ix.raw[end:], " \t\r\n")
+		closeTag := "</" + string(name) + ">"
+		if bytes.HasPrefix(rest, []byte(closeTag)) {
+			return [2]int{ctrlStart, len(ix.raw) - len(rest) + len(closeTag)}
+		}
+	}
+	return [2]int{start, end}
+}
+
+// memoText reads the rest of a memo hp:fieldBegin and returns the text of
+// its body paragraphs joined by "\n".
+func (ix *indexer) memoText() (string, error) {
+	var paras []string
+	var b strings.Builder
+	depth, inT := 0, 0
+	for {
+		tok, err := ix.dec.Token()
+		if err != nil {
+			return "", unexpected(err)
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			switch t.Name.Local {
+			case "t":
+				inT++
+			case "tab":
+				if inT > 0 {
+					b.WriteByte('\t')
+				}
+			case "lineBreak":
+				if inT > 0 {
+					b.WriteByte('\n')
+				}
+			}
+		case xml.CharData:
+			if inT > 0 {
+				b.Write(t)
+			}
+		case xml.EndElement:
+			if depth == 0 {
+				return strings.Join(paras, "\n"), nil
+			}
+			depth--
+			switch t.Name.Local {
+			case "t":
+				inT--
+			case "p":
+				paras = append(paras, b.String())
+				b.Reset()
+			}
+		}
+	}
+}
+
 func (ix *indexer) para(loc string, start int, se xml.StartElement, cont *container) error {
 	p := &para{
 		sec: ix.sec, loc: loc, cont: cont, start: start, tagEnd: ix.off(),
@@ -127,6 +209,8 @@ func (ix *indexer) para(loc string, start int, se xml.StartElement, cont *contai
 	tables := 0
 	depth := 0
 	cur := -1
+	// The open hp:ctrl: its depth (-1 when none), start and child count.
+	ctrl, ctrlStart, ctrlKids := -1, 0, 0
 	for {
 		before := ix.off()
 		tok, err := ix.dec.Token()
@@ -135,8 +219,25 @@ func (ix *indexer) para(loc string, start int, se xml.StartElement, cont *contai
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			inCtrl := ctrl >= 0 && depth == ctrl+1
+			if inCtrl {
+				ctrlKids++
+			}
+			span := func() [2]int {
+				return ix.span(before, inCtrl && ctrlKids == 1, ctrlStart)
+			}
 			skip := false
 			switch t.Name.Local {
+			case "ctrl":
+				if ctrl < 0 {
+					ctrl, ctrlStart, ctrlKids = depth, before, 0
+				}
+			case "fieldEnd":
+				if err := ix.dec.Skip(); err != nil {
+					return err
+				}
+				ix.sec.ends[attr(t, "beginIDRef")] = fieldEnd{p: p, span: span()}
+				continue
 			case "run":
 				if depth == 0 {
 					r := run{start: before, tagEnd: ix.off(), charPr: attr(t, "charPrIDRef")}
@@ -174,8 +275,12 @@ func (ix *indexer) para(loc string, start int, se xml.StartElement, cont *contai
 				continue
 			case "fieldBegin":
 				if attr(t, "type") == "MEMO" {
-					p.hasMemo = true
-					skip = true
+					text, err := ix.memoText()
+					if err != nil {
+						return err
+					}
+					p.memos = append(p.memos, &memo{id: attr(t, "id"), text: text, span: span()})
+					continue
 				}
 			case "pic":
 				p.hasPic = true
@@ -207,6 +312,9 @@ func (ix *indexer) para(loc string, start int, se xml.StartElement, cont *contai
 				return nil
 			}
 			depth--
+			if depth == ctrl {
+				ctrl = -1
+			}
 			if depth == 0 && t.Name.Local == "run" && cur >= 0 {
 				p.runs[cur].closeStart = before
 				p.runs[cur].end = ix.off()

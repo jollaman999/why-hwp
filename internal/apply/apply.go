@@ -41,6 +41,10 @@ type Result struct {
 	Inserted int // tracked insertions (or plain insertions when not tracking)
 	Deleted  int // tracked deletions (or plain removals when not tracking)
 	Images   int
+	// Memos is the number of memos deleted. Their deletion is never
+	// tracked: Hancom Office removes a memo outright even when it records
+	// changes.
+	Memos    int
 	AuthorID string // tracked-change author id used, "" when not tracking
 }
 
@@ -99,7 +103,7 @@ func Apply(src []byte, spec *Spec, opt Options) (*Result, error) {
 	if _, err := hwpx.Parse(zr2); err != nil {
 		return nil, fmt.Errorf("output check: %w", err)
 	}
-	res := &Result{Data: data, Ops: len(spec.Ops), Inserted: ed.nIns, Deleted: ed.nDel, Images: len(ed.images)}
+	res := &Result{Data: data, Ops: len(spec.Ops), Inserted: ed.nIns, Deleted: ed.nDel, Images: len(ed.images), Memos: ed.nMemo}
 	if opt.Track {
 		res.AuthorID = ed.authorID
 	}
@@ -130,7 +134,7 @@ type editor struct {
 	nextObj   int64
 	nextZ     int
 
-	nIns, nDel int
+	nIns, nDel, nMemo int
 }
 
 func (ed *editor) read(name string) ([]byte, error) {
@@ -315,6 +319,13 @@ type paraEdit struct {
 	runTail map[int][]string
 	before  []string // new paragraphs before this one
 	after   []string // new paragraphs after this one
+	at      []insert // XML put at a byte offset of the paragraph
+	cut     [][2]int // byte ranges removed (deleted memos)
+}
+
+type insert struct {
+	pos  int
+	data string
 }
 
 func (ed *editor) edit(p *para) (*paraEdit, error) {
@@ -445,21 +456,7 @@ func b2i(b bool) int {
 // of the first hp:t that has text, or into the last hp:t, or into a new
 // hp:t at the end of the last run.
 func (ed *editor) placeText(p *para, e *paraEdit, x string) error {
-	ti := -1
-	for i, tc := range e.ts {
-		for _, a := range tc.atoms {
-			if a.kind == atomChar {
-				ti = i
-				break
-			}
-		}
-		if ti >= 0 {
-			break
-		}
-	}
-	if ti < 0 && len(e.ts) > 0 {
-		ti = len(e.ts) - 1
-	}
+	ti := textSlot(e)
 	e.dirty = true
 	if ti >= 0 {
 		tc := e.ts[ti]
@@ -476,6 +473,47 @@ func (ed *editor) placeText(p *para, e *paraEdit, x string) error {
 	}
 	r := len(p.runs) - 1
 	e.runTail[r] = append(e.runTail[r], fmt.Sprintf("<%s:t>%s</%s:t>", p.sec.pfx, x, p.sec.pfx))
+	return nil
+}
+
+// textSlot returns the hp:t that placeText puts new text in: the first
+// that has text, else the last, else -1.
+func textSlot(e *paraEdit) int {
+	for i, tc := range e.ts {
+		for _, a := range tc.atoms {
+			if a.kind == atomChar {
+				return i
+			}
+		}
+	}
+	return len(e.ts) - 1
+}
+
+// placeRun puts new text where placeText would, but in a run of its own
+// with character shape charPr: the run holding that hp:t is split after it.
+// Without an hp:t the new run follows the last run.
+func (ed *editor) placeRun(p *para, e *paraEdit, charPr, x string) error {
+	if len(p.runs) == 0 {
+		return fmt.Errorf("%s: paragraph has no run to hold text", p.loc)
+	}
+	pfx := p.sec.pfx
+	r := p.runs[len(p.runs)-1]
+	split := -1
+	if ti := textSlot(e); ti >= 0 && p.ts[ti].run >= 0 {
+		r = p.runs[p.ts[ti].run]
+		split = p.ts[ti].end
+	}
+	if r.charPr == charPr {
+		return ed.placeText(p, e, x)
+	}
+	e.dirty = true
+	nr := fmt.Sprintf(`<%s:run charPrIDRef="%s"><%s:t>%s</%s:t></%s:run>`, pfx, escAttr(charPr), pfx, x, pfx, pfx)
+	raw := p.sec.raw
+	if split < 0 || len(bytes.TrimSpace(raw[split:r.closeStart])) == 0 {
+		e.at = append(e.at, insert{r.end, nr})
+		return nil
+	}
+	e.at = append(e.at, insert{split, "</" + pfx + ":run>" + nr + string(raw[r.start:r.tagEnd])})
 	return nil
 }
 
@@ -524,16 +562,24 @@ func (ed *editor) run(o *Op) error {
 		if cell != nil && len(cell.paras) > 1 {
 			return fmt.Errorf("cell %s has %d paragraphs; address one as %s/pN", o.Loc, len(cell.paras), o.Loc)
 		}
+		cp, err := ed.charShape(o.CharShape)
+		if err != nil {
+			return err
+		}
 		e, err := ed.claim(p, "set_text")
 		if err != nil {
 			return err
 		}
 		_, refs := e.visible()
 		ed.remove(e, refs)
-		if *o.Text != "" {
-			return ed.placeText(p, e, ed.insertText(p.sec.pfx, *o.Text, false))
+		if *o.Text == "" {
+			return nil
 		}
-		return nil
+		x := ed.insertText(p.sec.pfx, *o.Text, false)
+		if cp != "" {
+			return ed.placeRun(p, e, cp, x)
+		}
+		return ed.placeText(p, e, x)
 
 	case "replace":
 		p, cell, err := ed.resolve(o.Loc)
@@ -586,6 +632,10 @@ func (ed *editor) run(o *Op) error {
 		if o.Op == "insert_before" && p.hasSecPr {
 			return fmt.Errorf("%s holds the section settings; insert after it instead", p.loc)
 		}
+		cp, err := ed.charShape(o.CharShape)
+		if err != nil {
+			return err
+		}
 		e, err := ed.edit(p)
 		if err != nil {
 			return err
@@ -601,7 +651,7 @@ func (ed *editor) run(o *Op) error {
 				}
 				from = charFirstText
 			}
-			x := ed.newPara(p.sec, shape, from, np.Text)
+			x := ed.newPara(p.sec, shape, from, cp, np.Text)
 			if o.Op == "insert_after" {
 				e.after = append(e.after, x)
 			} else {
@@ -626,8 +676,10 @@ func (ed *editor) run(o *Op) error {
 			return err
 		}
 		if !ed.opt.Track {
-			if p.hasMemo {
-				return fmt.Errorf("%s holds a memo; untracked delete would drop it", p.loc)
+			for _, m := range p.memos {
+				if !m.deleted {
+					return fmt.Errorf("%s holds a memo; untracked delete would drop it (delete_memo it first)", p.loc)
+				}
 			}
 			if len(p.cont.paras) == 1 {
 				return fmt.Errorf("%s is the only paragraph of its %s; use set_text", p.loc, contName(p.cont))
@@ -664,6 +716,36 @@ func (ed *editor) run(o *Op) error {
 		e.runTail[r] = append(e.runTail[r], fmt.Sprintf("<%s:t>%s</%s:t>", pfx, ed.deleteEnd(pfx, id, !last), pfx))
 		e.dirty = true
 		ed.nDel++
+		return nil
+
+	case "delete_memo":
+		// Hancom Office removes a memo outright even when it records
+		// changes, so this is never tracked.
+		p, _, err := ed.resolve(o.Loc)
+		if err != nil {
+			return err
+		}
+		m, err := pickMemo(p, o.Find)
+		if err != nil {
+			return err
+		}
+		end, ok := p.sec.ends[m.id]
+		if !ok {
+			return fmt.Errorf("%s: memo %q has no field end", p.loc, m.text)
+		}
+		for _, x := range []struct {
+			p    *para
+			span [2]int
+		}{{p, m.span}, {end.p, end.span}} {
+			e, err := ed.edit(x.p)
+			if err != nil {
+				return err
+			}
+			e.cut = append(e.cut, x.span)
+			e.dirty = true
+		}
+		m.deleted = true
+		ed.nMemo++
 		return nil
 
 	case "image":
@@ -707,6 +789,47 @@ func (ed *editor) run(o *Op) error {
 		return nil
 	}
 	return fmt.Errorf("unknown op")
+}
+
+// pickMemo returns the memo of p whose text contains find; without find, p
+// must hold one memo.
+func pickMemo(p *para, find string) (*memo, error) {
+	var hits []*memo
+	var all []string
+	for _, m := range p.memos {
+		all = append(all, strconv.Quote(m.text))
+		if strings.Contains(m.text, find) {
+			hits = append(hits, m)
+		}
+	}
+	switch {
+	case len(p.memos) == 0:
+		return nil, fmt.Errorf("%s holds no memo (see 'why-hwp info')", p.loc)
+	case len(hits) == 0:
+		return nil, fmt.Errorf("%s: no memo has %q; its memos: %s", p.loc, find, strings.Join(all, ", "))
+	case len(hits) > 1 && find == "":
+		return nil, fmt.Errorf("%s holds %d memos; set find to part of the text of one: %s", p.loc, len(hits), strings.Join(all, ", "))
+	case len(hits) > 1:
+		return nil, fmt.Errorf("%s: %d memos have %q; use a longer find: %s", p.loc, len(hits), find, strings.Join(all, ", "))
+	case hits[0].deleted:
+		return nil, fmt.Errorf("%s: memo %q already deleted", p.loc, hits[0].text)
+	}
+	return hits[0], nil
+}
+
+// charShape returns the character shape of the paragraph at loc that new
+// text with char_shape gets: that of its first run with text, as with like.
+// An empty loc gives "".
+func (ed *editor) charShape(loc string) (string, error) {
+	if loc == "" {
+		return "", nil
+	}
+	p, _, err := ed.resolve(loc)
+	if err != nil {
+		return "", fmt.Errorf("char_shape: %w", err)
+	}
+	_, _, cp := shapes(p, charFirstText)
+	return cp, nil
 }
 
 func contName(c *container) string {
@@ -810,8 +933,13 @@ func runHasChar(p *para, i int) bool {
 	return bytes.IndexByte(raw[pos:r.closeStart], '<') >= 0
 }
 
-func (ed *editor) newPara(s *section, shape *para, from charFrom, text string) string {
+// newPara returns a new paragraph with the shapes of shape. A charPr other
+// than "" replaces the character shape taken from it.
+func (ed *editor) newPara(s *section, shape *para, from charFrom, charPr, text string) string {
 	pp, st, cp := shapes(shape, from)
+	if charPr != "" {
+		cp = charPr
+	}
 	pfx := s.pfx
 	var body string
 	switch {
@@ -900,6 +1028,12 @@ func (ed *editor) render(s *section) ([]byte, error) {
 		}
 		if e.dirty && p.ls[0] >= 0 {
 			add(p.ls[0], p.ls[1], orderInside, "")
+		}
+		for _, c := range e.cut {
+			add(c[0], c[1], orderInside, "")
+		}
+		for _, x := range e.at {
+			add(x.pos, x.pos, orderInside, x.data)
 		}
 		for i, tc := range e.ts {
 			if !tc.changed {

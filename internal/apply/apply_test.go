@@ -930,3 +930,218 @@ func TestReaderLocsAreApplyLocs(t *testing.T) {
 		t.Errorf("edited %d, refused %d of %d blocks", edited, refused, len(blocks))
 	}
 }
+
+// charShapeDoc gives s0/p1 ("1. 개요") character shape 6.
+func charShapeDoc(t *testing.T) []byte {
+	t.Helper()
+	src := readSample(t)
+	raw := part(t, src, "Contents/section0.xml")
+	from := `<hp:run charPrIDRef="0"><hp:t>1. 개요</hp:t>`
+	if !strings.Contains(raw, from) {
+		t.Fatal("anchor not found")
+	}
+	return withSection(t, src, strings.Replace(raw, from, `<hp:run charPrIDRef="6"><hp:t>1. 개요</hp:t>`, 1))
+}
+
+func TestCharShapeOption(t *testing.T) {
+	src := charShapeDoc(t)
+	old := "이 문서는 why-hwp 시험용으로 만든 가짜 문서다. 실제 내용은 없다."
+
+	// The text is the last thing in its run: the new run follows that run.
+	res := applyOps(t, src, true, Op{Op: "set_text", Loc: "s0/p2", Text: str("새 글"), CharShape: "s0/p1"})
+	x := paraXML(t, res.Data, "s0/p2")
+	want := `<hp:run charPrIDRef="0"><hp:t><hp:deleteBegin Id="2" TcId="2"/>` + old + `<hp:deleteEnd Id="2" TcId="2" paraend="0"/></hp:t></hp:run>` +
+		`<hp:run charPrIDRef="6"><hp:t><hp:insertBegin Id="1" TcId="1"/>새 글<hp:insertEnd Id="1" TcId="1" paraend="0"/></hp:t></hp:run>`
+	if !strings.Contains(x, want) {
+		t.Errorf("tracked XML:\n%s\nwant part\n%s", x, want)
+	}
+	if got := viewTexts(t, res.Data, model.ViewAccepted)["s0/p2"]; got != "새 글" {
+		t.Errorf("tracked accepted = %q", got)
+	}
+	if got := viewTexts(t, res.Data, model.ViewOriginal)["s0/p2"]; got != old {
+		t.Errorf("tracked original = %q", got)
+	}
+
+	// More follows the text in its run (a memo): the run is split after it.
+	res = applyOps(t, src, false, Op{Op: "set_text", Loc: "s0/p7", Text: str("바뀐 글"), CharShape: "s0/p1"})
+	x = paraXML(t, res.Data, "s0/p7")
+	want = `<hp:run charPrIDRef="0"><hp:t></hp:t></hp:run><hp:run charPrIDRef="6"><hp:t>바뀐 글</hp:t></hp:run><hp:run charPrIDRef="0"><hp:ctrl><hp:fieldBegin `
+	if !strings.Contains(x, want) {
+		t.Errorf("split XML:\n%s\nwant part\n%s", x, want)
+	}
+	if got := texts(t, res.Data)["s0/p7"]; got != "바뀐 글" {
+		t.Errorf("split text = %q", got)
+	}
+	if memos := parse(t, res.Data).Summary.Memos; len(memos) != 1 {
+		t.Errorf("split memos = %+v", memos)
+	}
+
+	// The same shape as the text's run: no new run.
+	res = applyOps(t, src, false, Op{Op: "set_text", Loc: "s0/p2", Text: str("새 글"), CharShape: "s0/p3"})
+	if x := paraXML(t, res.Data, "s0/p2"); strings.Count(x, "<hp:run ") != 1 || !strings.Contains(x, "<hp:t>새 글</hp:t>") {
+		t.Errorf("same shape XML: %s", x)
+	}
+
+	// An empty paragraph without hp:t.
+	res = applyOps(t, src, true, Op{Op: "set_text", Loc: "s0/p5", Text: str("빈 칸"), CharShape: "s0/p1"})
+	if x := paraXML(t, res.Data, "s0/p5"); !strings.Contains(x, `<hp:run charPrIDRef="0"/><hp:run charPrIDRef="6"><hp:t><hp:insertBegin`) {
+		t.Errorf("empty paragraph XML: %s", x)
+	}
+
+	for _, track := range []bool{true, false} {
+		res = applyOps(t, src, track,
+			Op{Op: "insert_after", Loc: "s0/p2", Paras: []NewPara{{Text: "가"}, {Text: "나", Like: "s0/p7"}}, CharShape: "s0/p1"},
+			Op{Op: "insert_before", Loc: "s0/p6", Paras: []NewPara{{Text: "다"}}, CharShape: "s0/p1"},
+			Op{Op: "insert_after", Loc: "s0/p7", Paras: []NewPara{{Text: "라"}}},
+		)
+		got := texts(t, res.Data)
+		for loc, w := range map[string]struct{ text, charPr string }{
+			"s0/p3": {"가", "6"}, "s0/p4": {"나", "6"}, "s0/p8": {"다", "6"}, "s0/p11": {"라", "0"},
+		} {
+			if got[loc] != w.text {
+				t.Errorf("track=%v %s = %q, want %q", track, loc, got[loc], w.text)
+			}
+			if x := paraXML(t, res.Data, loc); !strings.Contains(x, `<hp:run charPrIDRef="`+w.charPr+`">`) {
+				t.Errorf("track=%v %s want charPr %s: %s", track, loc, w.charPr, x)
+			}
+		}
+	}
+
+	if err := runErr(t, src, true, Op{Op: "set_text", Loc: "s0/p2", Text: str("x"), CharShape: "s0/p50"}); !strings.Contains(err.Error(), "char_shape") {
+		t.Errorf("bad char_shape: %v", err)
+	}
+}
+
+func memoXML(id, text string) string {
+	return `<hp:ctrl><hp:fieldBegin id="` + id + `" type="MEMO" name="" editable="1" dirty="1" zorder="1" fieldid="623209829">` +
+		`<hp:parameters cnt="1" name=""><hp:stringParam name="ID">memo` + id + `</hp:stringParam></hp:parameters>` +
+		`<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">` +
+		`<hp:p id="0" paraPrIDRef="11" styleIDRef="17" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="4"><hp:t>` + text + `</hp:t></hp:run></hp:p>` +
+		`</hp:subList></hp:fieldBegin></hp:ctrl>`
+}
+
+func memoEndXML(id string) string {
+	return `<hp:ctrl><hp:fieldEnd beginIDRef="` + id + `" fieldid="623209829"/></hp:ctrl>`
+}
+
+// memoDoc puts two memos in s0/p2; the second one ends in s0/p3.
+func memoDoc(t *testing.T) []byte {
+	t.Helper()
+	src := readSample(t)
+	raw := part(t, src, "Contents/section0.xml")
+	p2 := `<hp:t>이 문서는 why-hwp 시험용으로 만든 가짜 문서다. 실제 내용은 없다.</hp:t>`
+	p3 := `<hp:run charPrIDRef="0"><hp:t>2. 추진 일정 및 담당</hp:t>`
+	if !strings.Contains(raw, p2) || !strings.Contains(raw, p3) {
+		t.Fatal("anchor not found")
+	}
+	raw = strings.Replace(raw, p2, `<hp:t>이 문서는 </hp:t>`+memoXML("11", "첫째 메모")+`<hp:t>why-hwp</hp:t>`+memoEndXML("11")+
+		`<hp:t> 시험용</hp:t>`+memoXML("12", "둘째 메모")+`<hp:t>으로 만든 가짜 문서다. 실제 내용은 없다.</hp:t>`, 1)
+	raw = strings.Replace(raw, p3, `<hp:run charPrIDRef="0">`+memoEndXML("12")+`<hp:t>2. 추진 일정 및 담당</hp:t>`, 1)
+	return withSection(t, src, raw)
+}
+
+const sampleMemo = "s0/p7=가짜 메모: 표현을 다듬을 것"
+
+func memoTexts(t *testing.T, data []byte) string {
+	t.Helper()
+	var got []string
+	for _, m := range parse(t, data).Summary.Memos {
+		got = append(got, m.Loc+"="+m.Text)
+	}
+	return strings.Join(got, " ")
+}
+
+func TestDeleteMemo(t *testing.T) {
+	src := readSample(t)
+	before := texts(t, src)
+	for _, track := range []bool{true, false} {
+		res := applyOps(t, src, track, Op{Op: "delete_memo", Loc: "s0/p7"})
+		if got := memoTexts(t, res.Data); got != "" {
+			t.Errorf("track=%v memos left: %s", track, got)
+		}
+		x := paraXML(t, res.Data, "s0/p7")
+		want := `<hp:run charPrIDRef="0"><hp:t>문서 구조를 프로그램이 읽을 수 있다 </hp:t><hp:t>(가).</hp:t><hp:t/></hp:run>`
+		if !strings.Contains(x, want) {
+			t.Errorf("track=%v XML:\n%s\nwant part\n%s", track, x, want)
+		}
+		if got := texts(t, res.Data)["s0/p7"]; got != before["s0/p7"] {
+			t.Errorf("track=%v text = %q", track, got)
+		}
+		if res.Memos != 1 || res.Deleted != 0 || res.Inserted != 0 {
+			t.Errorf("track=%v result memos=%d deleted=%d inserted=%d", track, res.Memos, res.Deleted, res.Inserted)
+		}
+		if h := part(t, res.Data, headerName); strings.Contains(h, "trackChange ") {
+			t.Errorf("track=%v memo deletion was recorded as a tracked change", track)
+		}
+	}
+
+	// A memo can go with the paragraph that holds it.
+	res := applyOps(t, src, false, Op{Op: "delete_memo", Loc: "s0/p7"}, Op{Op: "delete", Loc: "s0/p7"})
+	if got := texts(t, res.Data)["s0/p7"]; got != "그림 1. 가짜 도형" {
+		t.Errorf("untracked delete after delete_memo: s0/p7 = %q", got)
+	}
+	res = applyOps(t, src, true, Op{Op: "delete", Loc: "s0/p7"}, Op{Op: "delete_memo", Loc: "s0/p7"})
+	if got := viewTexts(t, res.Data, model.ViewOriginal)["s0/p7"]; got != before["s0/p7"] || memoTexts(t, res.Data) != "" {
+		t.Errorf("tracked delete with delete_memo: s0/p7 = %q, memos %s", got, memoTexts(t, res.Data))
+	}
+
+	src = memoDoc(t)
+	if got := memoTexts(t, src); got != "s0/p2=첫째 메모 s0/p2=둘째 메모 "+sampleMemo {
+		t.Fatalf("memo doc memos: %s", got)
+	}
+	res = applyOps(t, src, true, Op{Op: "delete_memo", Loc: "s0/p2", Find: "둘째"})
+	if got := memoTexts(t, res.Data); got != "s0/p2=첫째 메모 "+sampleMemo {
+		t.Errorf("after find: %s", got)
+	}
+	if x := paraXML(t, res.Data, "s0/p3"); strings.Contains(x, "fieldEnd") || !strings.Contains(x, `merged="0"><hp:run charPrIDRef="0"><hp:t>2. 추진`) {
+		t.Errorf("field end in s0/p3 left: %s", x)
+	}
+	if x := paraXML(t, res.Data, "s0/p2"); !strings.Contains(x, `<hp:t>why-hwp</hp:t>`+memoEndXML("11")+`<hp:t> 시험용</hp:t><hp:t>으로`) {
+		t.Errorf("s0/p2 XML: %s", x)
+	}
+	res = applyOps(t, src, false, Op{Op: "delete_memo", Loc: "s0/p2", Find: "첫째"}, Op{Op: "delete_memo", Loc: "s0/p2", Find: "둘째"})
+	if got := memoTexts(t, res.Data); got != sampleMemo || res.Memos != 2 {
+		t.Errorf("both: memos %q, count %d", got, res.Memos)
+	}
+	if got := texts(t, res.Data)["s0/p2"]; got != before["s0/p2"] {
+		t.Errorf("both: s0/p2 = %q", got)
+	}
+	if x := paraXML(t, res.Data, "s0/p2"); strings.Contains(x, "<hp:ctrl>") {
+		t.Errorf("both: s0/p2 XML: %s", x)
+	}
+
+	for _, c := range []struct {
+		ops  []Op
+		want string
+	}{
+		{[]Op{{Op: "delete_memo", Loc: "s0/p1"}}, "holds no memo"},
+		{[]Op{{Op: "delete_memo", Loc: "s0/p2"}}, "holds 2 memos"},
+		{[]Op{{Op: "delete_memo", Loc: "s0/p2", Find: "셋째"}}, "no memo has"},
+		{[]Op{{Op: "delete_memo", Loc: "s0/p2", Find: "메모"}}, "2 memos have"},
+		{[]Op{{Op: "delete_memo", Loc: "s0/p2", Find: "첫째"}, {Op: "delete_memo", Loc: "s0/p2", Find: "첫째"}}, "already deleted"},
+	} {
+		if err := runErr(t, src, true, c.ops...); !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%+v: %v", c.ops, err)
+		}
+	}
+}
+
+func TestParseSpecNewOps(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{`{"ops":[{"op":"delete_memo"}]}`, "loc is required"},
+		{`{"ops":[{"op":"replace","loc":"s0/p1","find":"a","with":"b","char_shape":"s0/p2"}]}`, "char_shape is only"},
+		{`{"ops":[{"op":"delete_memo","loc":"s0/p1","char_shape":"s0/p2"}]}`, "char_shape is only"},
+	} {
+		_, err := ParseSpec(strings.NewReader(c.in))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", c.in, err)
+		}
+	}
+	s, err := ParseSpec(strings.NewReader(`{"ops":[{"op":"set_text","loc":"s0/p1","text":"x","char_shape":"s0/p2"},{"op":"delete_memo","loc":"s0/p7","find":"메모"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Ops[0].CharShape != "s0/p2" || s.Ops[1].Op != "delete_memo" || s.Ops[1].Find != "메모" {
+		t.Errorf("parsed %+v", s.Ops)
+	}
+}

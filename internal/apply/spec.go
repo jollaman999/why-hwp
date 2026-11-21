@@ -23,21 +23,28 @@ type Spec struct {
 //	insert_after   loc, paras           add paragraphs after loc
 //	insert_before  loc, paras           add paragraphs before loc
 //	delete         loc                  delete a paragraph
+//	delete_memo    loc, find            delete a memo anchored in the paragraph
+//	                                    at loc; find picks one of several by
+//	                                    its text
 //	image          after|loc, src, width_mm, like
 //	                                    add a PNG as an inline picture, in a new
 //	                                    paragraph after 'after' or at the end of 'loc'
+//
+// set_text, insert_after and insert_before also take char_shape, a loc
+// whose character shape the new text gets instead of the usual one.
 type Op struct {
-	Op      string    `json:"op"`
-	Loc     string    `json:"loc,omitempty"`
-	After   string    `json:"after,omitempty"`
-	Text    *string   `json:"text,omitempty"`
-	Find    string    `json:"find,omitempty"`
-	With    *string   `json:"with,omitempty"`
-	All     bool      `json:"all,omitempty"`
-	Paras   []NewPara `json:"paras,omitempty"`
-	Like    string    `json:"like,omitempty"`
-	Src     string    `json:"src,omitempty"`
-	WidthMM float64   `json:"width_mm,omitempty"`
+	Op        string    `json:"op"`
+	Loc       string    `json:"loc,omitempty"`
+	After     string    `json:"after,omitempty"`
+	Text      *string   `json:"text,omitempty"`
+	Find      string    `json:"find,omitempty"`
+	With      *string   `json:"with,omitempty"`
+	All       bool      `json:"all,omitempty"`
+	Paras     []NewPara `json:"paras,omitempty"`
+	Like      string    `json:"like,omitempty"`
+	CharShape string    `json:"char_shape,omitempty"`
+	Src       string    `json:"src,omitempty"`
+	WidthMM   float64   `json:"width_mm,omitempty"`
 }
 
 // NewPara is one paragraph added by insert_after or insert_before. Like
@@ -104,7 +111,7 @@ func (o *Op) check() error {
 				err = checkText(p.Text)
 			}
 		}
-	case "delete":
+	case "delete", "delete_memo":
 		err = need(o.Loc != "", "loc")
 	case "image":
 		switch {
@@ -118,7 +125,14 @@ func (o *Op) check() error {
 	case "":
 		err = fmt.Errorf("op is required")
 	default:
-		err = fmt.Errorf("unknown op (want set_text, replace, insert_after, insert_before, delete or image)")
+		err = fmt.Errorf("unknown op (want set_text, replace, insert_after, insert_before, delete, delete_memo or image)")
+	}
+	if err == nil && o.CharShape != "" {
+		switch o.Op {
+		case "set_text", "insert_after", "insert_before":
+		default:
+			err = fmt.Errorf("char_shape is only for set_text, insert_after and insert_before")
+		}
 	}
 	return err
 }
