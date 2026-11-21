@@ -1,0 +1,88 @@
+# rhwp punctuation width fix for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# earlier wasm/patches/*.patch in name order. The hunks only insert lines, above
+# the lines rhwp-zlayout1.patch changes, so this applies with or without it.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - svg.rs: an ASCII punctuation mark of a slot whose face is an HFT program
+#   (Hangul's own font format, printed as Type 3 fonts) is drawn fitted with
+#   textLength to the advance rhwp lays it out with, as ASCII letters and digits
+#   are. rhwp never draws the HFT program; the mark was painted with the
+#   substitute face at that face's own width, so its glyph box in the PDF ended
+#   up to 1 pt short or long: math.hwpx 한양신명조 `(` advances 0.395 em,
+#   Malgun Gothic draws it 0.305 em wide.
+# - svg/tests.rs covers it.
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -4417,0 +4418,18 @@
++/// why-hwp: an ASCII punctuation mark of a slot whose face is an HFT program.
++///
++/// rhwp lays it out with the HFT program's widths (the /Widths of Hangul's Type 3
++/// fonts) but never draws that program: the mark is painted with a substitute face
++/// at the substitute's own width, so its glyph box in the PDF ends short or long.
++/// math.hwpx: 한양신명조 `(` advances 0.395 em, Malgun Gothic draws it 0.305 em wide.
++fn is_hft_ascii_punctuation(cluster_str: &str, style: &TextStyle) -> bool {
++    let mut chars = cluster_str.chars();
++    let (Some(ch), None) = (chars.next(), chars.next()) else {
++        return false;
++    };
++    let source_font_is_hft = style
++        .ascii_punct_latin
++        .as_deref()
++        .map_or(style.source_font_is_hft, |latin| latin.source_font_is_hft);
++    ch.is_ascii_punctuation() && source_font_is_hft && !style.preserve_glyph_ink
++}
++
+@@ -4427,0 +4446,8 @@
++    if is_hft_ascii_punctuation(cluster_str, style) {
++        return svg_text_length_attrs(
++            cluster_str,
++            glyph_advance * script_advance_scale,
++            scale_x,
++            true,
++        );
++    }
+diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+--- a/src/renderer/svg/tests.rs
++++ b/src/renderer/svg/tests.rs
+@@ -1499,0 +1500,39 @@
++fn test_svg_hft_ascii_punctuation_is_fitted_to_its_advance() {
++    // math.hwpx: 한양신명조 11.5pt, 장평 95%, 자간 -5%.
++    let font_size = 1150.0 / 75.0;
++    let style = |source_font_is_hft: bool, preserve_glyph_ink: bool| TextStyle {
++        font_family: "한양신명조".to_string(),
++        font_size,
++        ratio: 0.95,
++        letter_spacing: -0.05 * font_size,
++        source_font_is_hft,
++        preserve_glyph_ink,
++        ..Default::default()
++    };
++    let text_length = |style: &TextStyle, ch: char| -> Option<f64> {
++        let mut renderer = SvgRenderer::new();
++        renderer.begin_page(800.0, 600.0);
++        renderer.draw_text(&format!("가{ch}나"), 10.0, 20.0, style);
++        let output = renderer.output();
++        let close = output
++            .find(&format!(">{}</text>", escape_xml(&ch.to_string())))
++            .unwrap_or_else(|| panic!("{ch:?} text: {output}"));
++        let tag = &output[output[..close].rfind("<text").unwrap()..close];
++        let at = tag.find(" textLength=\"")? + " textLength=\"".len();
++        let end = tag[at..].find('"').unwrap();
++        Some(tag[at..at + end].parse().unwrap())
++    };
++
++    // The HFT widths before the ratio, without the letter spacing: ( 404/1024 em, ? 526/1024 em.
++    let hft = style(true, false);
++    for (ch, em) in [('(', 404.0 / 1024.0), ('?', 526.0 / 1024.0)] {
++        let fitted = text_length(&hft, ch).unwrap_or_else(|| panic!("{ch:?} textLength"));
++        assert!((fitted - em * font_size).abs() < 0.05, "{ch:?} {fitted}");
++    }
++
++    // A face that is not HFT and a program drawn with its own ink keep their width.
++    assert_eq!(text_length(&style(false, false), '('), None);
++    assert_eq!(text_length(&style(true, true), '('), None);
++}
++
++#[test]

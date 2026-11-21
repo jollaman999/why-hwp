@@ -329,6 +329,16 @@ PDFs of fdi-2025q2.hwp and of the two-up document change.
 |--------|--------|
 | A single character whose advance comes from rhwp's table of original HFT glyph widths (the widths of Hancom Office's Type 3 fonts) is drawn fitted to that advance with `textLength`, as ASCII letters and digits are. The substitute glyph is stretched, so its ink is wider than Hancom Office's (3.24 pt against 1.8 pt for the quote below) while its box matches | It was drawn with the substitute font's own width and its box ended short: the Pilgi (필기) `’` advances 0.5 em, and Malgun Gothic draws it 0.23 em wide |
 
+`patches/rhwp-zlayout2.patch` raises the count on Windows to 17 of 18:
+math.hwpx, 1.48 pt off before, is within 0.82 pt. On Linux 9 of 18 pass before
+and after; math.hwpx cannot pass there without the HyhwpEQ equation font, which
+126 of its words use. Only the PDFs of math.hwpx, fdi-2025q2.hwp and the two-up document
+change.
+
+| Change | Before |
+|--------|--------|
+| ASCII punctuation whose font slot names an HFT font is drawn fitted to its laid-out advance, as ASCII letters and digits are | It was drawn with the substitute font's own width: `(` in Hanyang Sinmyeongjo (한양신명조) advances 4.32 pt at 10.93 pt and Malgun Gothic draws it 3.33 pt wide |
+
 ## fontdb
 
 Without memory mapping, fontdb 0.23 reads the whole font file from disk every
