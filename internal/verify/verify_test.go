@@ -196,6 +196,53 @@ func TestMemoRemoved(t *testing.T) {
 	}
 }
 
+func TestMemoEndLost(t *testing.T) {
+	end := regexp.MustCompile(`<hp:ctrl><hp:fieldEnd [^>]*/></hp:ctrl>`)
+	edited := rewriteHWPX(t, func(s string) string { return end.ReplaceAllString(s, "") })
+	orig, cur := mustLoad(t, sampleHWPX), mustLoad(t, edited)
+	if len(cur.Summary.Memos) != 1 || cur.Summary.Memos[0].End != model.MemoEndMissing || orig.Summary.Memos[0].End != model.MemoEndFound {
+		t.Fatalf("memos: orig %+v, cur %+v", orig.Summary.Memos, cur.Summary.Memos)
+	}
+	r := Check(orig, cur, Options{})
+	want := Finding{What: "memoEnd", Loc: "s0/p7", Orig: "가짜 메모: 표현을 다듬을 것", New: "no field end", Severity: Violation}
+	if len(r.Preserved) != 1 || r.Preserved[0] != want || r.Violations != 1 {
+		t.Fatalf("preservation = %+v", r.Preserved)
+	}
+	if out := plain(t, r); !strings.Contains(out, "! memo at s0/p7 lost its field end: 가짜 메모: 표현을 다듬을 것\n") {
+		t.Errorf("plain:\n%s", out)
+	}
+
+	// An original that already lacked the end, and an hwp original whose
+	// field ends are not read, give nothing to compare against.
+	for name, o := range map[string]*model.Document{"open original": cur, "hwp original": mustLoad(t, sampleHWP)} {
+		if r := Check(o, cur, Options{}); len(r.Preserved) != 0 || r.Violations != 0 {
+			t.Errorf("%s: preservation = %+v", name, r.Preserved)
+		}
+	}
+	if r := Check(orig, orig, Options{}); len(r.Preserved) != 0 {
+		t.Errorf("same document: preservation = %+v", r.Preserved)
+	}
+}
+
+func TestMemoEndsPairByText(t *testing.T) {
+	m := func(text string, end model.MemoEnd) model.Memo {
+		return model.Memo{Loc: "s0/p" + text, Text: text, End: end}
+	}
+	r := &Report{}
+	r.memoEnds(
+		[]model.Memo{m("1", model.MemoEndFound), m("1", model.MemoEndFound), m("2", model.MemoEndMissing), m("3", model.MemoEndFound)},
+		[]model.Memo{m("1", model.MemoEndMissing), m("1", model.MemoEndFound), m("2", model.MemoEndMissing), m("3", model.MemoEndUnknown)},
+	)
+	if len(r.Preserved) != 1 || r.Preserved[0].Orig != "1" {
+		t.Errorf("findings = %+v", r.Preserved)
+	}
+	r = &Report{}
+	r.memoEnds([]model.Memo{m("1", model.MemoEndFound)}, []model.Memo{m("1", model.MemoEndMissing), m("1", model.MemoEndMissing)})
+	if len(r.Preserved) != 1 {
+		t.Errorf("one closed original, two open copies: findings = %+v", r.Preserved)
+	}
+}
+
 func TestPreservationCounts(t *testing.T) {
 	orig := &model.Document{Format: "hwpx", Blocks: []model.Block{
 		{Loc: "s0/p0", Kind: model.KindPara, Text: "표"},

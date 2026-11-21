@@ -214,7 +214,7 @@ func readSection(f *zip.File, sec int, doc *model.Document) error {
 		return err
 	}
 	defer closer.Close()
-	w := &walker{dec: dec, doc: doc}
+	w := &walker{dec: dec, doc: doc, memos: map[string]int{}}
 	p := 0
 	for {
 		tok, err := dec.Token()
@@ -282,7 +282,8 @@ func (w *walker) block(loc string, kind model.Kind) error {
 type walker struct {
 	dec   *xml.Decoder
 	doc   *model.Document
-	cells int // counter for unique placeholder locations
+	cells int            // counter for unique placeholder locations
+	memos map[string]int // index in Summary.Memos by the id of the memo's fieldBegin
 
 	ins, del int          // open insertion and deletion ranges
 	brk      model.Change // changes that took the current paragraph's break
@@ -392,8 +393,13 @@ func (w *walker) para(loc string) (paraText, error) {
 					if err != nil {
 						return paraText{}, err
 					}
-					w.doc.Summary.Memos = append(w.doc.Summary.Memos, model.Memo{Loc: loc, Text: text.Text(model.ViewAccepted)})
+					w.memos[attr(t, "id")] = len(w.doc.Summary.Memos)
+					w.doc.Summary.Memos = append(w.doc.Summary.Memos, model.Memo{Loc: loc, Text: text.Text(model.ViewAccepted), End: model.MemoEndMissing})
 					continue
+				}
+			case "fieldEnd":
+				if i, ok := w.memos[attr(t, "beginIDRef")]; ok {
+					w.doc.Summary.Memos[i].End = model.MemoEndFound
 				}
 			case "pic":
 				if err := w.pic(loc); err != nil {

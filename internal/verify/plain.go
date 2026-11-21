@@ -93,6 +93,8 @@ func (r *Report) WritePlain(w io.Writer) error {
 			switch f.What {
 			case "memo":
 				ew.printf("%s memo at %s is gone or changed: %s\n", mark(f.Severity), f.Loc, lineEscaper.Replace(f.Orig))
+			case "memoEnd":
+				ew.printf("%s memo at %s lost its field end: %s\n", mark(f.Severity), f.Loc, lineEscaper.Replace(f.Orig))
 			case "table":
 				ew.printf("%s table %s %s -> %s\n", mark(f.Severity), f.Loc, f.Orig, f.New)
 			default:

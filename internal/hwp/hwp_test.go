@@ -18,7 +18,8 @@ const (
 )
 
 // The two samples are the same document saved by Hwp in both formats, so
-// everything except the binary item naming must agree.
+// everything except the binary item naming and the memo field ends, which
+// the hwp reader does not read, must agree.
 func TestSampleMatchesHWPX(t *testing.T) {
 	got, err := Read(sampleHWP)
 	if err != nil {
@@ -36,6 +37,9 @@ func TestSampleMatchesHWPX(t *testing.T) {
 	}
 
 	g, w := got.Summary, want.Summary
+	for i := range w.Memos {
+		w.Memos[i].End = model.MemoEndUnknown
+	}
 	for _, c := range []struct {
 		name      string
 		got, want any

@@ -55,7 +55,7 @@ func TestSampleSummary(t *testing.T) {
 	if want := []model.Table{{Loc: "s0/p4/t0", Rows: 3, Cols: 3}}; !reflect.DeepEqual(s.Tables, want) {
 		t.Errorf("tables = %+v", s.Tables)
 	}
-	if want := []model.Memo{{Loc: "s0/p7", Text: "가짜 메모: 표현을 다듬을 것"}}; !reflect.DeepEqual(s.Memos, want) {
+	if want := []model.Memo{{Loc: "s0/p7", Text: "가짜 메모: 표현을 다듬을 것", End: model.MemoEndFound}}; !reflect.DeepEqual(s.Memos, want) {
 		t.Errorf("memos = %+v", s.Memos)
 	}
 	if s.TrackChanges != 0 || s.ParaShapes != 20 || s.CharShapes != 7 {

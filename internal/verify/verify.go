@@ -152,7 +152,7 @@ type Change struct {
 
 // Finding is one preservation result.
 type Finding struct {
-	What     string   `json:"what"` // memo, tables, table, pictures, trackChanges
+	What     string   `json:"what"` // memo, memoEnd, tables, table, pictures, trackChanges
 	Loc      string   `json:"loc,omitempty"`
 	Orig     string   `json:"orig"`
 	New      string   `json:"new"`
@@ -316,6 +316,7 @@ func (r *Report) preservation(orig, cur *model.Document, pairs []pair) {
 		}
 		add("memo", m.Loc, m.Text, "", Violation)
 	}
+	r.memoEnds(osum.Memos, nsum.Memos)
 
 	tablesKept := countCheck("tables", len(osum.Tables), len(nsum.Tables))
 	locMap := map[string]string{}
@@ -343,6 +344,36 @@ func (r *Report) preservation(orig, cur *model.Document, pairs []pair) {
 
 	countCheck("pictures", len(osum.Pictures), len(nsum.Pictures))
 	countCheck("trackChanges", osum.TrackChanges, nsum.TrackChanges)
+}
+
+// memoEnds flags memos whose field was closed in the original but has no
+// field end in the new document. Memos are paired by text; memos the new
+// document lost are left to the memo check, and memos whose end a reader
+// does not track are skipped.
+func (r *Report) memoEnds(orig, cur []model.Memo) {
+	closed := map[string]int{}
+	for _, m := range orig {
+		if m.End == model.MemoEndFound {
+			closed[m.Text]++
+		}
+	}
+	found, known := map[string]int{}, map[string]int{}
+	for _, m := range cur {
+		switch m.End {
+		case model.MemoEndFound:
+			found[m.Text]++
+			known[m.Text]++
+		case model.MemoEndMissing:
+			known[m.Text]++
+		}
+	}
+	for _, m := range cur {
+		if m.End != model.MemoEndMissing || min(closed[m.Text], known[m.Text]) <= found[m.Text] {
+			continue
+		}
+		found[m.Text]++
+		r.Preserved = append(r.Preserved, Finding{What: "memoEnd", Loc: m.Loc, Orig: m.Text, New: "no field end", Severity: Violation})
+	}
 }
 
 // mapLoc moves an original table location to the new document through the

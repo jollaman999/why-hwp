@@ -118,9 +118,19 @@ type Table struct {
 // Memo is a memo (hwpx, hwp) or comment (docx). Loc is the paragraph or cell
 // that holds the memo anchor; for docx it is empty.
 type Memo struct {
-	Loc  string `json:"loc"`
-	Text string `json:"text"`
+	Loc  string  `json:"loc"`
+	Text string  `json:"text"`
+	End  MemoEnd `json:"-"`
 }
+
+// MemoEnd tells whether the field that anchors a memo is closed.
+type MemoEnd int
+
+const (
+	MemoEndUnknown MemoEnd = iota // the reader does not track field ends (hwp, docx)
+	MemoEndFound                  // hwpx: an hp:fieldEnd names the memo's hp:fieldBegin
+	MemoEndMissing                // hwpx: no hp:fieldEnd in the section names it
+)
 
 // Style is one named style.
 type Style struct {
