@@ -1,0 +1,935 @@
+# rhwp change tracking for why-hwp: read it from HWPX and write it to HWP.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch to rhwp-trackchange2.patch; apply this after
+# rhwp-trackchange2.patch.
+# Zero-context diff (apply with git apply --unidiff-zero). Hunks touch no file
+# of rhwp-trackchange2.patch and change no line that rhwp-trackchange.patch added.
+#
+# - hh:trackChanges and hh:trackChangeAuthors are read into
+#   DocInfo::track_changes and DocInfo::track_change_authors at their ids.
+# - hp:insertBegin/End and hp:deleteBegin/End become range tags of kind 0x10
+#   and 0x11 (TcId in the low 24 bits), hp:run/@charTcId and hp:p/@paraTcId
+#   become kind 0x12 and 0x13, and hp:p/@merged="1" goes to PARA_HEADER
+#   offset 22. Order, ends and empty ranges follow the HWP Hancom Office wrote
+#   from the same HWPX (rhwp sample issue5169, 590 paragraphs, and t2).
+# - An HWP save writes TRACK_CHANGE_AUTHOR and TRACK_CHANGE records from the
+#   model when the DocInfo holds no raw ones (an HWP source keeps its own), and
+#   ID_MAPPINGS counts them.
+# - rhwp projects hidden tracked changes out of the IR it shows. An HWP or HWPX
+#   export of an HWPX document that is still as loaded reads the file again
+#   without that projection, so deleted text stays inside its range tags.
+diff --git a/src/document_core/commands/document.rs b/src/document_core/commands/document.rs
+index 0245045..bbe0a6c 100644
+--- a/src/document_core/commands/document.rs
++++ b/src/document_core/commands/document.rs
+@@ -61,0 +62,3 @@ pub struct HwpExportSnapshot {
++    /// why-hwp: why the HWPX source could not be read again with its hidden tracked
++    /// changes kept. Serializing then fails instead of writing the projected IR.
++    tracked_text_error: Option<String>,
+@@ -72,0 +76,3 @@ impl HwpExportSnapshot {
++        if let Some(error) = &self.tracked_text_error {
++            return Err(HwpError::RenderError(format!("tracked changes: {error}")));
++        }
+@@ -220,0 +227,58 @@ impl DocumentCore {
++    /// why-hwp: `from_bytes_inner` for HWPX. Hidden tracked changes are projected out of
++    /// the IR (`parser/hwpx/tracked_changes.rs`), so the file is kept, as for HWP, with
++    /// digests of the model to tell that the document is still as loaded.
++    fn from_hwpx_bytes(data: &[u8], password: Option<&[u8]>) -> Result<DocumentCore, HwpError> {
++        let mut core = Self::open_bytes(data, password)?;
++        let hidden_text_change = core.document.doc_info.track_changes.iter().flatten().any(|c| {
++            c.hide
++                && matches!(
++                    c.kind,
++                    crate::model::document::TrackChangeKind::Insert
++                        | crate::model::document::TrackChangeKind::Delete
++                )
++        });
++        if core.source_format == crate::parser::FileFormat::Hwpx && hidden_text_change {
++            core.tracked_text_digests = Some(core.tracked_text_digests());
++            core.tracked_text_source = Some(super::super::TrackedTextSource {
++                data: data.to_vec(),
++                password: password.map(<[u8]>::to_vec),
++            });
++        }
++        Ok(core)
++    }
++
++    fn tracked_text_digests(&self) -> Vec<[u8; 32]> {
++        use crate::model::raw_provenance::{doc_info_model_digest, section_model_digest};
++        std::iter::once(doc_info_model_digest(
++            &self.document.doc_info,
++            &self.document.doc_properties,
++        ))
++        .chain(self.document.sections.iter().map(section_model_digest))
++        .collect()
++    }
++
++    /// why-hwp: an HWPX document opened again from `tracked_text_source` with its hidden
++    /// tracked changes kept, while it is still as loaded; `None` without hidden changes.
++    /// An edited document has only the projected IR, which lacks the hidden ranges and
++    /// deleted text while DocInfo still counts their changes. Writing it would lose them
++    /// unnoticed, so that is an error.
++    fn hwpx_tracked_text_document(&self) -> Option<Result<DocumentCore, HwpError>> {
++        let source = self.tracked_text_source.as_ref()?;
++        if self.tracked_text_digests.as_ref()? != &self.tracked_text_digests() {
++            return Some(Err(HwpError::RenderError(
++                "the document was edited after loading and its hidden tracked changes \
++                 cannot be written"
++                    .into(),
++            )));
++        }
++        Some(
++            crate::parser::with_tracked_text(|| {
++                Self::open_bytes(&source.data, source.password.as_deref())
++            })
++            .map(|mut tracked| {
++                tracked.file_name = self.file_name.clone();
++                tracked
++            }),
++        )
++    }
++
+@@ -221,0 +286,3 @@ impl DocumentCore {
++        if crate::parser::detect_format(data) == crate::parser::FileFormat::Hwpx {
++            return Self::from_hwpx_bytes(data, password);
++        }
+@@ -513,0 +581 @@ impl DocumentCore {
++            tracked_text_digests: None,
+@@ -3011,0 +3080,10 @@ impl DocumentCore {
++        // why-hwp: HWP keeps deleted text inside its change range tags, as HWPX does. An
++        // HWPX source still as loaded is written from the file read again with its hidden
++        // changes kept, as `hwpx_document_for_export` does. An HWP source keeps the stored
++        // sections in its raw streams already.
++        let mut tracked_text_error = None;
++        match self.hwpx_tracked_text_document() {
++            Some(Ok(tracked)) => return tracked.try_prepare_hwp_export_snapshot(storage),
++            Some(Err(error)) => tracked_text_error = Some(error.to_string()),
++            None => {}
++        }
+@@ -3024 +3102,4 @@ impl DocumentCore {
+-        Ok(HwpExportSnapshot { document: snapshot })
++        Ok(HwpExportSnapshot {
++            document: snapshot,
++            tracked_text_error,
++        })
+@@ -3180,0 +3262,4 @@ impl DocumentCore {
++        // why-hwp: the same for an HWPX source, which has no raw streams to tell it unedited.
++        if let Some(tracked) = self.hwpx_tracked_text_document() {
++            return tracked?.hwpx_document_for_export(serialize);
++        }
+@@ -4686,0 +4772,69 @@ mod set_document_tests {
++
++// why-hwp: an HWPX with hidden tracked changes is exported from the file read again while
++// it is still as loaded, and an edited one is not exported at all.
++#[cfg(test)]
++mod hwpx_tracked_text_tests {
++    use super::DocumentCore;
++
++    fn deletions(document: &crate::model::document::Document) -> usize {
++        fn count(paragraphs: &[crate::model::paragraph::Paragraph]) -> usize {
++            paragraphs
++                .iter()
++                .map(|p| {
++                    p.range_tags
++                        .iter()
++                        .filter(|r| r.tag >> 24 == 0x11 && r.start < r.end)
++                        .count()
++                        + p.controls
++                            .iter()
++                            .filter_map(|c| match c {
++                                crate::model::control::Control::Table(t) => Some(
++                                    t.cells.iter().map(|cell| count(&cell.paragraphs)).sum::<usize>(),
++                                ),
++                                _ => None,
++                            })
++                            .sum::<usize>()
++                })
++                .sum()
++        }
++        document.sections.iter().map(|s| count(&s.paragraphs)).sum()
++    }
++
++    #[test]
++    fn edited_hwpx_with_hidden_tracked_changes_is_not_exported() {
++        let hwp = std::fs::read("samples/issue5169_viewtext_changetracking.hwp").unwrap();
++        let stored = crate::parser::with_tracked_text(|| crate::parser::parse_document(&hwp))
++            .unwrap();
++        let hwpx = DocumentCore::from_bytes(&hwp)
++            .unwrap()
++            .export_hwpx_native()
++            .unwrap();
++
++        let loaded = DocumentCore::from_bytes(&hwpx).unwrap();
++        assert!(loaded.tracked_text_source.is_some());
++        let written = loaded.export_hwp_with_adapter().unwrap();
++        let reread =
++            crate::parser::with_tracked_text(|| crate::parser::parse_document(&written)).unwrap();
++        let from_hwpx =
++            crate::parser::with_tracked_text(|| crate::parser::parse_document(&hwpx)).unwrap();
++        // 182 deletion ranges in the HWP; 5 of them hold only a paragraph break among other
++        // ranges and are written paraend="0", so 177 come back, as in Hancom Office's own
++        // HWP -> HWPX -> HWP round trip of this file (177 hp:deleteBegin).
++        assert_eq!(deletions(&stored), 182);
++        assert_eq!(deletions(&from_hwpx), 177);
++        assert_eq!(deletions(&reread), 177);
++        assert!(loaded.export_hwpx_native().is_ok());
++
++        let mut edited = DocumentCore::from_bytes(&hwpx).unwrap();
++        edited.convert_to_editable_native().unwrap();
++        assert!(edited.export_hwp_with_adapter().is_ok());
++        edited.insert_text_native(0, 0, 0, "x").unwrap();
++        for result in [
++            edited.export_hwp_with_adapter(),
++            edited.export_hwpx_native(),
++        ] {
++            let error = result.expect_err("edited document must not be exported");
++            assert!(error.to_string().contains("hidden tracked changes"), "{error}");
++        }
++    }
++}
+diff --git a/src/document_core/mod.rs b/src/document_core/mod.rs
+index 2a4bf5d..24760bf 100644
+--- a/src/document_core/mod.rs
++++ b/src/document_core/mod.rs
+@@ -353,0 +354,4 @@ pub struct DocumentCore {
++    /// why-hwp: for an HWPX `tracked_text_source`, digests of the model as loaded
++    /// (`DocumentCore::tracked_text_digests`). HWPX has no raw streams whose seals
++    /// would tell an unedited document.
++    pub(crate) tracked_text_digests: Option<Vec<[u8; 32]>>,
+@@ -656,0 +661 @@ impl DocumentCore {
++            tracked_text_digests: None,
+diff --git a/src/model/document.rs b/src/model/document.rs
+index 31e45f4..af0401c 100644
+--- a/src/model/document.rs
++++ b/src/model/document.rs
+@@ -212,0 +213,35 @@ impl TrackChangeAuthor {
++impl TrackChange {
++    /// why-hwp: the `HWPTAG_TRACK_CHANGE` record that [`Self::from_record`] reads.
++    pub fn to_record(&self) -> Vec<u8> {
++        let mut data = Vec::with_capacity(30);
++        data.extend_from_slice(&self.kind.code().to_le_bytes());
++        for part in self.date {
++            data.extend_from_slice(&part.to_le_bytes());
++        }
++        data.extend_from_slice(&self.author_id.to_le_bytes());
++        data.extend_from_slice(&[0; 2]);
++        data.extend_from_slice(&self.properties.to_le_bytes());
++        if let Some(shape_id) = self.shape_id {
++            data.extend_from_slice(&shape_id.to_le_bytes());
++        }
++        data.extend_from_slice(&u32::from(self.hide).to_le_bytes());
++        data
++    }
++}
++
++impl TrackChangeAuthor {
++    /// why-hwp: the `HWPTAG_TRACK_CHANGE_AUTHOR` record, with the last four bytes zero
++    /// as Hancom Office writes them when it saves HWPX as HWP.
++    pub fn to_record(&self) -> Vec<u8> {
++        let units: Vec<u16> = self.name.encode_utf16().collect();
++        let mut data = Vec::with_capacity(12 + units.len() * 2);
++        data.extend_from_slice(&(units.len() as u32).to_le_bytes());
++        for unit in units {
++            data.extend_from_slice(&unit.to_le_bytes());
++        }
++        data.extend_from_slice(&self.mark.to_le_bytes());
++        data.extend_from_slice(&[0; 4]);
++        data
++    }
++}
++
+@@ -1240,0 +1276,37 @@ mod tests {
++
++    // why-hwp: records Hancom Office wrote when it saved a public sample HWPX (t2, made by
++    // why-hwp apply) as HWP, and records of rhwp samples/issue5169_viewtext_changetracking.hwp.
++    #[test]
++    fn track_change_records_are_written_like_hancom_hwp() {
++        let hex = |s: &str| {
++            (0..s.len())
++                .step_by(2)
++                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
++                .collect::<Vec<u8>>()
++        };
++        let insert = TrackChange {
++            kind: TrackChangeKind::Insert,
++            date: [2026, 1, 1, 9, 0],
++            author_id: 1,
++            properties: 0,
++            shape_id: None,
++            hide: false,
++        };
++        assert_eq!(
++            insert.to_record(),
++            hex("10000000ea070100010009000000010000000000000000000000")
++        );
++        let author = TrackChangeAuthor {
++            name: "A".into(),
++            mark: 1,
++        };
++        assert_eq!(author.to_record(), hex("0100000041000100000000000000"));
++        for record in [
++            "11000000e107030016000f000b00010000000000000001000000",
++            "13000000e20704000f000f002a0003000000040000003100000000000000",
++            "12000000e107030017001100020001000000040000004600000000000000",
++        ] {
++            let change = TrackChange::from_record(&hex(record)).unwrap();
++            assert_eq!(change.to_record(), hex(record), "{record}");
++        }
++    }
+diff --git a/src/model/memo_time.rs b/src/model/memo_time.rs
+index 592a494..9719dca 100644
+--- a/src/model/memo_time.rs
++++ b/src/model/memo_time.rs
+@@ -87,0 +88,46 @@ mod tests {
++
++/// why-hwp: the HWP form of an HWPX change-tracking date, the reverse of
++/// [`track_change_date`]: local time of this PC, seconds dropped.
++pub(crate) fn track_change_local_date(value: &str) -> Option<[u16; 5]> {
++    track_change_local_date_in(value, &memo_zone())
++}
++
++fn track_change_local_date_in<Tz: chrono::TimeZone>(value: &str, zone: &Tz) -> Option<[u16; 5]> {
++    use chrono::{Datelike, Timelike};
++    let moment = match DateTime::parse_from_rfc3339(value.trim()) {
++        Ok(moment) => moment.with_timezone(&Utc),
++        Err(_) => chrono::NaiveDateTime::parse_from_str(value.trim(), "%Y-%m-%dT%H:%M:%S")
++            .ok()?
++            .and_utc(),
++    };
++    let local = moment.with_timezone(zone);
++    Some([
++        u16::try_from(local.year()).ok()?,
++        local.month() as u16,
++        local.day() as u16,
++        local.hour() as u16,
++        local.minute() as u16,
++    ])
++}
++
++#[cfg(test)]
++mod local_date_tests {
++    #[test]
++    fn track_change_date_is_read_into_local_time() {
++        // Hancom Office on a +09:00 PC saved date="2026-01-01T00:00:00Z" as 2026-01-01 09:00.
++        let seoul = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
++        assert_eq!(
++            super::track_change_local_date_in("2026-01-01T00:00:00Z", &seoul),
++            Some([2026, 1, 1, 9, 0])
++        );
++        assert_eq!(
++            super::track_change_local_date_in("2017-03-22T06:11:59Z", &seoul),
++            Some([2017, 3, 22, 15, 11])
++        );
++        assert_eq!(
++            super::track_change_local_date_in("2026-03-18T20:00:00", &seoul),
++            Some([2026, 3, 19, 5, 0])
++        );
++        assert_eq!(super::track_change_local_date_in("", &seoul), None);
++    }
++}
+diff --git a/src/parser/hwpx/header.rs b/src/parser/hwpx/header.rs
+index 77c4682..05d1990 100644
+--- a/src/parser/hwpx/header.rs
++++ b/src/parser/hwpx/header.rs
+@@ -202,0 +203,2 @@ pub(super) fn parse_hwpx_header_with_plain_margin_units(
++                    b"trackChange" => parse_track_change(e, &mut doc_info),
++                    b"trackChangeAuthor" => parse_track_change_author(e, &mut doc_info),
+@@ -240,0 +243,2 @@ pub(super) fn parse_hwpx_header_with_plain_margin_units(
++                    b"trackChange" => parse_track_change(e, &mut doc_info),
++                    b"trackChangeAuthor" => parse_track_change_author(e, &mut doc_info),
+@@ -389,0 +394,83 @@ fn parse_track_change_config(e: &quick_xml::events::BytesStart, doc_info: &mut D
++/// why-hwp: `<hh:trackChange>` into `DocInfo::track_changes` at its one-based `id`,
++/// the index that `TcId` names. The reverse of the HWPX writer in
++/// `serializer/hwpx/header.rs`: `parashapeID` is one lower than the HWP shape ID, and
++/// `properties` is 4 for shape changes and 0 for text changes, as in every record of
++/// the HWP files Hancom Office wrote for rhwp sample issue5169 and the t2 sample.
++fn parse_track_change(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
++    use crate::model::document::{TrackChange, TrackChangeKind};
++
++    let mut kind = None;
++    let mut date = [0u16; 5];
++    let mut author_id = 0u16;
++    let mut hide = false;
++    let mut id = None;
++    let mut char_shape = None;
++    let mut para_shape = None;
++    for attr in e.attributes().flatten() {
++        match attr.key.as_ref().as_bytes() {
++            b"type" => {
++                kind = match attr_str(&attr).as_str() {
++                    "Insert" => Some(TrackChangeKind::Insert),
++                    "Delete" => Some(TrackChangeKind::Delete),
++                    "CharShape" => Some(TrackChangeKind::CharShape),
++                    "ParaShape" => Some(TrackChangeKind::ParaShape),
++                    _ => None,
++                }
++            }
++            b"date" => {
++                date = crate::model::memo_time::track_change_local_date(&attr_str(&attr))
++                    .unwrap_or_default()
++            }
++            b"authorID" => author_id = parse_u16(&attr),
++            b"hide" => hide = parse_bool(&attr),
++            b"id" => id = attr_str(&attr).parse::<usize>().ok(),
++            b"charshapeID" => char_shape = Some(parse_u32(&attr)),
++            b"parashapeID" => para_shape = Some(parse_u32(&attr)),
++            _ => {}
++        }
++    }
++    let change = kind.map(|kind| {
++        let shape_id = match kind {
++            TrackChangeKind::Insert | TrackChangeKind::Delete => None,
++            TrackChangeKind::CharShape => Some(char_shape.unwrap_or(0)),
++            TrackChangeKind::ParaShape => Some(para_shape.map_or(0, |id| id.saturating_add(1))),
++        };
++        TrackChange {
++            kind,
++            date,
++            author_id,
++            properties: if shape_id.is_some() { 4 } else { 0 },
++            shape_id,
++            hide,
++        }
++    });
++    let index = id
++        .and_then(|id| id.checked_sub(1))
++        .unwrap_or(doc_info.track_changes.len());
++    set_indexed(&mut doc_info.track_changes, index, change);
++}
++
++/// why-hwp: `<hh:trackChangeAuthor>` into `DocInfo::track_change_authors` at its
++/// one-based `id`, the index that `authorID` names.
++fn parse_track_change_author(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
++    let mut name = String::new();
++    let mut mark = 0u32;
++    let mut id = None;
++    for attr in e.attributes().flatten() {
++        match attr.key.as_ref().as_bytes() {
++            b"name" => name = attr_str(&attr),
++            b"mark" => mark = parse_u32(&attr),
++            b"id" => id = attr_str(&attr).parse::<usize>().ok(),
++            _ => {}
++        }
++    }
++    let index = id
++        .and_then(|id| id.checked_sub(1))
++        .unwrap_or(doc_info.track_change_authors.len());
++    set_indexed(
++        &mut doc_info.track_change_authors,
++        index,
++        Some(crate::model::document::TrackChangeAuthor { name, mark }),
++    );
++}
++
+@@ -2604,0 +2692,64 @@ mod tests {
++    // why-hwp: hh:trackChanges and hh:trackChangeAuthors as the t2 sample has them and as
++    // Hancom Office writes shape changes (rhwp sample issue5169).
++    #[test]
++    fn track_changes_are_read_into_the_model() {
++        use crate::model::document::{TrackChange, TrackChangeAuthor, TrackChangeKind};
++
++        let xml = r#"<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"><hh:refList>
++<hh:trackChanges itemCnt="3">
++<hh:trackChange type="Delete" date="2026-01-02T00:00:00Z" authorID="2" hide="1" id="1"/>
++<hh:trackChange type="ParaShape" date="2026-01-02T00:00:00Z" authorID="1" hide="0" id="3" parashapeID="48"/>
++<hh:trackChange type="CharShape" authorID="1" hide="0" id="4" charshapeID="70"/>
++</hh:trackChanges>
++<hh:trackChangeAuthors itemCnt="2">
++<hh:trackChangeAuthor name="A&amp;B" mark="1" id="2"/>
++<hh:trackChangeAuthor name="C" mark="0" id="1"/>
++</hh:trackChangeAuthors></hh:refList></hh:head>"#;
++        let (info, _) = parse_hwpx_header(xml).unwrap();
++        let date = crate::model::memo_time::track_change_local_date("2026-01-02T00:00:00Z")
++            .unwrap();
++        assert_eq!(
++            info.track_changes,
++            vec![
++                Some(TrackChange {
++                    kind: TrackChangeKind::Delete,
++                    date,
++                    author_id: 2,
++                    properties: 0,
++                    shape_id: None,
++                    hide: true,
++                }),
++                None,
++                Some(TrackChange {
++                    kind: TrackChangeKind::ParaShape,
++                    date,
++                    author_id: 1,
++                    properties: 4,
++                    shape_id: Some(49),
++                    hide: false,
++                }),
++                Some(TrackChange {
++                    kind: TrackChangeKind::CharShape,
++                    date: [0; 5],
++                    author_id: 1,
++                    properties: 4,
++                    shape_id: Some(70),
++                    hide: false,
++                }),
++            ]
++        );
++        assert_eq!(
++            info.track_change_authors,
++            vec![
++                Some(TrackChangeAuthor {
++                    name: "C".into(),
++                    mark: 0
++                }),
++                Some(TrackChangeAuthor {
++                    name: "A&B".into(),
++                    mark: 1
++                }),
++            ]
++        );
++    }
++
+diff --git a/src/parser/hwpx/mod.rs b/src/parser/hwpx/mod.rs
+index a639575..09774bd 100644
+--- a/src/parser/hwpx/mod.rs
++++ b/src/parser/hwpx/mod.rs
+@@ -707 +707,6 @@ pub(crate) fn parse_hwpx_with_reservation(
+-        let projected_xml = tracking_visibility.project(&section_xml)?;
++        // why-hwp: `with_tracked_text` keeps hidden tracked changes, as stored.
++        let projected_xml = if crate::parser::KEEP_TRACKED_TEXT.with(|keep| keep.get()) {
++            None
++        } else {
++            tracking_visibility.project(&section_xml)?
++        };
+diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
+index 6d56998..ce2927e 100644
+--- a/src/parser/hwpx/section.rs
++++ b/src/parser/hwpx/section.rs
+@@ -30 +30 @@ use crate::model::paragraph::{
+-    CharShapeRef, FieldRange, LineSeg, OrphanFieldEnd, Paragraph, TitleMark,
++    CharShapeRef, FieldRange, LineSeg, OrphanFieldEnd, Paragraph, RangeTag, TitleMark,
+@@ -677,0 +678,3 @@ fn parse_paragraph_body(
++    // why-hwp: change tracking of this paragraph (`merged`, `paraTcId`, `charTcId`, marks).
++    let mut merged = false;
++    let mut track = TrackedParagraph::default();
+@@ -701,0 +705,2 @@ fn parse_paragraph_body(
++            b"merged" => merged = parse_u8(&attr) == 1,
++            b"paraTcId" => track.para_tc_id = Some(parse_u32(&attr)),
+@@ -759,0 +765,6 @@ fn parse_paragraph_body(
++                    b"insertBegin" | b"insertEnd" | b"deleteBegin" | b"deleteEnd" => {
++                        if let Some(mark) = TrackMarkPart::read(local, ce) {
++                            let pos = calc_utf16_len_from_parts(&text_parts);
++                            track.marks.push((pos, mark));
++                        }
++                    }
+@@ -781,0 +793 @@ fn parse_paragraph_body(
++                        track.push_run(utf16_pos, ce);
+@@ -802,0 +815,12 @@ fn parse_paragraph_body(
++                        for (part, index, mark) in &content.track_marks {
++                            let mut pos = calc_utf16_len_from_parts(&text_parts)
++                                + calc_utf16_len_from_parts(&content.parts[..*part]);
++                            if let Some(text) = content.parts.get(*part) {
++                                pos += text
++                                    .chars()
++                                    .take(*index)
++                                    .map(hwpx_char_utf16_width)
++                                    .sum::<u32>();
++                            }
++                            track.marks.push((pos, *mark));
++                        }
+@@ -976,0 +1001,6 @@ fn parse_paragraph_body(
++                    b"insertBegin" | b"insertEnd" | b"deleteBegin" | b"deleteEnd" => {
++                        if let Some(mark) = TrackMarkPart::read(local, ce) {
++                            let pos = calc_utf16_len_from_parts(&text_parts);
++                            track.marks.push((pos, mark));
++                        }
++                    }
+@@ -999,0 +1030 @@ fn parse_paragraph_body(
++                        track.push_run(utf16_pos, ce);
+@@ -1172,0 +1204,5 @@ fn parse_paragraph_body(
++    // why-hwp: change tracking is stored in HWP as range tags of this paragraph.
++    if axis_5251 {
++        track.map_positions(|pos| hwpx_map_std_pos_to_5251_axis(&text_parts, pos));
++    }
++    para.range_tags.extend(track.range_tags(para.char_count));
+@@ -1282,0 +1319,5 @@ fn parse_paragraph_body(
++    // why-hwp: PARA_HEADER offset 22, joined to the paragraph before by a tracked
++    // deletion of the break between them (`merged`).
++    if merged {
++        header_extra.extend_from_slice(&1u16.to_le_bytes());
++    }
+@@ -2153,0 +2195,139 @@ const MARKPEN_END_PART: &str = "\u{0007}E";
++/// why-hwp: one `hp:insertBegin`, `hp:insertEnd`, `hp:deleteBegin` or `hp:deleteEnd`.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct TrackMarkPart {
++    delete: bool,
++    begin: bool,
++    /// `Id`: numbers the range in the document, in the order of the HWP range tags.
++    id: u32,
++    /// `TcId`: one-based index into `DocInfo::track_changes`.
++    tc_id: u32,
++    /// `paraend="1"`: the range takes the paragraph break.
++    para_end: bool,
++}
++
++impl TrackMarkPart {
++    fn read(local: &[u8], e: &quick_xml::events::BytesStart) -> Option<Self> {
++        let mut id = 0;
++        let mut tc_id = None;
++        let mut para_end = false;
++        for attr in e.attributes().flatten() {
++            match attr.key.as_ref().as_bytes() {
++                b"Id" => id = parse_u32(&attr),
++                b"TcId" => tc_id = Some(parse_u32(&attr)),
++                b"paraend" => para_end = parse_u8(&attr) == 1,
++                _ => {}
++            }
++        }
++        Some(Self {
++            delete: local.starts_with(b"delete"),
++            begin: local.ends_with(b"Begin"),
++            id,
++            tc_id: tc_id? & 0x00ff_ffff,
++            para_end,
++        })
++    }
++}
++
++/// why-hwp: the change tracking of one `hp:p`, gathered while it is read and turned into
++/// HWP range tags (kind 0x10 insertion, 0x11 deletion, 0x12 character shape change,
++/// 0x13 paragraph shape change; the low 24 bits are the `TcId`).
++#[derive(Debug, Default)]
++struct TrackedParagraph {
++    /// Insert and delete marks at their UTF-16 positions, in document order.
++    marks: Vec<(u32, TrackMarkPart)>,
++    /// Start of every `hp:run` and its `charTcId`.
++    runs: Vec<(u32, Option<u32>)>,
++    /// `hp:p/@paraTcId`.
++    para_tc_id: Option<u32>,
++}
++
++impl TrackedParagraph {
++    fn push_run(&mut self, pos: u32, e: &quick_xml::events::BytesStart) {
++        let tc_id = e
++            .attributes()
++            .flatten()
++            .find(|a| a.key.as_ref().as_bytes() == b"charTcId")
++            .map(|a| parse_u32(&a) & 0x00ff_ffff);
++        self.runs.push((pos, tc_id));
++    }
++
++    fn map_positions(&mut self, map: impl Fn(u32) -> u32) {
++        for (pos, _) in &mut self.marks {
++            *pos = map(*pos);
++        }
++        for (pos, _) in &mut self.runs {
++            *pos = map(*pos);
++        }
++    }
++
++    /// Range tags in the order Hancom Office writes them: insertions and deletions by
++    /// `Id`, then character shape changes by position, then the paragraph shape change.
++    /// A mark pair is matched by kind and `Id`. A range that ends with `paraend="1"`,
++    /// or does not end in this paragraph, takes the paragraph break (`char_count`).
++    /// Empty ranges are left out, as Hancom Office leaves them out when it saves HWPX as
++    /// HWP (rhwp sample issue5169: its 590 paragraphs match but for these).
++    fn range_tags(&self, char_count: u32) -> Vec<RangeTag> {
++        let text_end = char_count.saturating_sub(1);
++        let tag = |kind: u32, tc_id: u32| (kind << 24) | tc_id;
++        let kind = |mark: &TrackMarkPart| if mark.delete { 0x11 } else { 0x10 };
++        let mut text: Vec<(u32, RangeTag)> = Vec::new();
++        let mut open: Vec<(u32, TrackMarkPart)> = Vec::new();
++        for &(pos, mark) in &self.marks {
++            if mark.begin {
++                open.push((pos, mark));
++                continue;
++            }
++            let start = open
++                .iter()
++                .rposition(|(_, begin)| begin.delete == mark.delete && begin.id == mark.id)
++                .map_or(0, |i| open.remove(i).0);
++            let end = if mark.para_end { char_count } else { pos };
++            if end <= start {
++                continue;
++            }
++            text.push((
++                mark.id,
++                RangeTag {
++                    start,
++                    end,
++                    tag: tag(kind(&mark), mark.tc_id),
++                },
++            ));
++        }
++        for (start, mark) in open {
++            if start >= char_count {
++                continue;
++            }
++            text.push((
++                mark.id,
++                RangeTag {
++                    start,
++                    end: char_count,
++                    tag: tag(kind(&mark), mark.tc_id),
++                },
++            ));
++        }
++        text.sort_by_key(|(id, _)| *id);
++        let mut tags: Vec<RangeTag> = text.into_iter().map(|(_, range)| range).collect();
++        for (i, &(start, tc_id)) in self.runs.iter().enumerate() {
++            let Some(tc_id) = tc_id else { continue };
++            let end = self.runs.get(i + 1).map_or(text_end, |next| next.0).min(text_end);
++            if end > start {
++                tags.push(RangeTag {
++                    start,
++                    end,
++                    tag: tag(0x12, tc_id),
++                });
++            }
++        }
++        if let Some(tc_id) = self.para_tc_id {
++            tags.push(RangeTag {
++                start: 0,
++                end: char_count,
++                tag: tag(0x13, tc_id),
++            });
++        }
++        tags
++    }
++}
++
+@@ -2195,0 +2376,2 @@ struct ParsedTextContent {
++    /// why-hwp: change-tracking marks, each before character `.1` of part `.0`.
++    track_marks: Vec<(usize, usize, TrackMarkPart)>,
+@@ -2240,0 +2423 @@ fn read_text_content_with_tabs(reader: &mut Reader<&[u8]>) -> Result<ParsedTextC
++    let mut track_marks = Vec::new();
+@@ -2287,0 +2471,5 @@ fn read_text_content_with_tabs(reader: &mut Reader<&[u8]>) -> Result<ParsedTextC
++                    b"insertBegin" | b"insertEnd" | b"deleteBegin" | b"deleteEnd" => {
++                        if let Some(mark) = TrackMarkPart::read(local, ce) {
++                            track_marks.push((parts.len(), text.chars().count(), mark));
++                        }
++                    }
+@@ -2368,0 +2557 @@ fn read_text_content_with_tabs(reader: &mut Reader<&[u8]>) -> Result<ParsedTextC
++        track_marks,
+@@ -7990,0 +8180,31 @@ mod tests {
++    // why-hwp: change marks become the range tags Hancom Office wrote in HWP for the same
++    // HWPX (t2 sample, made by why-hwp apply): insertions and deletions by `Id`, then
++    // character and paragraph shape changes; a `paraend="1"` deletion takes the break.
++    #[test]
++    fn track_change_marks_become_hwp_range_tags() {
++        let xml = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
++        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
++  <hp:p id="0" paraPrIDRef="0" styleIDRef="0" merged="0"><hp:run charPrIDRef="0"><hp:t><hp:deleteBegin Id="7" TcId="4"/>샘플<hp:deleteEnd Id="7" TcId="4" paraend="0"/><hp:insertBegin Id="5" TcId="3"/>표본<hp:insertEnd Id="5" TcId="3" paraend="0"/> 사업<hp:insertBegin Id="8" TcId="3"/><hp:insertEnd Id="8" TcId="3" paraend="0"/></hp:t></hp:run></hp:p>
++  <hp:p id="0" paraPrIDRef="0" styleIDRef="0" merged="0"><hp:run charPrIDRef="0"><hp:t><hp:deleteBegin Id="6" TcId="4"/></hp:t><hp:t>그림 1<hp:tab width="100" leader="0" type="1"/>가</hp:t><hp:t><hp:deleteEnd Id="6" TcId="4" paraend="1"/></hp:t></hp:run></hp:p>
++  <hp:p id="0" paraPrIDRef="0" styleIDRef="0" merged="1" paraTcId="9"><hp:run charPrIDRef="0" charTcId="5"><hp:t>ab</hp:t></hp:run><hp:run charPrIDRef="1"><hp:t>cd</hp:t></hp:run><hp:run charPrIDRef="0" charTcId="6"><hp:t>e</hp:t></hp:run></hp:p>
++</hs:sec>"#;
++        let section = parse_hwpx_section(xml).unwrap();
++        let tags = |i: usize| {
++            section.paragraphs[i]
++                .range_tags
++                .iter()
++                .map(|r| (r.start, r.end, r.tag))
++                .collect::<Vec<_>>()
++        };
++        assert_eq!(tags(0), vec![(2, 4, 0x1000_0003), (0, 2, 0x1100_0004)]);
++        // "그림 1" + tab (8 units) + "가" = 13 units, the break is the 14th.
++        assert_eq!(section.paragraphs[1].char_count, 14);
++        assert_eq!(tags(1), vec![(0, 14, 0x1100_0004)]);
++        assert_eq!(
++            tags(2),
++            vec![(0, 2, 0x1200_0005), (4, 5, 0x1200_0006), (0, 6, 0x1300_0009)]
++        );
++        assert_eq!(section.paragraphs[0].raw_header_extra.len(), 10);
++        assert_eq!(&section.paragraphs[2].raw_header_extra[10..], &[1, 0]);
++    }
++
+diff --git a/src/serializer/doc_info.rs b/src/serializer/doc_info.rs
+index 27826cf..242f0b5 100644
+--- a/src/serializer/doc_info.rs
++++ b/src/serializer/doc_info.rs
+@@ -273 +273,15 @@ pub(crate) fn try_serialize_doc_info<S: crate::storage::Storage>(
+-    for record in &doc_info.extra_records {
++    // why-hwp: change tracking read from HWPX has no raw records. Its records are made
++    // from the model and close the ID_MAPPINGS children (level 1), after MEMO_SHAPE and
++    // before DOC_DATA, authors first, as Hancom Office writes them.
++    let generated = generated_track_change_records(doc_info);
++    let generated_at = doc_info
++        .extra_records
++        .iter()
++        .position(|record| record.level == 0)
++        .unwrap_or(doc_info.extra_records.len());
++    for (index, record) in doc_info.extra_records.iter().enumerate() {
++        if index == generated_at {
++            for (tag_id, data) in &generated {
++                super::record_writer::try_append_record(&mut stream, *tag_id, 1, data, storage)?;
++            }
++        }
+@@ -281,0 +296,5 @@ pub(crate) fn try_serialize_doc_info<S: crate::storage::Storage>(
++    if generated_at == doc_info.extra_records.len() {
++        for (tag_id, data) in &generated {
++            super::record_writer::try_append_record(&mut stream, *tag_id, 1, data, storage)?;
++        }
++    }
+@@ -285,0 +305,52 @@ pub(crate) fn try_serialize_doc_info<S: crate::storage::Storage>(
++/// why-hwp: TRACK_CHANGE_AUTHOR and TRACK_CHANGE records made from
++/// `DocInfo::track_change_authors` and `DocInfo::track_changes`, when `extra_records`
++/// holds none (an HWP source keeps its own). An entry that could not be read has no
++/// record to write and is left out.
++fn generated_track_change_records(doc_info: &DocInfo) -> Vec<(u16, Vec<u8>)> {
++    let raw = doc_info.extra_records.iter().any(|record| {
++        matches!(
++            record.tag_id,
++            tags::HWPTAG_TRACK_CHANGE | tags::HWPTAG_TRACK_CHANGE_AUTHOR
++        )
++    });
++    if raw {
++        return Vec::new();
++    }
++    let authors = doc_info
++        .track_change_authors
++        .iter()
++        .flatten()
++        .map(|author| (tags::HWPTAG_TRACK_CHANGE_AUTHOR, author.to_record()));
++    let changes = doc_info
++        .track_changes
++        .iter()
++        .flatten()
++        .map(|change| (tags::HWPTAG_TRACK_CHANGE, change.to_record()));
++    authors.chain(changes).collect()
++}
++
++/// why-hwp: the TRACK_CHANGE and TRACK_CHANGE_AUTHOR counts of ID_MAPPINGS (its last
++/// two `u32`), the records this DocInfo is written with.
++fn track_change_counts(doc_info: &DocInfo) -> (u32, u32) {
++    let count = |tag_id: u16| {
++        doc_info
++            .extra_records
++            .iter()
++            .filter(|record| record.tag_id == tag_id)
++            .count()
++    };
++    let raw = (
++        count(tags::HWPTAG_TRACK_CHANGE),
++        count(tags::HWPTAG_TRACK_CHANGE_AUTHOR),
++    );
++    let (changes, authors) = if raw != (0, 0) {
++        raw
++    } else {
++        (
++            doc_info.track_changes.iter().flatten().count(),
++            doc_info.track_change_authors.iter().flatten().count(),
++        )
++    };
++    (changes as u32, authors as u32)
++}
++
+@@ -371,2 +442,4 @@ fn write_serialize_id_mappings<W: std::io::Write>(
+-    w.write_u32(0)?;
+-    w.write_u32(0)?;
++    // why-hwp: the two are the TRACK_CHANGE and TRACK_CHANGE_AUTHOR counts.
++    let (track_changes, track_change_authors) = track_change_counts(doc_info);
++    w.write_u32(track_changes)?;
++    w.write_u32(track_change_authors)?;
+diff --git a/src/serializer/doc_info/tests.rs b/src/serializer/doc_info/tests.rs
+index 18a07ee..813d101 100644
+--- a/src/serializer/doc_info/tests.rs
++++ b/src/serializer/doc_info/tests.rs
+@@ -55,0 +56,101 @@ fn test_serialize_id_mappings_uses_modern_count_table_size() {
++// why-hwp: change tracking read from HWPX is written as Hancom Office writes it in HWP:
++// authors then changes, after MEMO_SHAPE and before DOC_DATA, counted in ID_MAPPINGS.
++// An HWP source keeps its own records, which are not written twice.
++#[test]
++fn track_changes_from_the_model_are_written_with_their_counts() {
++    use crate::model::document::{RawRecord, TrackChange, TrackChangeAuthor, TrackChangeKind};
++
++    let change = |kind| TrackChange {
++        kind,
++        date: [2026, 1, 1, 9, 0],
++        author_id: 1,
++        properties: 0,
++        shape_id: None,
++        hide: false,
++    };
++    let mut doc_info = DocInfo::default();
++    doc_info.font_faces = vec![Vec::new(); 7];
++    doc_info.track_changes = vec![
++        Some(change(TrackChangeKind::Insert)),
++        Some(change(TrackChangeKind::Delete)),
++    ];
++    doc_info.track_change_authors = vec![Some(TrackChangeAuthor {
++        name: "A".into(),
++        mark: 1,
++    })];
++    doc_info.extra_records = vec![
++        RawRecord {
++            tag_id: tags::HWPTAG_MEMO_SHAPE,
++            level: 1,
++            data: vec![0; 22],
++        },
++        RawRecord {
++            tag_id: tags::HWPTAG_DOC_DATA,
++            level: 0,
++            data: vec![0; 4],
++        },
++    ];
++    let records = |doc_info: &DocInfo| {
++        let stream = serialize_doc_info(doc_info, &DocProperties::default());
++        Record::read_all(&stream).unwrap()
++    };
++    let id_mapping_counts = |records: &[Record]| {
++        let data = &records
++            .iter()
++            .find(|r| r.tag_id == tags::HWPTAG_ID_MAPPINGS)
++            .unwrap()
++            .data;
++        (
++            u32::from_le_bytes(data[64..68].try_into().unwrap()),
++            u32::from_le_bytes(data[68..72].try_into().unwrap()),
++        )
++    };
++
++    let written = records(&doc_info);
++    let tail: Vec<(u16, u16)> = written
++        .iter()
++        .skip_while(|r| r.tag_id != tags::HWPTAG_MEMO_SHAPE)
++        .map(|r| (r.tag_id, r.level))
++        .collect();
++    assert_eq!(
++        tail,
++        vec![
++            (tags::HWPTAG_MEMO_SHAPE, 1),
++            (tags::HWPTAG_TRACK_CHANGE_AUTHOR, 1),
++            (tags::HWPTAG_TRACK_CHANGE, 1),
++            (tags::HWPTAG_TRACK_CHANGE, 1),
++            (tags::HWPTAG_DOC_DATA, 0),
++        ]
++    );
++    let insert = written
++        .iter()
++        .find(|r| r.tag_id == tags::HWPTAG_TRACK_CHANGE)
++        .unwrap();
++    assert_eq!(insert.data, change(TrackChangeKind::Insert).to_record());
++    assert_eq!(id_mapping_counts(&written), (2, 1));
++
++    // An HWP source: three raw TRACK_CHANGE records and no raw author.
++    let raw = change(TrackChangeKind::Insert).to_record();
++    doc_info.extra_records.truncate(1);
++    for _ in 0..3 {
++        doc_info.extra_records.push(RawRecord {
++            tag_id: tags::HWPTAG_TRACK_CHANGE,
++            level: 1,
++            data: raw.clone(),
++        });
++    }
++    let written = records(&doc_info);
++    let changes = written
++        .iter()
++        .filter(|r| r.tag_id == tags::HWPTAG_TRACK_CHANGE)
++        .count();
++    let authors = written
++        .iter()
++        .filter(|r| r.tag_id == tags::HWPTAG_TRACK_CHANGE_AUTHOR)
++        .count();
++    assert_eq!((changes, authors), (3, 0));
++    assert_eq!(id_mapping_counts(&written), (3, 0));
++
++    assert_eq!(id_mapping_counts(&records(&DocInfo::default())), (0, 0));
++}
++
