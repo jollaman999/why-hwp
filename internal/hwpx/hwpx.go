@@ -357,6 +357,7 @@ func (w *walker) para(loc string) (paraText, error) {
 	var sp, box model.Spans
 	tables := 0
 	depth := 0
+	inRun := false
 	for {
 		tok, err := w.dec.Token()
 		if err != nil {
@@ -370,7 +371,10 @@ func (w *walker) para(loc string) (paraText, error) {
 				}
 				continue
 			}
-			if depth == 1 && isObject(t.Name.Local) {
+			if depth == 0 {
+				inRun = t.Name.Local == "run"
+			}
+			if depth == 1 && inRun && isObject(t.Name.Local) {
 				w.content()
 			}
 			switch t.Name.Local {

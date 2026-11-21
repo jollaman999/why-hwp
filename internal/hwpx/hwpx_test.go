@@ -325,3 +325,32 @@ func TestTrackedChanges(t *testing.T) {
 		t.Errorf("pictures = %+v", doc.Summary.Pictures)
 	}
 }
+
+// Line segments are layout, not content: a paragraph deleted with its
+// break is still wholly deleted when Hwp wrote its line segments, so the
+// joined text keeps the location of the paragraph after it.
+func TestWholeIgnoresLineSegments(t *testing.T) {
+	lines := `<hp:linesegarray><hp:lineseg textpos="0" vertpos="0"/></hp:linesegarray>`
+	sec := `<hs:sec ` + ns + `>` +
+		`<hp:p><hp:run>` + ht(`<hp:deleteBegin Id="1" TcId="2"/>지운<hp:deleteEnd Id="1" TcId="2" paraend="1"/>`) + `</hp:run>` + lines + `</hp:p>` +
+		`<hp:p><hp:run>` + ht("뒤") + `</hp:run>` + lines + `</hp:p>` +
+		`</hs:sec>`
+	zr := buildHWPX(t, map[string]string{"Contents/section0.xml": sec}, []string{"Contents/section0.xml"})
+	doc, err := Parse(zr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := doc.Blocks[0]; b.Break != model.Deleted || b.Whole != model.Deleted {
+		t.Errorf("raw s0/p0 = %+v", b)
+	}
+	if b := doc.Blocks[1]; b.Whole != 0 {
+		t.Errorf("raw s0/p1 = %+v", b)
+	}
+	var got []string
+	for _, b := range doc.InView(model.ViewAccepted).Blocks {
+		got = append(got, b.Loc+" "+b.Text)
+	}
+	if want := []string{"s0/p1 뒤"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("accepted = %q, want %q", got, want)
+	}
+}
