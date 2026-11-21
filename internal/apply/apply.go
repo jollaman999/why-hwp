@@ -681,6 +681,11 @@ func (ed *editor) run(o *Op) error {
 					return fmt.Errorf("%s holds a memo; untracked delete would drop it (delete_memo it first)", p.loc)
 				}
 			}
+			for _, id := range p.ends {
+				if m := p.sec.memos[id]; m != nil && !m.deleted {
+					return fmt.Errorf("%s holds the end of memo %q of %s; untracked delete would break it (delete_memo it first)", p.loc, m.text, m.p.loc)
+				}
+			}
 			if len(p.cont.paras) == 1 {
 				return fmt.Errorf("%s is the only paragraph of its %s; use set_text", p.loc, contName(p.cont))
 			}

@@ -1014,7 +1014,11 @@ func TestCharShapeOption(t *testing.T) {
 
 func memoXML(id, text string) string {
 	return `<hp:ctrl><hp:fieldBegin id="` + id + `" type="MEMO" name="" editable="1" dirty="1" zorder="1" fieldid="623209829">` +
-		`<hp:parameters cnt="1" name=""><hp:stringParam name="ID">memo` + id + `</hp:stringParam></hp:parameters>` +
+		`<hp:parameters cnt="7" name=""><hp:integerParam name="Prop">0</hp:integerParam>` +
+		`<hp:stringParam name="Command">MEMO/65535/1/221092112/31289753/why-hwp/\;;</hp:stringParam>` +
+		`<hp:stringParam name="ID">memo` + id + `</hp:stringParam><hp:integerParam name="Number">` + id + `</hp:integerParam>` +
+		`<hp:stringParam name="Author">why-hwp</hp:stringParam><hp:stringParam name="MemoShapeIDRef">65535</hp:stringParam>` +
+		`<hp:stringParam name="CreateDateTime">2026-11-11T13:56:45Z</hp:stringParam></hp:parameters>` +
 		`<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">` +
 		`<hp:p id="0" paraPrIDRef="11" styleIDRef="17" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="4"><hp:t>` + text + `</hp:t></hp:run></hp:p>` +
 		`</hp:subList></hp:fieldBegin></hp:ctrl>`
@@ -1108,6 +1112,30 @@ func TestDeleteMemo(t *testing.T) {
 	}
 	if x := paraXML(t, res.Data, "s0/p2"); strings.Contains(x, "<hp:ctrl>") {
 		t.Errorf("both: s0/p2 XML: %s", x)
+	}
+
+	// s0/p3 holds only the end of the second memo: an untracked delete
+	// would leave its fieldBegin without a fieldEnd.
+	if err := runErr(t, src, false, Op{Op: "delete", Loc: "s0/p3"}); !strings.Contains(err.Error(), `s0/p3 holds the end of memo "둘째 메모" of s0/p2`) {
+		t.Errorf("untracked delete of a memo end: %v", err)
+	}
+	res = applyOps(t, src, false, Op{Op: "delete_memo", Loc: "s0/p2", Find: "둘째"}, Op{Op: "delete", Loc: "s0/p3"})
+	if got := memoTexts(t, res.Data); got != "s0/p2=첫째 메모 s0/p6="+strings.TrimPrefix(sampleMemo, "s0/p7=") || res.Memos != 1 || res.Deleted != 1 {
+		t.Errorf("delete_memo then delete: memos %q, memos %d, deleted %d", got, res.Memos, res.Deleted)
+	}
+	if x := part(t, res.Data, "Contents/section0.xml"); strings.Count(x, "<hp:fieldEnd ") != strings.Count(x, `type="MEMO"`) {
+		t.Errorf("delete_memo then delete: fieldBegin and fieldEnd counts differ")
+	}
+	res = applyOps(t, src, true, Op{Op: "delete", Loc: "s0/p3"})
+	if got := memoTexts(t, res.Data); got != "s0/p2=첫째 메모 s0/p2=둘째 메모 "+sampleMemo {
+		t.Errorf("tracked delete of a memo end: memos %q", got)
+	}
+	if x := paraXML(t, res.Data, "s0/p3"); !strings.Contains(x, memoEndXML("12")) {
+		t.Errorf("tracked delete of a memo end lost it: %s", x)
+	}
+	res = applyOps(t, src, false, Op{Op: "delete", Loc: "s0/p1"})
+	if got := memoTexts(t, res.Data); got != "s0/p1=첫째 메모 s0/p1=둘째 메모 s0/p6="+strings.TrimPrefix(sampleMemo, "s0/p7=") || res.Deleted != 1 {
+		t.Errorf("untracked delete without memo: memos %q, deleted %d", got, res.Deleted)
 	}
 
 	for _, c := range []struct {

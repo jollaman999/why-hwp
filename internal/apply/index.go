@@ -23,11 +23,13 @@ type section struct {
 	byLoc map[string]*para
 	cells map[string]*container
 	ends  map[string]fieldEnd // field ends by the id of their fieldBegin
+	memos map[string]*memo    // memos by the id of their fieldBegin
 }
 
 // memo is one memo anchored in a paragraph: an hp:fieldBegin of type MEMO,
 // which holds the memo body, and the hp:fieldEnd that closes its range.
 type memo struct {
+	p       *para // paragraph of the fieldBegin
 	id      string
 	text    string // body paragraphs joined by "\n"
 	span    [2]int // fieldBegin, or the hp:ctrl that holds only it
@@ -64,6 +66,7 @@ type para struct {
 	ts     []tslot
 
 	memos []*memo
+	ends  []string // ids of the fieldBegins whose fieldEnd is in it
 
 	hasSecPr, hasTable, hasPic bool
 
@@ -83,7 +86,7 @@ type tslot struct {
 }
 
 func indexSection(idx int, name string, raw []byte) (*section, error) {
-	s := &section{idx: idx, name: name, raw: raw, byLoc: map[string]*para{}, cells: map[string]*container{}, ends: map[string]fieldEnd{}}
+	s := &section{idx: idx, name: name, raw: raw, byLoc: map[string]*para{}, cells: map[string]*container{}, ends: map[string]fieldEnd{}, memos: map[string]*memo{}}
 	var err error
 	if s.pfx, err = rootPrefix(raw, nsParagraph); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
@@ -236,7 +239,9 @@ func (ix *indexer) para(loc string, start int, se xml.StartElement, cont *contai
 				if err := ix.dec.Skip(); err != nil {
 					return err
 				}
-				ix.sec.ends[attr(t, "beginIDRef")] = fieldEnd{p: p, span: span()}
+				id := attr(t, "beginIDRef")
+				ix.sec.ends[id] = fieldEnd{p: p, span: span()}
+				p.ends = append(p.ends, id)
 				continue
 			case "run":
 				if depth == 0 {
@@ -279,7 +284,9 @@ func (ix *indexer) para(loc string, start int, se xml.StartElement, cont *contai
 					if err != nil {
 						return err
 					}
-					p.memos = append(p.memos, &memo{id: attr(t, "id"), text: text, span: span()})
+					m := &memo{p: p, id: attr(t, "id"), text: text, span: span()}
+					p.memos = append(p.memos, m)
+					ix.sec.memos[m.id] = m
 					continue
 				}
 			case "pic":
