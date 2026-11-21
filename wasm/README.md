@@ -14,7 +14,7 @@ This directory holds what is needed to rebuild that file.
 |------|------|
 | `src/` | The engine: argument parsing and the commands below, on top of rhwp's library API |
 | `patch-rhwp.sh` | Changes rhwp needs to build and run under WASI, then applies `patches/` |
-| `patches/` | Diffs against rhwp: layout fixes found by comparing with Hancom Office 2024 |
+| `patches/` | Diffs against rhwp: layout fixes found by comparing with Hancom Office 2024, and change tracking and memos between HWP and HWPX |
 | `vendor/fontdb/` | fontdb 0.23.0 with one change for WASI (below), used in place of the crates.io copy |
 | `build.sh` | Fetches rhwp, patches it, builds, writes `engine.wasm.gz` and its SHA-256 |
 | `Cargo.lock` | Exact crate versions (taken from rhwp's own lock file) |
@@ -252,6 +252,63 @@ that a patch is already applied by checking that it reverses cleanly. When a
 later patch has changed or split the lines of an earlier one, the earlier one
 no longer reverses, so running `patch-rhwp.sh` on the same tree again takes it
 for not applied and fails.
+The first build from a fresh tree still succeeds, so this shows only when the
+same tree is built again, as `<patch>: does not apply and is not applied`.
+
+## Change-tracking patches
+
+rhwp 7213ed1f reads the change-tracking range tags in an HWP body but keeps the
+DocInfo records that describe them as raw bytes, writes no change tracking to
+HWPX and ignores the change marks of HWPX. rhwp left change tracking out of its
+1.0.0 scope (edwardkim/rhwp#8022), so why-hwp carries three patches, applied
+after the layout patches and following the same rules. Each was checked against
+what Hancom Office 2024 writes from the same input, using rhwp's public sample
+`issue5169_viewtext_changetracking.hwp` (229 tracked changes), a
+public HWP with 30 and an HWPX made with `why-hwp apply` (4).
+
+`patches/rhwp-trackchange.patch` carries tracked changes from HWP into HWPX.
+The TRACK_CHANGE and TRACK_CHANGE_AUTHOR records are read into the model (the
+raw records stay, so an HWP save is unchanged). Insertion (0x10) and deletion
+(0x11) range tags become `hp:insertBegin`/`End` and `hp:deleteBegin`/`End`,
+character (0x12) and paragraph (0x13) shape change tags become
+`hp:run/@charTcId` and `hp:p/@paraTcId`, the header gets `hh:trackChanges` and
+`hh:trackChangeAuthors`, and a paragraph joined by a tracked deletion of the
+break before it is written `merged="1"`. rhwp leaves hidden tracked changes out
+of the document it lays out, so an export of a document that is still as
+loaded reads the file again with them kept. The 229 and 30 changes, which
+became 0 before, are kept, and `why-hwp text -view markup` of the HWPX is the
+same as of the HWPX Hancom Office saves from the same HWP.
+
+`patches/rhwp-trackchange2.patch` writes the memos of an HWP to HWPX as Hancom
+Office does. The memo `hp:fieldBegin` gets `zorder` (the memo number) and
+`fieldid` (the memo field code), and its `hp:fieldEnd` gets the same `fieldid`;
+Hancom Office drops a memo end without it when it saves the HWPX again.
+`hh:memoProperties` is built from the MEMO_SHAPE records and
+`secPr/@memoShapeIDRef` is read from the section definition. Hancom Office
+writes both for every HWP that has MEMO_SHAPE records, memos or not, and so
+does the patch.
+
+`patches/rhwp-trackchange3.patch` carries tracked changes from HWPX into HWP.
+`hh:trackChanges` and `hh:trackChangeAuthors` are read into the model, the
+change marks become range tags of kind 0x10 to 0x13 and `merged="1"` goes to
+the paragraph header, in the order Hancom Office writes them in HWP for the same
+HWPX. An HWP save writes TRACK_CHANGE_AUTHOR and TRACK_CHANGE records from the
+model when there are no raw ones, and ID_MAPPINGS counts them. As for HWP, an
+export of an HWPX that is still as loaded reads the file again so that hidden
+deleted text stays inside its range tags. An HWPX document with hidden tracked
+changes that was edited after loading has only the document without them, and
+writing it would lose them unnoticed, so its export fails with "the document
+was edited after loading and its hidden tracked changes cannot be written".
+`why-hwp convert` does not edit, so this guards other uses of the library. The
+4-change HWPX becomes an HWP that Hancom Office opens with the same 4 changes,
+deleted text not joined to the text around it, and HWP to HWPX to HWP keeps the
+229 and 30.
+
+Of the 18 documents the layout patches were measured with, the PDF, TXT and
+HWP outputs are the same byte for byte before and after the three patches. The
+HWPX outputs differ only for the two HWP documents with memos, by the memo
+attributes and `hh:memoProperties` above, and Hancom Office prints those HWPX
+files with every word where it prints the originals.
 
 ## fontdb
 
@@ -303,7 +360,12 @@ cargo test -p fontdb --lib
 ## Rebuilding
 
 Needs Rust 1.93.1 or newer with the `wasm32-wasip1` target, clang, git, perl
-and gzip. clang is the C compiler: the `ring` crate compiles C for
+and gzip. The committed `engine.wasm.gz` was built with rustc 1.100.0
+(0ef1bc386) and clang 21.1.8; with these two, separate clean builds of the same
+source give the same bytes. With another clang, which compiles the C code of
+`ring`, the module may differ from the committed one: an earlier engine built
+on another computer with clang 22.1.8 did not match its rebuild here, although
+rustc was the same. clang is the C compiler: the `ring` crate compiles C for
 `wasm32-wasip1`, and the usual system gcc cannot target WebAssembly. Set
 `CC_wasm32_wasip1` to use another clang.
 
