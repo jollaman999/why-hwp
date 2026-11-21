@@ -310,6 +310,25 @@ HWPX outputs differ only for the two HWP documents with memos, by the memo
 attributes and `hh:memoProperties` above, and Hancom Office prints those HWPX
 files with every word where it prints the originals.
 
+## Layout patches applied last
+
+These patches are applied after the change-tracking patches above and follow
+the same rules. Like the counts above, the ones here are measured on a
+Windows computer with Hancom Office 2024, whose fonts the engine finds and
+uses. On the same computer with the fonts Hancom Office installs left out,
+11 of 18 documents passed before these patches; the documents that need them
+use fonts such as Haan YGodic 250, HY Gyeonmyeongjo and Human Myeongjo, which
+are not free to redistribute.
+
+`patches/rhwp-zlayout1.patch` raises the count on Windows from 15 to 16 of 18:
+fdi-2025q2.hwp, 3.47 pt off before, is within 0.83 pt. On Linux 9 of 18 pass
+before and after; the same document goes from 2.73 pt to 2.06 pt. Only the
+PDFs of fdi-2025q2.hwp and of the two-up document change.
+
+| Change | Before |
+|--------|--------|
+| A single character whose advance comes from rhwp's table of original HFT glyph widths (the widths of Hancom Office's Type 3 fonts) is drawn fitted to that advance with `textLength`, as ASCII letters and digits are. The substitute glyph is stretched, so its ink is wider than Hancom Office's (3.24 pt against 1.8 pt for the quote below) while its box matches | It was drawn with the substitute font's own width and its box ended short: the Pilgi (필기) `’` advances 0.5 em, and Malgun Gothic draws it 0.23 em wide |
+
 ## fontdb
 
 Without memory mapping, fontdb 0.23 reads the whole font file from disk every
