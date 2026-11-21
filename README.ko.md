@@ -36,6 +36,8 @@ why-hwp 는 Go 로 작성해 플랫폼마다 실행 파일 하나로 빌드합�
 
 모든 명령이 모든 플랫폼에서 됩니다. `convert -engine hancom` 만 한컴오피스가 설치된 Windows 가 필요합니다.
 
+Windows 에서는 MSYS 식으로 쓴 경로(Git Bash·MSYS2 셸이 쓰는 `/c/dir/file.hwp`)를 경로 인자와 경로 플래그(`-o`, `-spec`, `-orig` 등)에서 `C:\dir\file.hwp` 로 읽습니다. 다른 플래그 값은 받은 그대로 둡니다. Git Bash 는 why-hwp 를 띄우기 전에 이런 경로처럼 보이는 인자를 스스로 바꾸므로 `-author /c/name` 은 `C:/name` 으로 넘어오고, why-hwp 는 이를 알 수 없습니다. 그런 값을 그대로 넘기려면 명령 앞에 `MSYS2_ARG_CONV_EXCL='*'`(또는 `MSYS_NO_PATHCONV=1`)를 붙여 실행합니다. 경로는 why-hwp 가 직접 바꾸므로 그래도 열립니다.
+
 ## 명령
 
 ### text
@@ -46,7 +48,7 @@ why-hwp text [-format plain|json] [-view accepted|original|markup] <파일>
 
 `.hwpx`·`.hwp`·`.docx` 의 글을 한 줄에 한 덩어리씩 `<위치><TAB><글>` 로 출력합니다. 위치로 문서 안의 자리를 다시 찾을 수 있습니다. `s0/p12` 는 0번 구역의 12번 문단이고, `s0/p3/t0/r1/c2` 는 3번 문단에 있는 첫 표의 1행 2열입니다. 문단이 여러 개인 칸은 문단마다 한 줄씩 나옵니다(`s0/p3/t0/r1/c2/p0`, `s0/p3/t0/r1/c2/p1`, ...). 문단이 하나인 칸은 칸 위치로 한 줄입니다. 이 위치들이 `apply` 가 받는 위치입니다. 글상자 안의 글은 글상자가 놓인 문단의 글에 넣지 않고, 그 문단 뒤(문단에 표가 있으면 표의 칸들 뒤)에 따로 한 줄로 나옵니다. 위치는 그 문단의 loc 에 `#box` 를 붙인 것이고(`s0/p12#box`), 글상자 문단 사이는 `\n` 입니다. `#box` 줄은 읽기 전용입니다. `apply` 는 글상자 안의 글을 고치지 않습니다. 메모 내용, 머리말·꼬리말, 각주는 넣지 않습니다.
 
-변경 추적이 있는 문서는 `-view` 로 보는 모습을 고릅니다. `accepted`(기본)는 변경을 모두 수락한 글로, 줄바꿈과 공백을 빼면 한글이 TXT 로 저장하는 글과 같습니다. `original` 은 변경을 모두 거절한 글이고, `markup` 은 둘 다 보여 주며 넣은 글을 `[+글+]`, 지운 글을 `[-글-]` 로 표시합니다(문단 나눔이 바뀌었으면 표시 안에 `\n` 으로 나옵니다). 위치는 보기에 따라 바뀌지 않습니다. 지운 문단과 넣은 문단을 포함해 저장된 문단 순서대로 번호를 매기므로 `apply` 가 받는 위치와 같습니다. 다른 보기에만 있는 문단은 줄이 없고, 보기에서 문단 나눔이 없어진 문단은 같은 구역이나 같은 칸의 다음 문단과 합쳐서 보여 줍니다. 보기는 `.hwpx` 와 `.docx`(`w:ins`, `w:del`, `w:moveFrom`, `w:moveTo`)에서 되고, `.hwp` 는 보기를 지원하지 않습니다.
+변경 추적이 있는 문서는 `-view` 로 보는 모습을 고릅니다. `accepted`(기본)는 변경을 모두 수락한 글로, 줄바꿈과 공백을 빼면 한글이 TXT 로 저장하는 글과 같습니다. `original` 은 변경을 모두 거절한 글이고, `markup` 은 둘 다 보여 주며 넣은 글을 `[+글+]`, 지운 글을 `[-글-]` 로 표시합니다(문단 나눔이 바뀌었으면 표시 안에 `\n` 으로 나옵니다). 위치는 보기에 따라 바뀌지 않습니다. 지운 문단과 넣은 문단을 포함해 저장된 문단 순서대로 번호를 매기므로 `apply` 가 받는 위치와 같습니다. 다른 보기에만 있는 문단은 줄이 없고, 보기에서 문단 나눔이 없어진 문단은 같은 구역이나 같은 칸의 다음 문단과 합쳐서 보여 줍니다. 보기는 `.hwpx`, `.hwp`(넣음·지움 범위 태그. 한글이 ViewText 스트림을 저장했으면 거기서 읽음), `.docx`(`w:ins`, `w:del`, `w:moveFrom`, `w:moveTo`)에서 됩니다. `.hwp` 는 내장 엔진이 바꾼 `.hwpx` 와 같은 위치와 보기를 냅니다.
 
 ### info
 
@@ -64,7 +66,7 @@ why-hwp info [-format plain|json] [-view accepted|original|markup] <파일>
 why-hwp apply -spec edits.json -o out.hwpx -author 이름 [-date RFC3339] [-no-track] [-force] in.hwpx|in.hwp
 ```
 
-명세의 편집을 변경 추적으로 남긴 HWPX 사본을 만듭니다(`-no-track` 이면 추적 없이 고칩니다). 위치는 입력을 `why-hwp text` 로 읽었을 때의 loc 이고, 모든 연산이 입력 기준 번호를 씁니다. 문단이 여러 개인 칸은 `text` 가 보여 주는 대로 문단 위치(`s0/p3/t0/r1/c2/p1`)로 가리킵니다. 칸 위치만 주면 그 칸의 첫 문단입니다. `#box` 위치(글상자 안의 글)는 거절합니다. apply 는 글상자 안의 글을 고치지 못하고, 글상자가 놓인 문단 자체의 글만 고칩니다. 연산: `set_text` {loc, text}, `replace` {loc, find, with, all}, `insert_after` / `insert_before` {loc, paras:[{text, like}]}, `delete` {loc}, `image` {after 또는 loc, src(PNG), width_mm, like}. 새 문단은 `like`(없으면 `loc`) 문단의 문단·스타일 모양을 따릅니다. 글자 모양은 한컴오피스에서 Enter 로 문단을 나눌 때와 같게 고릅니다. `insert_after` 와 뒤에 넣는 `image` 는 `loc` 의 끝(마지막 run), `insert_before` 는 `loc` 의 첫 글자 모양입니다. `like` 를 주면 `like` 에서 글이 있는 첫 run 의 모양입니다. 고치지 않은 문단은 바이트 그대로 두고, 메모를 지키며, PNG 는 손대지 않고 넣습니다. `.hwp` 입력은 내장 엔진으로 임시 폴더에 HWPX 를 만든 뒤 그 사본을 고칩니다. 출력은 늘 `.hwpx` 이고, 위치는 `.hwp` 파일을 `why-hwp text` 로 읽었을 때의 loc 입니다. 변환에서 문서의 일부가 빠질 수 있어서 apply 가 stderr 로 알려 주므로, 결과를 `why-hwp verify -orig in.hwp out.hwpx` 로 확인합니다. 암호·DRM·배포용 문서는 `text` 처럼 변환 전에 거부합니다. 예시: [`testdata/apply/spec.json`](testdata/apply/spec.json).
+명세의 편집을 변경 추적으로 남긴 HWPX 사본을 만듭니다(`-no-track` 이면 추적 없이 고칩니다). 위치는 입력을 `why-hwp text` 로 읽었을 때의 loc 이고, 모든 연산이 입력 기준 번호를 씁니다. 문단이 여러 개인 칸은 `text` 가 보여 주는 대로 문단 위치(`s0/p3/t0/r1/c2/p1`)로 가리킵니다. 칸 위치만 주면 그 칸의 첫 문단입니다. `#box` 위치(글상자 안의 글)는 거절합니다. apply 는 글상자 안의 글을 고치지 못하고, 글상자가 놓인 문단 자체의 글만 고칩니다. 연산: `set_text` {loc, text}, `replace` {loc, find, with, all}, `insert_after` / `insert_before` {loc, paras:[{text, like}]}, `delete` {loc}, `delete_memo` {loc, find}, `image` {after 또는 loc, src(PNG), width_mm, like}. 새 문단은 `like`(없으면 `loc`) 문단의 문단·스타일 모양을 따릅니다. 글자 모양은 한컴오피스에서 Enter 로 문단을 나눌 때와 같게 고릅니다. `insert_after` 와 뒤에 넣는 `image` 는 `loc` 의 끝(마지막 run), `insert_before` 는 `loc` 의 첫 글자 모양입니다. `like` 를 주면 `like` 에서 글이 있는 첫 run 의 모양입니다. `set_text`, `insert_after`, `insert_before` 는 `char_shape` 도 받습니다. 위치를 주면 새 글이 그 위치의 글자 모양(글이 있는 첫 run 의 모양)을 대신 씁니다(`set_text` 는 글이 들어가는 run 이 이미 그 모양이 아니면 따로 run 을 만듭니다). 문서에 이미 있는 글자 모양만 이렇게 쓸 수 있습니다. `delete_memo` 는 메모를 지웁니다. `loc` 은 `why-hwp info` 가 그 메모를 적은 문단이고, 그 문단에 메모가 여럿이면 메모 글의 일부인 `find` 로 고릅니다. 한글은 변경 추적을 켠 상태에서도 메모 삭제를 변경 추적으로 남기지 않으므로 apply 도 그렇게 합니다. 메모는 그냥 지워지고, 변경을 거절해도 되살아나지 않으며, `verify -orig` 는 사라진 메모로 보고합니다. apply 가 출력하는 요약에 지운 메모 수와 추적 없이 지웠다는 것이 나옵니다. 고치지 않은 문단은 바이트 그대로 두고, 다른 메모는 지키며, PNG 는 손대지 않고 넣습니다. `.hwp` 입력은 내장 엔진으로 임시 폴더에 HWPX 를 만든 뒤 그 사본을 고칩니다. 이 사본에는 `convert` 처럼 변경 추적과 메모가 옮겨지므로, 출력에는 `.hwp` 의 변경 추적과 새 변경이 함께 들어 있습니다. 출력은 늘 `.hwpx` 이고, 위치는 `.hwp` 파일을 `why-hwp text` 로 읽었을 때의 loc 입니다. 변환에서 문서의 일부가 빠질 수 있어서 apply 가 stderr 로 알려 주므로, 결과를 `why-hwp verify -orig in.hwp out.hwpx` 로 확인합니다. 출력의 변경 추적이 입력보다 적으면(`info` 가 세는 방식으로 셉니다) 출력을 쓰지 않고 종료 코드 1 로 끝납니다. 암호·DRM·배포용 문서는 `text` 처럼 변환 전에 거부합니다. 예시: [`testdata/apply/spec.json`](testdata/apply/spec.json).
 
 ### verify
 
@@ -72,7 +74,7 @@ why-hwp apply -spec edits.json -o out.hwpx -author 이름 [-date RFC3339] [-no-t
 why-hwp verify [-orig 원본] [-allow locs.txt] [-banned words.txt] [-ignore-case] [-view accepted|original|markup] [-format plain|json] <파일>
 ```
 
-문서를 넘기기 전에 확인합니다. `.hwpx`, `.hwp`, `.docx`, `.md`, `.txt` 를 읽고, md 와 txt 는 줄 단위로 `l1`, `l2`, ... 위치를 붙입니다. `-orig` 를 주면 바뀐 블록, 추가된 블록("added 2 after original s0/p7" 처럼), 삭제된 블록을 보여 줍니다. 원본의 메모, 표, 그림, 변경 추적이 사라졌거나, 메모의 필드 끝이 없어졌거나(원본이 hwpx 일 때만 봅니다), 표가 작아졌으면 위반입니다. `-allow`(한 줄에 위치 하나, `s0/p4/t0/*` 는 접두사 일치, `s0/p4/t0/r1/c2` 같은 칸 위치는 그 칸의 문단들도 포함)를 주면 목록 밖의 변경은 위반입니다. 변경은 `text` 가 출력하는 위치 그대로 보고하므로, 문단이 여러 개인 칸은 문단별로 비교하고 글상자 안의 글은 `#box` 블록으로 따로 비교합니다. 금지어(`-banned`, 한 줄에 하나, `#` 주석, `re:` 는 정규식)와 em dash 는 위반이고, en dash 와 원본에 없던 숫자는 경고입니다. 위반이 있으면 종료 코드 1, 없으면 0, 사용법 오류나 파일을 못 읽으면 2 입니다. 두 문서 모두 `-view`(기본 `accepted`, `text` 참고)로 읽으므로, 변경 추적이 있는 hwpx·docx 는 지운 글을 빼고 넣은 글을 새 글로 비교합니다. 어느 보기로 읽었는지는 notes 에 나옵니다. hwp 는 보기를 지원하지 않아, 변경 추적이 있는 hwp 에서는 지운 글과 넣은 글을 구분하지 못합니다.
+문서를 넘기기 전에 확인합니다. `.hwpx`, `.hwp`, `.docx`, `.md`, `.txt` 를 읽고, md 와 txt 는 줄 단위로 `l1`, `l2`, ... 위치를 붙입니다. `-orig` 를 주면 바뀐 블록, 추가된 블록("added 2 after original s0/p7" 처럼), 삭제된 블록을 보여 줍니다. 원본의 메모, 표, 그림, 변경 추적이 사라졌거나, 메모의 필드 끝이 없어졌거나(원본이 hwpx 일 때만 봅니다), 표가 작아졌으면 위반입니다. `-allow`(한 줄에 위치 하나, `s0/p4/t0/*` 는 접두사 일치, `s0/p4/t0/r1/c2` 같은 칸 위치는 그 칸의 문단들도 포함)를 주면 목록 밖의 변경은 위반입니다. 변경은 `text` 가 출력하는 위치 그대로 보고하므로, 문단이 여러 개인 칸은 문단별로 비교하고 글상자 안의 글은 `#box` 블록으로 따로 비교합니다. 금지어(`-banned`, 한 줄에 하나, `#` 주석, `re:` 는 정규식)와 em dash 는 위반이고, en dash 와 원본에 없던 숫자는 경고입니다. 위반이 있으면 종료 코드 1, 없으면 0, 사용법 오류나 파일을 못 읽으면 2 입니다. 두 문서 모두 `-view`(기본 `accepted`, `text` 참고)로 읽으므로, 변경 추적이 있는 hwpx·docx 는 지운 글을 빼고 넣은 글을 새 글로 비교합니다. 어느 보기로 읽었는지는 notes 에 나옵니다. 변경 추적이 있는 hwp 도 같습니다.
 
 ### convert
 
@@ -81,6 +83,10 @@ why-hwp convert [-to hwp|hwpx|pdf|txt] [-o 출력] [-engine builtin|hancom] [-ti
 ```
 
 문서를 HWP, HWPX, PDF, UTF-8 텍스트로 변환합니다. 형식은 `-to` 로 주거나 `-o` 의 확장자에서 정합니다. `-o` 가 없으면 입력 경로에서 확장자만 바꿔 쓰고, 출력이 입력 파일 자신이면 거부합니다. 출력 파일이 이미 있으면 `-force` 없이는 덮어쓰지 않습니다. `-timeout` 은 변환 한 번의 시간 상한입니다 (기본은 내장 엔진 10m, `-engine hancom` 120s).
+
+HWP 와 HWPX 사이에서 내장 엔진은 변경 추적과 메모를 지킵니다. HWP 에서 HWPX 로는 넣은 글, 지운 글, 그 작성자와 시각, 문서에 이미 기록된 글자 모양·문단 모양 바뀜, 메모를 한컴오피스 2024 가 쓰는 대로 씁니다. 변경 추적이 229건, 30건 든 공개 표본 문서 둘에서 결과 HWPX 의 `text -view markup` 은 같은 HWP 를 한글이 HWPX 로 저장한 것과 같습니다. HWPX 에서 HWP 로는 HWP 레코드로 쓰므로, 한글이 HWP 를 변경 추적과 함께 열고 지운 글이 보통 글로 바뀌지 않습니다. 문서에 있는 변경 추적을 지킬 뿐 새로 만들지는 않습니다.
+
+HWP·HWPX 출력은 입력과 출력의 변경 추적을 `info` 가 세는 방식으로 셉니다. 출력 쪽이 적으면 출력을 남기지 않고(`-force` 로 덮어쓰려던 기존 출력 파일은 그대로 둡니다) 종료 코드 1 로 끝나므로, 변경 추적이 조용히 빠지는 일은 없습니다. 그런 출력을 남기는 옵션은 없습니다. `info` 가 못 읽는 HWP 3.0 파일과 배포용 문서는 내장 엔진으로 셉니다. 둘 다 셀 수 없는 입력은 내장 엔진이면 변환하지 않고(종료 코드 1), `-engine hancom` 이면 출력을 확인하지 않았다는 경고를 stderr 에 내고 변환합니다.
 
 기본(`-engine builtin`)은 why-hwp 안에 든 엔진으로 변환합니다. [rhwp](https://github.com/edwardkim/rhwp) 와 resvg 를 WebAssembly(WASI)로 컴파일해 [wazero](https://wazero.io) 로 실행하므로 모든 OS 에서 되고 다른 프로그램을 띄우지 않습니다. `.hwp` 와 `.hwpx` 를 읽고, `.docx` 는 오류를 내고 거부합니다. 처음 실행할 때 엔진을 컴파일하느라 몇 초(8코어 PC 에서 약 10초) 걸리고, 그 결과를 사용자 캐시 폴더(`why-hwp/wazero`)에 두어 다음부터는 빨리 시작합니다. 이 폴더에는 지금 버전의 컴파일 결과만 남고, 그것이 만들어지면 다른 why-hwp 버전의 것은 지웁니다. `-timeout` 은 변환과, PDF 출력이면 글꼴 내려받기의 시간 상한입니다. 첫 컴파일 시간도 `-timeout` 에 들어가므로, 컴파일보다 짧은 `-timeout` 은 상한에 닿는 즉시 실패하고 컴파일이 끝나지 않았으니 다음 실행에서 다시 컴파일합니다.
 
