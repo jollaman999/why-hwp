@@ -251,3 +251,57 @@ func TestRemoveStaleWork(t *testing.T) {
 	}
 	removeStaleWork(filepath.Join(tmp, "missing"), now)
 }
+
+// trackRunner answers track-count with report and records the command and
+// the file the engine was given.
+type trackRunner struct {
+	report string
+	args   string
+	input  string
+}
+
+func (r *trackRunner) run(_ context.Context, args []string, mounts []mount) ([]byte, error) {
+	r.args = strings.Join(args, " ")
+	for _, m := range mounts {
+		if m.guest == "/in" {
+			b, err := os.ReadFile(filepath.Join(m.host, strings.TrimPrefix(args[len(args)-1], "/in/")))
+			if err != nil {
+				return nil, err
+			}
+			r.input = string(b)
+		}
+	}
+	return []byte(r.report), nil
+}
+
+// TrackChanges hands the engine a copy of the document and returns the
+// count it reports; a report without a count is an error.
+func TestTrackChanges(t *testing.T) {
+	old := loadRunner
+	t.Cleanup(func() { loadRunner = old })
+	in := filepath.Join(t.TempDir(), "doc.HWP")
+	if err := os.WriteFile(in, []byte("doc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		report string
+		want   int
+		ok     bool
+	}{
+		{`{"format":"hwp3","trackChanges":0}` + "\n", 0, true},
+		{`{"format":"hwp","trackChanges":229}` + "\n", 229, true},
+		{`{"format":"hwp"}`, 0, false},
+		{`{"format":"hwp","trackChanges":-1}`, 0, false},
+		{`not json`, 0, false},
+	} {
+		r := &trackRunner{report: tc.report}
+		loadRunner = func(context.Context) (runner, error) { return r, nil }
+		n, err := TrackChanges(context.Background(), in)
+		if (err == nil) != tc.ok || n != tc.want {
+			t.Errorf("report %q: %d, %v; want %d, ok %v", tc.report, n, err, tc.want, tc.ok)
+		}
+		if want := "track-count --in /in/input.hwp"; r.args != want || r.input != "doc" {
+			t.Errorf("engine args %q given %q; want %q given %q", r.args, r.input, want, "doc")
+		}
+	}
+}

@@ -404,3 +404,23 @@ func TestConvertAbandonedRun(t *testing.T) {
 		t.Errorf("left in the temporary folder: %v", ents)
 	}
 }
+
+// The engine counts the tracked changes of an HWP file as the Go reader
+// does and refuses HWPX, whose change marks it does not read.
+func TestTrackChangesEngine(t *testing.T) {
+	needEngine(t)
+	ctx := testCtx(t)
+	src := filepath.Join("..", "..", "testdata", "sample.hwp")
+	doc, err := load.Document(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := TrackChanges(ctx, src)
+	if err != nil || n != doc.Summary.TrackChanges {
+		t.Errorf("TrackChanges(%s) = %d, %v; want %d", src, n, err, doc.Summary.TrackChanges)
+	}
+	srcx := filepath.Join("..", "..", "testdata", "sample.hwpx")
+	if _, err := TrackChanges(ctx, srcx); err == nil || !strings.Contains(err.Error(), "counted in HWP files only") {
+		t.Errorf("TrackChanges(%s): %v, want a refusal", srcx, err)
+	}
+}

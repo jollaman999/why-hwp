@@ -9,6 +9,7 @@ mod convert;
 mod fonts;
 mod render;
 mod svg2png;
+mod track;
 
 use std::process::ExitCode;
 
@@ -23,6 +24,7 @@ const USAGE: &str = "usage: why-hwp-engine <command> [options]
   font-install --url <url> --file <file>
   render --in <file> --out <dir> --dpi <n> [--page <n> ...]
   svg2png --in <svg> --out <png> --width <px> --height <px> [--font <file> ...]
+  track-count --in <file>
   version";
 
 /// A failed command: either bad arguments (exit 2) or a runtime error (exit 1).
@@ -51,6 +53,7 @@ fn main() -> ExitCode {
         "font-install" => fonts::install(&args),
         "render" => render::run(&args),
         "svg2png" => svg2png::run(&args),
+        "track-count" => track::run(&args),
         "version" => {
             args.done()?;
             println!(

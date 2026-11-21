@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -15,6 +17,8 @@ import (
 	"github.com/jollaman999/why-hwp/internal/apply"
 	"github.com/jollaman999/why-hwp/internal/engine"
 	"github.com/jollaman999/why-hwp/internal/hwp"
+	"github.com/jollaman999/why-hwp/internal/hwpx"
+	"github.com/jollaman999/why-hwp/internal/model"
 )
 
 func init() {
@@ -43,6 +47,8 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "An .hwp input is converted to HWPX with the built-in engine first; the")
 		fmt.Fprintln(stderr, "conversion can lose parts of the document, so check the output with")
 		fmt.Fprintln(stderr, "'why-hwp verify -orig in.hwp out.hwpx'.")
+		fmt.Fprintln(stderr, "An output with fewer tracked changes than the input is not written and")
+		fmt.Fprintln(stderr, "apply exits with status 1.")
 		fmt.Fprintln(stderr)
 		fset.PrintDefaults()
 	}
@@ -107,8 +113,9 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		return fail(2, "%s: %v", *specPath, err)
 	}
 	src := in
+	var orig *model.Document
 	if isHWP {
-		if _, err := hwp.Read(in); err != nil {
+		if orig, err = hwp.Read(in); err != nil {
 			return fail(1, "%s: %v", in, err)
 		}
 		tmp, err := os.MkdirTemp("", "why-hwp-apply-")
@@ -133,6 +140,18 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		BaseDir: filepath.Dir(*specPath),
 	})
 	if err != nil {
+		return fail(1, "%s: %v", in, err)
+	}
+	if orig == nil {
+		if orig, err = parseHWPX(data); err != nil {
+			return fail(1, "%s: %v", in, err)
+		}
+	}
+	edited, err := parseHWPX(res.Data)
+	if err != nil {
+		return fail(1, "%s: count tracked changes in the output: %v", in, err)
+	}
+	if err := trackChangeLoss(orig.Summary.TrackChanges, edited.Summary.TrackChanges); err != nil {
 		return fail(1, "%s: %v", in, err)
 	}
 	if err := writeFileAtomic(*out, res.Data); err != nil {
@@ -184,4 +203,13 @@ func writeFileAtomic(name string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// parseHWPX reads an HWPX package held in memory.
+func parseHWPX(data []byte) (*model.Document, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, err
+	}
+	return hwpx.Parse(zr)
 }

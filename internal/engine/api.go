@@ -229,7 +229,48 @@ func parseRendered(b []byte, dir string) (rendered, error) {
 	return r, nil
 }
 
-// loadRunner returns the engine Convert and Render run. Tests replace it.
+// TrackChanges returns the number of tracked changes in the HWP document at
+// in, HWP 3.0 files and distribution documents included: the TRACK_CHANGE
+// records of its DocInfo, as 'why-hwp info' counts an HWP file. The engine
+// does not read the change marks of HWPX, so any other format is an error.
+// A done ctx returns at once, as in Convert.
+func TrackChanges(ctx context.Context, in string) (int, error) {
+	e, err := loadRunner(ctx)
+	if err != nil {
+		return 0, err
+	}
+	work, err := newWorkDir("in")
+	if err != nil {
+		return 0, err
+	}
+	return detach(ctx, "track-count", func() (int, error) {
+		inName := "input" + strings.ToLower(filepath.Ext(in))
+		if err := copyFile(in, filepath.Join(work, "in", inName)); err != nil {
+			return 0, err
+		}
+		out, err := e.run(ctx, []string{"track-count", "--in", "/in/" + inName}, []mount{
+			{host: filepath.Join(work, "in"), guest: "/in", readOnly: true},
+		})
+		if err != nil {
+			return 0, err
+		}
+		return parseTrackCount(out)
+	}, nil, func() { os.RemoveAll(work) })
+}
+
+// parseTrackCount reads the engine's track-count report.
+func parseTrackCount(b []byte) (int, error) {
+	var report struct {
+		TrackChanges *int `json:"trackChanges"`
+	}
+	if err := json.Unmarshal(b, &report); err != nil || report.TrackChanges == nil || *report.TrackChanges < 0 {
+		return 0, fmt.Errorf("engine track-count: bad report %q", b)
+	}
+	return *report.TrackChanges, nil
+}
+
+// loadRunner returns the engine Convert, Render and TrackChanges run. Tests
+// replace it.
 var loadRunner = func(ctx context.Context) (runner, error) {
 	e, err := get(ctx)
 	if err != nil {
