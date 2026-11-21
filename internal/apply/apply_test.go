@@ -1127,7 +1127,7 @@ func TestDeleteMemo(t *testing.T) {
 		t.Errorf("delete_memo then delete: fieldBegin and fieldEnd counts differ")
 	}
 	res = applyOps(t, src, true, Op{Op: "delete", Loc: "s0/p3"})
-	if got := memoTexts(t, res.Data); got != "s0/p2=첫째 메모 s0/p2=둘째 메모 "+sampleMemo {
+	if got := memoTexts(t, res.Data); got != "s0/p2=첫째 메모 s0/p2= "+sampleMemo {
 		t.Errorf("tracked delete of a memo end: memos %q", got)
 	}
 	if x := paraXML(t, res.Data, "s0/p3"); !strings.Contains(x, memoEndXML("12")) {

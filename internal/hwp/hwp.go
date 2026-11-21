@@ -500,6 +500,7 @@ type walker struct {
 	memoAnchors []memoAnchor
 	memoBodies  []memoBody
 	outer       model.Change // change of the object whose paragraphs are being read
+	openFields  []int        // fields started and not yet ended: index in Summary.Memos, -1 for other fields
 }
 
 type memoAnchor struct {
@@ -859,6 +860,9 @@ func (w *walker) para(n *node, loc string) paraResult {
 			if c == 9 {
 				t.str("\t", cs.at(i))
 			}
+			if c == 4 {
+				w.fieldEnd(cs.at(i))
+			}
 			i += 8
 		case ctrlExtended:
 			var id uint32
@@ -874,6 +878,13 @@ func (w *walker) para(n *node, loc string) paraResult {
 			i += 8
 			if c == 11 {
 				t.content(ch)
+			}
+			if c == 3 {
+				memo := -1
+				if ctrl != nil && id == fieldMemo {
+					memo = len(w.doc.Summary.Memos)
+				}
+				w.openFields = append(w.openFields, memo)
 			}
 			if ctrl == nil {
 				continue
@@ -925,7 +936,30 @@ func (w *walker) memoAnchor(loc string, ctrl *node, change model.Change) {
 	}
 	sum := &w.doc.Summary
 	w.memoAnchors = append(w.memoAnchors, memoAnchor{idx: len(sum.Memos), num: num, change: change})
-	sum.Memos = append(sum.Memos, model.Memo{Loc: loc})
+	sum.Memos = append(sum.Memos, model.Memo{Loc: loc, End: model.MemoEndMissing})
+}
+
+// fieldEnd closes the field opened last. The field end character carries
+// no id of its field start, so fields pair by nesting in document order,
+// across paragraphs and sections, as Hwp and rhwp pair them. change is the
+// change of the field end; a deleted end deletes the memo with it, as a
+// deleted field start does.
+func (w *walker) fieldEnd(change model.Change) {
+	n := len(w.openFields)
+	if n == 0 {
+		return
+	}
+	if m := w.openFields[n-1]; m >= 0 {
+		w.doc.Summary.Memos[m].End = model.MemoEndFound
+		if change&model.Deleted != 0 {
+			for i := range w.memoAnchors {
+				if w.memoAnchors[i].idx == m {
+					w.memoAnchors[i].change |= model.Deleted
+				}
+			}
+		}
+	}
+	w.openFields = w.openFields[:n-1]
 }
 
 // table reads a 'tbl ' control. Its children are the HWPTAG_TABLE record

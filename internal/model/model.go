@@ -127,9 +127,9 @@ type Memo struct {
 type MemoEnd int
 
 const (
-	MemoEndUnknown MemoEnd = iota // the reader does not track field ends (hwp, docx)
-	MemoEndFound                  // hwpx: an hp:fieldEnd names the memo's hp:fieldBegin
-	MemoEndMissing                // hwpx: no hp:fieldEnd in the section names it
+	MemoEndUnknown MemoEnd = iota // the reader does not track field ends (docx)
+	MemoEndFound                  // hwpx: an hp:fieldEnd names the memo's hp:fieldBegin; hwp: a field end character closes its field
+	MemoEndMissing                // hwpx: no hp:fieldEnd in the section names it; hwp: no field end character closes it
 )
 
 // Style is one named style.

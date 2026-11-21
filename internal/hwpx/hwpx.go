@@ -404,6 +404,9 @@ func (w *walker) para(loc string) (paraText, error) {
 			case "fieldEnd":
 				if i, ok := w.memos[attr(t, "beginIDRef")]; ok {
 					w.doc.Summary.Memos[i].End = model.MemoEndFound
+					if w.change()&model.Deleted != 0 {
+						w.doc.Summary.Memos[i].Text = ""
+					}
 				}
 			case "pic":
 				if err := w.pic(loc); err != nil {

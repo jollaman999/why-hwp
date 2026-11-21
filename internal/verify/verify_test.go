@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -272,6 +273,34 @@ func TestAllowMemo(t *testing.T) {
 	}
 }
 
+// A tracked deletion of a memo's field end removes the memo when it is
+// accepted, as a deletion of its field begin does: the memo is reported
+// gone, and memo:LOC allows it.
+func TestMemoEndDeleted(t *testing.T) {
+	end := regexp.MustCompile(`<hp:ctrl><hp:fieldEnd [^>]*/></hp:ctrl>`)
+	edited := rewriteHWPX(t, func(s string) string {
+		return end.ReplaceAllString(s, `<hp:t><hp:deleteBegin Id="90" TcId="90"/></hp:t>$0<hp:t><hp:deleteEnd Id="90" TcId="90" paraend="0"/></hp:t>`)
+	})
+	cur := mustLoad(t, edited)
+	if want := []model.Memo{{Loc: "s0/p7", Text: "", End: model.MemoEndFound}}; !reflect.DeepEqual(cur.Summary.Memos, want) {
+		t.Fatalf("memos = %+v", cur.Summary.Memos)
+	}
+	want := Finding{What: "memo", Loc: "s0/p7", Orig: "가짜 메모: 표현을 다듬을 것", Severity: Violation}
+	for name, orig := range map[string]*model.Document{"hwpx": mustLoad(t, sampleHWPX), "hwp": mustLoad(t, sampleHWP)} {
+		r := Check(orig, cur, Options{})
+		if len(r.Preserved) != 1 || r.Preserved[0] != want || r.Violations != 1 {
+			t.Errorf("%s original: preservation = %+v", name, r.Preserved)
+		}
+		a, err := ParseAllow(strings.NewReader("memo:s0/p7\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := Check(orig, cur, Options{Allow: a}); r.Violations != 0 || len(r.Preserved) != 1 || r.Preserved[0].Severity != Info {
+			t.Errorf("%s original, memo:s0/p7: violations %d, preservation = %+v", name, r.Violations, r.Preserved)
+		}
+	}
+}
+
 func TestMemoEndLost(t *testing.T) {
 	end := regexp.MustCompile(`<hp:ctrl><hp:fieldEnd [^>]*/></hp:ctrl>`)
 	edited := rewriteHWPX(t, func(s string) string { return end.ReplaceAllString(s, "") })
@@ -288,12 +317,14 @@ func TestMemoEndLost(t *testing.T) {
 		t.Errorf("plain:\n%s", out)
 	}
 
-	// An original that already lacked the end, and an hwp original whose
-	// field ends are not read, give nothing to compare against.
-	for name, o := range map[string]*model.Document{"open original": cur, "hwp original": mustLoad(t, sampleHWP)} {
-		if r := Check(o, cur, Options{}); len(r.Preserved) != 0 || r.Violations != 0 {
-			t.Errorf("%s: preservation = %+v", name, r.Preserved)
-		}
+	// An hwp original has its field ends read too.
+	if r := Check(mustLoad(t, sampleHWP), cur, Options{}); len(r.Preserved) != 1 || r.Preserved[0] != want || r.Violations != 1 {
+		t.Errorf("hwp original: preservation = %+v", r.Preserved)
+	}
+	// An original that already lacked the end gives nothing to compare
+	// against.
+	if r := Check(cur, cur, Options{}); len(r.Preserved) != 0 || r.Violations != 0 {
+		t.Errorf("open original: preservation = %+v", r.Preserved)
 	}
 	if r := Check(orig, orig, Options{}); len(r.Preserved) != 0 {
 		t.Errorf("same document: preservation = %+v", r.Preserved)

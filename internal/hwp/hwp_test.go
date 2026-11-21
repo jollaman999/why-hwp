@@ -18,8 +18,7 @@ const (
 )
 
 // The two samples are the same document saved by Hwp in both formats, so
-// everything except the binary item naming and the memo field ends, which
-// the hwp reader does not read, must agree.
+// everything except the binary item naming must agree.
 func TestSampleMatchesHWPX(t *testing.T) {
 	got, err := Read(sampleHWP)
 	if err != nil {
@@ -37,9 +36,6 @@ func TestSampleMatchesHWPX(t *testing.T) {
 	}
 
 	g, w := got.Summary, want.Summary
-	for i := range w.Memos {
-		w.Memos[i].End = model.MemoEndUnknown
-	}
 	for _, c := range []struct {
 		name      string
 		got, want any
@@ -206,6 +202,86 @@ func units(s string) []uint16 {
 		u = append(u, uint16(r))
 	}
 	return append(u, 13)
+}
+
+// A field end character closes the field started last, in the same
+// paragraph, a later one or a later section; a memo whose field no end
+// closes is open.
+func TestMemoFieldEnds(t *testing.T) {
+	memoCtrl := func(num uint32) *node {
+		d := binary.LittleEndian.AppendUint32(nil, fieldMemo)
+		d = append(d, make([]byte, 5)...)
+		d = append(d, 0, 0, 0, 0, 0, 0)
+		d = binary.LittleEndian.AppendUint32(d, num)
+		return &node{record: record{tag: tagCtrlHeader, data: d}}
+	}
+	clk := ctrlID("%clk")
+	clkCtrl := &node{record: record{tag: tagCtrlHeader, data: binary.LittleEndian.AppendUint32(nil, clk)}}
+	memo := []uint16{3, uint16(fieldMemo), uint16(fieldMemo >> 16), 0, 0, 0, 0, 3}
+	other := []uint16{3, uint16(clk), uint16(clk >> 16), 0, 0, 0, 0, 3}
+	end := []uint16{4, 0, 0, 0, 0, 0, 0, 4}
+	cat := func(parts ...[]uint16) []uint16 {
+		var u []uint16
+		for _, p := range parts {
+			u = append(u, p...)
+		}
+		return append(u, 13)
+	}
+	w := &walker{doc: &model.Document{}}
+	w.section(0, []*node{
+		textPara(cat(end, memo, []uint16{'a'}, other, end, end), memoCtrl(1), clkCtrl),
+		textPara(cat(memo, []uint16{'b'}), memoCtrl(2)),
+		textPara(cat([]uint16{'b'}, end)),
+		textPara(cat(memo, other, end), memoCtrl(3), clkCtrl),
+		textPara(cat(memo), memoCtrl(4)),
+	})
+	w.section(1, []*node{textPara(cat([]uint16{'d'}, end))})
+
+	var got []model.MemoEnd
+	for _, m := range w.doc.Summary.Memos {
+		got = append(got, m.End)
+	}
+	want := []model.MemoEnd{model.MemoEndFound, model.MemoEndFound, model.MemoEndMissing, model.MemoEndFound}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("memo ends = %v, want %v", got, want)
+	}
+	if len(w.openFields) != 1 || w.openFields[0] != 2 {
+		t.Errorf("open fields = %v, want the third memo", w.openFields)
+	}
+}
+
+// A memo whose field end is in a tracked deletion goes when the deletion
+// is accepted, so its text in the accepted view is empty.
+func TestMemoFieldEndDeleted(t *testing.T) {
+	memoCtrl := func(num uint32) *node {
+		d := binary.LittleEndian.AppendUint32(nil, fieldMemo)
+		d = append(d, make([]byte, 5)...)
+		d = append(d, 0, 0, 0, 0, 0, 0)
+		d = binary.LittleEndian.AppendUint32(d, num)
+		return &node{record: record{tag: tagCtrlHeader, data: d}}
+	}
+	memo := []uint16{3, uint16(fieldMemo), uint16(fieldMemo >> 16), 0, 0, 0, 0, 3}
+	end := []uint16{4, 0, 0, 0, 0, 0, 0, 4}
+	endPara := append(append([]uint16{}, end...), units("x")...)
+	w := &walker{doc: &model.Document{}}
+	w.section(0, []*node{
+		textPara(append(append([]uint16{}, memo...), units("a")...), memoCtrl(1)),
+		trackedPara(endPara, [][3]uint32{{rangeDelete, 0, uint32(len(endPara))}}),
+		textPara(append(append([]uint16{}, memo...), units("b")...), memoCtrl(2)),
+		trackedPara(endPara, [][3]uint32{{rangeDelete, 8, 9}}),
+	})
+	w.memoBodies = []memoBody{
+		{num: 1, paras: []*node{textPara(units("gone"))}},
+		{num: 2, paras: []*node{textPara(units("kept"))}},
+	}
+	w.pairMemos()
+	want := []model.Memo{
+		{Loc: "s0/p0", Text: "", End: model.MemoEndFound},
+		{Loc: "s0/p2", Text: "kept", End: model.MemoEndFound},
+	}
+	if !reflect.DeepEqual(w.doc.Summary.Memos, want) {
+		t.Errorf("memos = %+v, want %+v", w.doc.Summary.Memos, want)
+	}
 }
 
 // A cell with one paragraph is one block; a cell with more is one block
