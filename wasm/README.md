@@ -260,7 +260,7 @@ same tree is built again, as `<patch>: does not apply and is not applied`.
 rhwp 7213ed1f reads the change-tracking range tags in an HWP body but keeps the
 DocInfo records that describe them as raw bytes, writes no change tracking to
 HWPX and ignores the change marks of HWPX. rhwp left change tracking out of its
-1.0.0 scope (edwardkim/rhwp#8022), so why-hwp carries three patches, applied
+1.0.0 scope (edwardkim/rhwp#8022), so why-hwp carries four patches, applied
 after the layout patches and following the same rules. Each was checked against
 what Hancom Office 2024 writes from the same input, using rhwp's public sample
 `issue5169_viewtext_changetracking.hwp` (229 tracked changes), a
@@ -303,6 +303,16 @@ was edited after loading and its hidden tracked changes cannot be written".
 4-change HWPX becomes an HWP that Hancom Office opens with the same 4 changes,
 deleted text not joined to the text around it, and HWP to HWPX to HWP keeps the
 229 and 30.
+
+`patches/rhwp-ztrackchange4.patch`, applied last, writes the memo shape a section uses
+(`secPr/@memoShapeIDRef`) into the HWP section definition, at byte 30 of the
+record, where `rhwp-trackchange2.patch` reads it. It was written as 0. The HWP
+made from the 4-change HWPX and from the HWPX Hancom Office saves from the
+229-change sample now holds 1, as Hancom Office writes. Hancom Office also drops
+memo shapes that no section uses and numbers the rest from 1; the patch keeps
+them all, so a section that uses the second of two shapes refers to 2 where
+Hancom Office refers to 1 for the same shape. Of the 18 documents only the HWP
+made from oss-result.hwpx changes.
 
 Of the 18 documents the layout patches were measured with, the PDF, TXT and
 HWP outputs are the same byte for byte before and after the three patches. The
