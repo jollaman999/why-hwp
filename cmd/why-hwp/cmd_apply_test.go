@@ -138,3 +138,36 @@ func TestApplyEncryptedHWP(t *testing.T) {
 		assertEmptyDir(t, tmp)
 	}
 }
+
+// apply says how many memos it deleted and that the deletion is not
+// tracked, and lists delete_memo among the ops in its usage.
+func TestApplyDeleteMemoReport(t *testing.T) {
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "memo.json")
+	if err := os.WriteFile(spec, []byte(`{"ops":[{"op":"delete_memo","loc":"s0/p7"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "memo.hwpx")
+	stdout, _ := runOK(t, "apply", "-spec", spec, "-o", out, "-author", "tester", "-date", "2026-01-02T03:04:05Z", sampleHWPX)
+	if want := out + ": 1 ops, 0 insertions, 0 deletions, 0 images, 1 memo deleted without tracking, tracked as \"tester\""; !strings.HasPrefix(stdout, want) {
+		t.Errorf("stdout = %q, want prefix %q", stdout, want)
+	}
+	info, _ := runOK(t, "info", out)
+	if !strings.Contains(info, "memos          0\n") {
+		t.Errorf("memo left in the output:\n%s", info)
+	}
+
+	plain := filepath.Join(dir, "plain.hwpx")
+	stdout, _ = runOK(t, "apply", "-spec", "../../testdata/apply/spec.json", "-o", plain, "-no-track", sampleHWPX)
+	if strings.Contains(stdout, "memo") {
+		t.Errorf("stdout without delete_memo mentions memos: %q", stdout)
+	}
+
+	var usage bytes.Buffer
+	if code := run([]string{"apply", "-h"}, &bytes.Buffer{}, &usage); code != 0 {
+		t.Fatalf("apply -h: exit %d", code)
+	}
+	if !strings.Contains(usage.String(), "delete, delete_memo,") {
+		t.Errorf("apply -h does not list delete_memo:\n%s", usage.String())
+	}
+}

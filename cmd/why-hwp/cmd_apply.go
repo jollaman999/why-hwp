@@ -42,7 +42,8 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "A cell with several paragraphs is addressed by paragraph (.../c2/p1), as")
 		fmt.Fprintln(stderr, "text prints it; the bare cell loc names its first paragraph. Text-box")
 		fmt.Fprintln(stderr, "text (a loc ending in #box) cannot be edited.")
-		fmt.Fprintln(stderr, "Ops: set_text, replace, insert_after, insert_before, delete, image.")
+		fmt.Fprintln(stderr, "Ops: set_text, replace, insert_after, insert_before, delete, delete_memo,")
+		fmt.Fprintln(stderr, "image. A memo is deleted without a tracked change, as Hancom Office does.")
 		fmt.Fprintln(stderr, "Image paths in the spec are relative to the spec file.")
 		fmt.Fprintln(stderr, "An .hwp input is converted to HWPX with the built-in engine first; the")
 		fmt.Fprintln(stderr, "conversion can lose parts of the document, so check the output with")
@@ -161,8 +162,15 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	if !*noTrack {
 		mode = fmt.Sprintf("tracked as %q (author id %s)", *author, res.AuthorID)
 	}
-	fmt.Fprintf(stdout, "%s: %d ops, %d insertions, %d deletions, %d images, %s\n",
-		*out, res.Ops, res.Inserted, res.Deleted, res.Images, mode)
+	memos := ""
+	switch {
+	case res.Memos == 1:
+		memos = ", 1 memo deleted without tracking"
+	case res.Memos > 1:
+		memos = fmt.Sprintf(", %d memos deleted without tracking", res.Memos)
+	}
+	fmt.Fprintf(stdout, "%s: %d ops, %d insertions, %d deletions, %d images%s, %s\n",
+		*out, res.Ops, res.Inserted, res.Deleted, res.Images, memos, mode)
 	return 0
 }
 
