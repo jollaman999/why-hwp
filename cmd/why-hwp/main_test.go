@@ -53,3 +53,47 @@ func TestHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestMsysPathArgs(t *testing.T) {
+	tests := []struct {
+		in   []string
+		want []string
+	}{
+		{[]string{"/c/x/[a]/b.hwp"}, []string{`C:\x\[a]\b.hwp`}},
+		{[]string{"/D/doc.hwp"}, []string{`D:\doc.hwp`}},
+		{[]string{"/c"}, []string{`C:\`}},
+		{[]string{"/c/"}, []string{`C:\`}},
+		{
+			[]string{"-to", "hwpx", "-o", "/c/[a]/out.hwpx", "/c/[a]/in.hwp"},
+			[]string{"-to", "hwpx", "-o", `C:\[a]\out.hwpx`, `C:\[a]\in.hwp`},
+		},
+		{
+			[]string{"-o=/c/[a]/out.hwpx", "--spec=/e/s.json"},
+			[]string{`-o=C:\[a]\out.hwpx`, `--spec=E:\s.json`},
+		},
+		{[]string{"-format=json", "-o=rel/out.hwpx"}, []string{"-format=json", "-o=rel/out.hwpx"}},
+		{
+			[]string{`C:\x\b.hwp`, "C:/x/b.hwp", "b.hwp", "-", ""},
+			[]string{`C:\x\b.hwp`, "C:/x/b.hwp", "b.hwp", "-", ""},
+		},
+		{
+			[]string{"/cd/x.hwp", "/1/x.hwp", "//srv/share", "/", "/c:x"},
+			[]string{"/cd/x.hwp", "/1/x.hwp", "//srv/share", "/", "/c:x"},
+		},
+		{[]string{"text=/c/x"}, []string{"text=/c/x"}},
+	}
+	for _, tt := range tests {
+		got := msysPathArgs(tt.in)
+		if len(got) != len(tt.want) || strings.Join(got, "|") != strings.Join(tt.want, "|") {
+			t.Errorf("msysPathArgs(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestMsysPathArgsKeepsInput(t *testing.T) {
+	in := []string{"/c/x.hwp"}
+	msysPathArgs(in)
+	if in[0] != "/c/x.hwp" {
+		t.Errorf("input changed to %q", in[0])
+	}
+}

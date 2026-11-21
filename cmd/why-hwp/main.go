@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
+	"strings"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -50,7 +52,49 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
-	return cmd.run(args[1:], stdout, stderr)
+	rest := args[1:]
+	if runtime.GOOS == "windows" {
+		rest = msysPathArgs(rest)
+	}
+	return cmd.run(rest, stdout, stderr)
+}
+
+// msysPathArgs rewrites MSYS drive paths such as /c/dir/file.hwp to
+// C:\dir\file.hwp, both as bare arguments and as -flag=value values.
+// Git Bash normally does this before it starts a native program, but it
+// leaves an argument untouched when it contains glob characters like '['.
+func msysPathArgs(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		if strings.HasPrefix(a, "-") {
+			if eq := strings.IndexByte(a, '='); eq > 0 {
+				out[i] = a[:eq+1] + msysPath(a[eq+1:])
+				continue
+			}
+		}
+		out[i] = msysPath(a)
+	}
+	return out
+}
+
+// msysPath returns s in Windows form when it starts with /X/ or is exactly
+// /X for a drive letter X, and s unchanged otherwise.
+func msysPath(s string) string {
+	if len(s) < 2 || s[0] != '/' || !isASCIILetter(s[1]) {
+		return s
+	}
+	if len(s) > 2 && s[2] != '/' {
+		return s
+	}
+	rest := strings.ReplaceAll(s[2:], "/", `\`)
+	if rest == "" {
+		rest = `\`
+	}
+	return strings.ToUpper(s[1:2]) + ":" + rest
+}
+
+func isASCIILetter(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 func usage(w io.Writer) {
