@@ -171,3 +171,62 @@ func TestApplyDeleteMemoReport(t *testing.T) {
 		t.Errorf("apply -h does not list delete_memo:\n%s", usage.String())
 	}
 }
+
+// apply expects the input's tracked changes plus the entries the edit adds,
+// and its message gives both parts and what the output has.
+func TestEditTrackChangeLoss(t *testing.T) {
+	dir := t.TempDir()
+	tracked := filepath.Join(dir, "tracked.hwpx")
+	runOK(t, "apply", "-spec", "../../testdata/apply/spec.json", "-o", tracked, "-author", "tester", "-date", "2026-01-02T03:04:05Z", sampleHWPX)
+	again := filepath.Join(dir, "again.hwpx")
+	small := filepath.Join(dir, "small.json")
+	if err := os.WriteFile(small, []byte(`{"ops":[{"op":"set_text","loc":"s0/p0","text":"x"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runOK(t, "apply", "-spec", small, "-o", again, "-author", "tester", "-date", "2026-01-02T03:04:05Z", tracked)
+	ids := func(name string) []string {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := trackChangeIDs(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	orig, first, second := ids(sampleHWPX), ids(tracked), ids(again)
+	if len(orig) != 0 || len(first) != 2 || len(second) != 4 {
+		t.Fatalf("ids: sample %q, tracked %q, again %q", orig, first, second)
+	}
+	if n := newIDs(orig, first); n != 2 {
+		t.Errorf("added to the sample = %d, want 2", n)
+	}
+	if n := newIDs(first, second); n != 2 {
+		t.Errorf("added to tracked = %d, want 2", n)
+	}
+	if n := newIDs([]string{"1", "1", "2"}, []string{"1", "2", "2", "3"}); n != 2 {
+		t.Errorf("newIDs with repeated ids = %d, want 2", n)
+	}
+
+	for _, tc := range []struct {
+		in, added, out, converted int
+		want                      string
+	}{
+		{229, 2, 2, 0, "tracked changes lost: expected 231 (229 in the input + 2 added by this edit), the output has 2; the conversion to HWPX kept 0 of the 229; the output is not kept"},
+		{229, 2, 230, -1, "tracked changes lost: expected 231 (229 in the input + 2 added by this edit), the output has 230; the output is not kept"},
+		{229, 2, 230, 229, "tracked changes lost: expected 231 (229 in the input + 2 added by this edit), the output has 230; the output is not kept"},
+		{229, 2, 231, 229, ""},
+		{229, 0, 229, -1, ""},
+		{2, 2, 5, -1, ""},
+	} {
+		err := editTrackChangeLoss(tc.in, tc.added, tc.out, tc.converted)
+		got := ""
+		if err != nil {
+			got = err.Error()
+		}
+		if got != tc.want {
+			t.Errorf("editTrackChangeLoss(%d, %d, %d, %d) = %q, want %q", tc.in, tc.added, tc.out, tc.converted, got, tc.want)
+		}
+	}
+}

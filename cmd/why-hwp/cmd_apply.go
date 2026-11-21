@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
@@ -48,8 +49,8 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "An .hwp input is converted to HWPX with the built-in engine first; the")
 		fmt.Fprintln(stderr, "conversion can lose parts of the document, so check the output with")
 		fmt.Fprintln(stderr, "'why-hwp verify -orig in.hwp out.hwpx'.")
-		fmt.Fprintln(stderr, "An output with fewer tracked changes than the input is not written and")
-		fmt.Fprintln(stderr, "apply exits with status 1.")
+		fmt.Fprintln(stderr, "An output with fewer tracked changes than the input has plus the ones")
+		fmt.Fprintln(stderr, "the edit adds is not written and apply exits with status 1.")
 		fmt.Fprintln(stderr)
 		fset.PrintDefaults()
 	}
@@ -152,7 +153,19 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(1, "%s: count tracked changes in the output: %v", in, err)
 	}
-	if err := trackChangeLoss(orig.Summary.TrackChanges, edited.Summary.TrackChanges); err != nil {
+	inIDs, err := trackChangeIDs(data)
+	if err != nil {
+		return fail(1, "%s: count tracked changes: %v", in, err)
+	}
+	outIDs, err := trackChangeIDs(res.Data)
+	if err != nil {
+		return fail(1, "%s: count tracked changes in the output: %v", in, err)
+	}
+	converted := -1
+	if isHWP {
+		converted = len(inIDs)
+	}
+	if err := editTrackChangeLoss(orig.Summary.TrackChanges, newIDs(inIDs, outIDs), edited.Summary.TrackChanges, converted); err != nil {
 		return fail(1, "%s: %v", in, err)
 	}
 	if err := writeFileAtomic(*out, res.Data); err != nil {
@@ -211,6 +224,76 @@ func writeFileAtomic(name string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// editTrackChangeLoss fails when an edited output has fewer tracked changes
+// than the input had plus the ones the edit added. converted is the count
+// in the HWPX copy of an .hwp input, or -1 for an .hwpx input.
+func editTrackChangeLoss(in, added, out, converted int) error {
+	if out >= in+added {
+		return nil
+	}
+	msg := fmt.Sprintf("tracked changes lost: expected %d (%d in the input + %d added by this edit), the output has %d",
+		in+added, in, added, out)
+	if converted >= 0 && converted < in {
+		msg += fmt.Sprintf("; the conversion to HWPX kept %d of the %d", converted, in)
+	}
+	return errors.New(msg + "; the output is not kept")
+}
+
+// trackChangeIDs lists the ids of the tracked-change entries in the header
+// of an HWPX package held in memory, the entries the HWPX reader counts.
+func trackChangeIDs(pkg []byte) ([]string, error) {
+	zr, err := zip.NewReader(bytes.NewReader(pkg), int64(len(pkg)))
+	if err != nil {
+		return nil, err
+	}
+	f, err := zr.Open("Contents/header.xml")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var ids []string
+	dec := xml.NewDecoder(f)
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return ids, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("Contents/header.xml: %w", err)
+		}
+		if se, ok := tok.(xml.StartElement); ok && se.Name.Local == "trackChange" {
+			id := ""
+			for _, a := range se.Attr {
+				if a.Name.Local == "id" {
+					id = a.Value
+				}
+			}
+			ids = append(ids, id)
+		}
+	}
+}
+
+// newIDs counts the ids in out that are not in in, each id in in matching
+// one in out.
+func newIDs(in, out []string) int {
+	left := map[string]int{}
+	for _, id := range in {
+		left[id]++
+	}
+	n := 0
+	for _, id := range out {
+		if left[id] > 0 {
+			left[id]--
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // parseHWPX reads an HWPX package held in memory.
