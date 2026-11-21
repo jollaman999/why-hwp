@@ -40,7 +40,7 @@ func TestRenderArgs(t *testing.T) {
 	t.Setenv(EnvOffline, "1")
 	t.Setenv(EnvSystemFonts, "0")
 	t.Setenv(EnvFontDirs, t.TempDir())
-	rec :=&renderRunner{}
+	rec := &renderRunner{}
 	old := loadRunner
 	loadRunner = func(context.Context) (runner, error) { return rec, nil }
 	defer func() { loadRunner = old }()
