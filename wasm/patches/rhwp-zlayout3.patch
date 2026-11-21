@@ -1,0 +1,132 @@
+diff --git a/src/renderer/font_metrics_overlays.rs b/src/renderer/font_metrics_overlays.rs
+--- a/src/renderer/font_metrics_overlays.rs
++++ b/src/renderer/font_metrics_overlays.rs
+@@ -257 +257 @@
+-        if face != "한양중고딕" || bold || italic {
++        if face != "한양중고딕" || italic {
+diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
+--- a/src/renderer/layout/text_measurement.rs
++++ b/src/renderer/layout/text_measurement.rs
+@@ -4266,0 +4267,31 @@
++    fn hanyang_junggothic_hft_bold_curly_quotes_use_program_advance() {
++        let m = EmbeddedTextMeasurer;
++        let advance = |c: char| {
++            let style = TextStyle {
++                font_family: "한양중고딕".to_string(),
++                font_size: 20.0,
++                ratio: 1.0,
++                bold: true,
++                source_font_is_hft: true,
++                original_glyph_metric_family: Some(std::sync::Arc::new("한양중고딕".to_string())),
++                ..Default::default()
++            };
++            let positions = m.compute_char_positions(&format!("가{c}나"), &style);
++            positions[2] - positions[1]
++        };
++        for (c, em) in [
++            ('\u{201C}', 0.375),
++            ('\u{201D}', 0.375),
++            ('\u{2018}', 0.225),
++            ('\u{2019}', 0.225),
++        ] {
++            let width = advance(c);
++            assert!(
++                (width - (em + 0.05) * 20.0).abs() < 0.03,
++                "U+{:04X} {width}",
++                c as u32
++            );
++        }
++    }
++
++    #[test]
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -3750 +3750,9 @@
+-                    let char_x = x + cluster_x(*char_idx, cluster_str) + dx;
++                    let centered = centers_in_fullwidth_cell(cluster_str, style);
++                    let char_x = x
++                        + cluster_x(*char_idx, cluster_str)
++                        + dx
++                        + if centered {
++                            glyph_advance(*char_idx, cluster_str) / 2.0
++                        } else {
++                            0.0
++                        };
+@@ -3759 +3767,4 @@
+-                    let shadow_attrs = attrs_for_cluster(cluster_str, &shadow_color);
++                    let mut shadow_attrs = attrs_for_cluster(cluster_str, &shadow_color);
++                    if centered {
++                        shadow_attrs.push_str(" text-anchor=\"middle\"");
++                    }
+@@ -3903 +3914,8 @@
+-                let char_x = x + cluster_x(*char_idx, cluster_str);
++                let centered = centers_in_fullwidth_cell(cluster_str, style);
++                let char_x = x
++                    + cluster_x(*char_idx, cluster_str)
++                    + if centered {
++                        glyph_advance(*char_idx, cluster_str) / 2.0
++                    } else {
++                        0.0
++                    };
+@@ -3911 +3929 @@
+-                let common_attrs = match &outline_attrs {
++                let mut common_attrs = match &outline_attrs {
+@@ -3914,0 +3933,3 @@
++                if centered {
++                    common_attrs.push_str(" text-anchor=\"middle\"");
++                }
+@@ -4383,0 +4405,11 @@
++}
++
++fn centers_in_fullwidth_cell(cluster: &str, style: &TextStyle) -> bool {
++    let mut chars = cluster.chars();
++    let (Some(c), None) = (chars.next(), chars.next()) else {
++        return false;
++    };
++    style.source_font_is_hft
++        && matches!(c, '\u{2013}' | '\u{2020}' | '\u{203B}')
++        && super::layout::char_width_decision(&[c], &[1], 0, style, true).width_source
++            == "heuristicFullwidth"
+diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+--- a/src/renderer/svg/tests.rs
++++ b/src/renderer/svg/tests.rs
+@@ -1600,0 +1601,38 @@
++
++#[test]
++fn hft_fullwidth_symbol_is_centred_in_its_cell() {
++    let style = |source_font_is_hft: bool| TextStyle {
++        font_size: 20.0,
++        font_family: "한양신명조".to_string(),
++        source_font_is_hft,
++        ..Default::default()
++    };
++    let dash = |style: &TextStyle| -> (f64, bool) {
++        let mut renderer = SvgRenderer::new();
++        renderer.begin_page(800.0, 600.0);
++        renderer.draw_text("가\u{2013}나", 10.0, 20.0, style);
++        let output = renderer.output();
++        let close = output.find(">\u{2013}</text>").expect("dash text");
++        let tag = &output[output[..close].rfind("<text").unwrap()..close];
++        let at = tag.find(" x=\"").expect("x") + 4;
++        let x: f64 = tag[at..at + tag[at..].find('"').unwrap()].parse().unwrap();
++        (x, tag.contains(" text-anchor=\"middle\""))
++    };
++    let cell = |style: &TextStyle| -> (f64, f64) {
++        let positions = crate::renderer::layout::compute_char_positions("가\u{2013}나", style);
++        (10.0 + positions[1], positions[2] - positions[1])
++    };
++
++    let hft = style(true);
++    let (origin, width) = cell(&hft);
++    assert!((width - 20.0).abs() < 0.01, "{width}");
++    let (x, centred) = dash(&hft);
++    assert!(centred);
++    assert!((x - (origin + width / 2.0)).abs() < 0.001, "{x} {origin} {width}");
++
++    let plain = style(false);
++    let (origin, _) = cell(&plain);
++    let (x, centred) = dash(&plain);
++    assert!(!centred);
++    assert!((x - origin).abs() < 0.001, "{x} {origin}");
++}

@@ -339,6 +339,20 @@ change.
 |--------|--------|
 | ASCII punctuation whose font slot names an HFT font is drawn fitted to its laid-out advance, as ASCII letters and digits are | It was drawn with the substitute font's own width: `(` in Hanyang Sinmyeongjo (한양신명조) advances 4.32 pt at 10.93 pt and Malgun Gothic draws it 3.33 pt wide |
 
+`patches/rhwp-zlayout3.patch` leaves the count at 17 of 18 on Windows and 9 of
+18 on Linux. The two-up document, the one that still fails on Windows, goes
+from 4.78 pt to 2.41 pt (from 6.27 pt to 4.95 pt on Linux), and only its PDF
+changes. What is left there: a full-width HFT symbol drawn by a substitute font
+has a half-em glyph box where Hancom Office's has a full em, so its ink is in
+place and its box edges are not; and a line of bold Human Myeongjo with 2 %
+letter spacing whose Hangul spacing Hancom Office varies, for a reason not
+found, is 1.27 pt off.
+
+| Change | Before |
+|--------|--------|
+| Bold Hanyang Junggothic (한양중고딕) curly quotes advance as the HFT program gives them (225/1000 em for `‘` `’`, 375/1000 for `“` `”`), as the regular face's do | The bold face used the substitute font's widths, and each quote moved the rest of its line by 0.5 pt |
+| A full-width HFT symbol (`–`, `†`, `※`) drawn by a substitute font is centred in its em cell, as Hancom Office centres the HFT glyph | It was drawn at the left of the cell |
+
 ## fontdb
 
 Without memory mapping, fontdb 0.23 reads the whole font file from disk every
