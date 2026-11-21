@@ -21,6 +21,9 @@ rhwp = { path = "rhwp-src", default-features = false }
 # Same resvg as rhwp so the two share one copy. No system fonts, no memmap:
 # svg2png uses only the fonts it is given.
 resvg = { version = "0.47", default-features = false, features = ["text"] }
+# The resvg that rhwp's svg2pdf already uses. `render` draws the usvg 0.45
+# tree rhwp's PDF stage builds, so it needs the resvg of that version.
+rhwp_resvg = { package = "resvg", version = "0.45", default-features = false, features = ["text"] }
 serde_json = "1"
 sha2 = "0.11"
 

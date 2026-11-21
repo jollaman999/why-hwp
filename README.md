@@ -90,6 +90,14 @@ Fonts are used only for PDF output; HWP, HWPX and text output read no fonts and 
 
 With `-engine hancom` the installed Hancom Office does the conversion (Windows only; on other systems it exits with "convert needs Windows with Hancom Office"). It also reads `.docx`, and its PDF is what Hancom Office prints. Hancom runs hidden and works on a copy in the temporary folder, so it never asks for file access. Only the Hancom instance this command starts is closed, and on timeout only that process is killed; Hancom windows you already have open are left alone.
 
+### render
+
+```sh
+why-hwp render [-pages 1-3] [-dpi 150] [-o dir] [-timeout 10m] [-force] <in.hwp|in.hwpx>
+```
+
+Draws pages of a document as PNG images with the built-in engine, one image per page. The pages are drawn the way `convert -to pdf` draws them: the same page SVG, fonts, font fallback and synthetic bold and italic, so line breaks, page breaks and fonts are those of the PDF. A document set to print two pages per sheet still gives one image per page, where its PDF puts two pages on each sheet. `-pages` takes page numbers and ranges separated by commas (`1-3`, `1,4,7-9`); without it every page is drawn, and a page the document does not have is an error. Page N of `in.hwp` is written to `in-pNNN.png` in the `-o` folder (created when missing; default: the input's folder), the page number padded with zeros to three digits, or to as many digits as the document's page count has when that is more (`in-p0012.png` in a 1500-page document). Existing PNG files are not overwritten unless `-force` is given; then nothing is written. `-dpi` (default 150) sets the resolution: an A4 page is 1240x1752 px at 150 dpi, and the size doubles with the dpi. One image is limited to 20000 px per side and 120 million pixels. Fonts are found, downloaded and cached as for PDF output of `convert` (see above, including `WHY_HWP_OFFLINE`, `WHY_HWP_FONT_DIRS` and `WHY_HWP_SYSTEM_FONTS`), and `-timeout` (default 10m) covers the rendering and font downloads. Edges of thin lines can differ by a pixel from a PDF viewer's rendering of the same page, since the two use different rasterizers.
+
 ### svg2png
 
 ```sh

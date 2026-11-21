@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -82,24 +83,13 @@ func convertIn(ctx context.Context, e runner, work, in, outName, to string) (mis
 
 	var miss missingFonts
 	if to == "pdf" {
-		fontsDir, err := fontCacheDir()
+		var fonts []mount
+		var err error
+		miss, fonts, err = drawingFonts(ctx, e, work, guestIn)
 		if err != nil {
 			return nil, err
 		}
-		hostFonts := hostFontMounts(hostFontDirs())
-		inDir, dlDir := filepath.Join(work, "in"), filepath.Join(work, "dl")
-		fontMu.RLock()
-		miss, err = ensureFonts(ctx, e, httpClient, inDir, guestIn, dlDir, fontsDir, hostFonts, true)
-		fontMu.RUnlock()
-		if err == nil && len(miss) > 0 && os.Getenv(EnvOffline) != "1" {
-			fontMu.Lock()
-			miss, err = ensureFonts(ctx, e, httpClient, inDir, guestIn, dlDir, fontsDir, hostFonts, false)
-			fontMu.Unlock()
-		}
-		if err != nil {
-			return nil, err
-		}
-		mounts = append(append(mounts, mount{host: fontsDir, guest: "/fonts", readOnly: true}), hostFonts...)
+		mounts = append(mounts, fonts...)
 	}
 
 	fontMu.RLock()
@@ -108,7 +98,138 @@ func convertIn(ctx context.Context, e runner, work, in, outName, to string) (mis
 	return miss, err
 }
 
-// loadRunner returns the engine Convert runs. Tests replace it.
+// drawingFonts installs the fonts that drawing guestIn needs into the font
+// cache, unless offline, and returns the fonts left out and the mounts that
+// give the engine the cache and the fonts of this computer. work/in holds
+// the document and work/dl takes the downloads.
+func drawingFonts(ctx context.Context, e runner, work, guestIn string) (missingFonts, []mount, error) {
+	fontsDir, err := fontCacheDir()
+	if err != nil {
+		return nil, nil, err
+	}
+	hostFonts := hostFontMounts(hostFontDirs())
+	inDir, dlDir := filepath.Join(work, "in"), filepath.Join(work, "dl")
+	fontMu.RLock()
+	miss, err := ensureFonts(ctx, e, httpClient, inDir, guestIn, dlDir, fontsDir, hostFonts, true)
+	fontMu.RUnlock()
+	if err == nil && len(miss) > 0 && os.Getenv(EnvOffline) != "1" {
+		fontMu.Lock()
+		miss, err = ensureFonts(ctx, e, httpClient, inDir, guestIn, dlDir, fontsDir, hostFonts, false)
+		fontMu.Unlock()
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return miss, append([]mount{{host: fontsDir, guest: "/fonts", readOnly: true}}, hostFonts...), nil
+}
+
+// PageImage is one page image that Render drew.
+type PageImage struct {
+	Page   int    // 1-based page number
+	Width  int    // pixels
+	Height int    // pixels
+	Path   string // the PNG, in a work directory that is removed after keep
+}
+
+// Render draws pages of the document at in as PNG images at dpi dots per
+// inch, the way Convert draws them into a PDF: same fonts, same line and
+// page breaks. pages are 1-based; none means every page, and a page the
+// document does not have is an error. Fonts are handled as for pdf output
+// in Convert.
+//
+// keep receives the number of pages in the document and the images in the
+// order drawn while their files still exist; it copies what it wants out.
+// A done ctx returns at once, as in Convert, without calling keep.
+func Render(ctx context.Context, in string, dpi int, pages []int, keep func(count int, images []PageImage) error) error {
+	if dpi <= 0 {
+		return fmt.Errorf("engine: bad dpi %d", dpi)
+	}
+	e, err := loadRunner(ctx)
+	if err != nil {
+		return err
+	}
+	work, err := newWorkDir("in", "out", "dl")
+	if err != nil {
+		return err
+	}
+	_, err = detach(ctx, "render", func() (rendered, error) {
+		return renderIn(ctx, e, work, in, dpi, pages)
+	}, func(r rendered) error {
+		if len(r.miss) > 0 {
+			Warn(fmt.Sprintf("%s=1: at least %d font(s) not downloaded, output may use substitutes: %s",
+				EnvOffline, len(r.miss), strings.Join(r.miss, ", ")))
+		}
+		return keep(r.count, r.images)
+	}, func() { os.RemoveAll(work) })
+	return err
+}
+
+// rendered is what renderIn hands to Render's keep.
+type rendered struct {
+	count  int
+	images []PageImage
+	miss   missingFonts
+}
+
+// renderIn does the work of Render inside the work directory work.
+func renderIn(ctx context.Context, e runner, work, in string, dpi int, pages []int) (rendered, error) {
+	inName := "input" + strings.ToLower(filepath.Ext(in))
+	if err := copyFile(in, filepath.Join(work, "in", inName)); err != nil {
+		return rendered{}, err
+	}
+	guestIn := "/in/" + inName
+	miss, fonts, err := drawingFonts(ctx, e, work, guestIn)
+	if err != nil {
+		return rendered{}, err
+	}
+	args := []string{"render", "--in", guestIn, "--out", "/out", "--dpi", strconv.Itoa(dpi)}
+	for _, p := range pages {
+		args = append(args, "--page", strconv.Itoa(p))
+	}
+	fontMu.RLock()
+	out, err := e.run(ctx, args, append([]mount{
+		{host: filepath.Join(work, "in"), guest: "/in", readOnly: true},
+		{host: filepath.Join(work, "out"), guest: "/out"},
+	}, fonts...))
+	fontMu.RUnlock()
+	if err != nil {
+		return rendered{}, err
+	}
+	r, err := parseRendered(out, filepath.Join(work, "out"))
+	r.miss = miss
+	return r, err
+}
+
+// parseRendered reads the engine's render report, whose images are named
+// <page>.png in dir.
+func parseRendered(b []byte, dir string) (rendered, error) {
+	var report struct {
+		Pages  int `json:"pages"`
+		Images []struct {
+			Page   int `json:"page"`
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"images"`
+	}
+	if err := json.Unmarshal(b, &report); err != nil {
+		return rendered{}, fmt.Errorf("engine render: bad report %q: %w", b, err)
+	}
+	r := rendered{count: report.Pages}
+	for _, img := range report.Images {
+		if img.Page < 1 || img.Page > report.Pages {
+			return rendered{}, fmt.Errorf("engine render: page %d of %d in report", img.Page, report.Pages)
+		}
+		r.images = append(r.images, PageImage{
+			Page:   img.Page,
+			Width:  img.Width,
+			Height: img.Height,
+			Path:   filepath.Join(dir, strconv.Itoa(img.Page)+".png"),
+		})
+	}
+	return r, nil
+}
+
+// loadRunner returns the engine Convert and Render run. Tests replace it.
 var loadRunner = func(ctx context.Context) (runner, error) {
 	e, err := get(ctx)
 	if err != nil {

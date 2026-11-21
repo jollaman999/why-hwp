@@ -70,6 +70,20 @@ fn join_pages(pages: Vec<String>) -> String {
 
 /// rhwp `export-pdf` with the default SVG backend and print profile.
 fn to_pdf(doc: &mut DocumentCore, data: &[u8], input: &str) -> Result<Vec<u8>> {
+    let options = pdf_options(doc, data, input)?;
+    let pages: Vec<u32> = (0..doc.page_count()).collect();
+    if pages.is_empty() {
+        return Err(Error::Failed("the document has no pages".into()));
+    }
+    Ok(doc
+        .render_pages_pdf_native_with_options(&pages, &options)
+        .map_err(|e| format!("render PDF: {e}"))?)
+}
+
+/// What rhwp `export-pdf` sets up before it draws: fonts from the cache
+/// mapped onto the document's, the fallback family and linked pictures.
+/// `render` draws with the same set-up.
+pub fn pdf_options(doc: &mut DocumentCore, data: &[u8], input: &str) -> Result<PdfExportOptions> {
     crate::use_font_cache();
     let mut options = PdfExportOptions::default();
     let unavailable = apply_font_environment(doc, &mut options.font_paths)?;
@@ -89,13 +103,7 @@ fn to_pdf(doc: &mut DocumentCore, data: &[u8], input: &str) -> Result<Vec<u8>> {
             doc.populate_external_images_from_dir(parent);
         }
     }
-    let pages: Vec<u32> = (0..doc.page_count()).collect();
-    if pages.is_empty() {
-        return Err(Error::Failed("the document has no pages".into()));
-    }
-    Ok(doc
-        .render_pages_pdf_native_with_options(&pages, &options)
-        .map_err(|e| format!("render PDF: {e}"))?)
+    Ok(options)
 }
 
 /// The no-`--font-environment` branch of rhwp's CLI `apply_font_environment`:

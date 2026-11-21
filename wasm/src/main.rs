@@ -7,6 +7,7 @@
 mod args;
 mod convert;
 mod fonts;
+mod render;
 mod svg2png;
 
 use std::process::ExitCode;
@@ -20,6 +21,7 @@ const USAGE: &str = "usage: why-hwp-engine <command> [options]
   convert --to hwp|hwpx|pdf|txt --in <file> --out <file>
   font-plan --in <file>
   font-install --url <url> --file <file>
+  render --in <file> --out <dir> --dpi <n> [--page <n> ...]
   svg2png --in <svg> --out <png> --width <px> --height <px> [--font <file> ...]
   version";
 
@@ -47,6 +49,7 @@ fn main() -> ExitCode {
         "convert" => convert::run(&args),
         "font-plan" => fonts::plan(&args),
         "font-install" => fonts::install(&args),
+        "render" => render::run(&args),
         "svg2png" => svg2png::run(&args),
         "version" => {
             args.done()?;
