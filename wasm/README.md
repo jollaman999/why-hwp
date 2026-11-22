@@ -372,6 +372,31 @@ found, is 1.27 pt off.
 | Bold Hanyang Junggothic (한양중고딕) curly quotes advance as the HFT program gives them (225/1000 em for `‘` `’`, 375/1000 for `“` `”`), as the regular face's do | The bold face used the substitute font's widths, and each quote moved the rest of its line by 0.5 pt |
 | A full-width HFT symbol (`–`, `†`, `※`) drawn by a substitute font is centred in its em cell, as Hancom Office centres the HFT glyph | It was drawn at the left of the cell |
 
+`patches/rhwp-zlayout4.patch` raises the count on Linux from 10 to 15 of 18
+and, on Windows without the fonts Hancom Office installs, from 11 to 14. With
+those fonts installed nothing changes: all 18 PDFs are the same byte for byte.
+A font that is not installed is replaced for drawing only; lines are still laid
+out with the widths rhwp knows for the original font, so every character
+starts where Hancom Office puts it, and what moved was where it ended:
+
+| Document | Character | Hancom Office | Before | After |
+|----------|-----------|---------------|--------|-------|
+| fdi-2025q2.hwp | DotumChe (돋움체) `.` | 4.98 pt | 2.70 pt (HCR Dotum) | 5.00 pt |
+| gov-audit-opinion.hwpx | Gulim (굴림) `.` | 3.99 pt | 2.89 pt (Noto Sans KR) | 4.00 pt |
+| el-school.hwp | Haan YGodic 250 `소` | 10.79 pt | 11.64 pt (HCR Dotum) | 10.80 pt |
+| oss-result.hwpx | Wingdings `ü`, drawn as `✔` | 8.67 pt | 10.67 pt (HCR Dotum) | 8.64 pt |
+| footnote.hwp | footnote number `3` | 7.99 pt | 6.66 pt (Noto Sans KR) | 8.00 pt |
+
+| Change | Before |
+|--------|--------|
+| A character whose font is replaced for drawing is fitted with `textLength` to the advance its line was laid out with, whatever the character | Only ASCII letters, digits and some quotes were fitted; the rest took the substitute font's own width |
+| A footnote number whose font is not installed is drawn through the same substitute chain and fitted the same way | It named the missing font with no fallback, so the PDF stage drew it with its default font |
+
+fdi-2025q2.hwp is still 1.34 pt off on Linux, now upright: the substitute's
+ascent and descent differ from the original font's, so the word box Hancom
+Office's print is compared with sits higher or lower while the baseline is
+within 0.10 pt.
+
 ## Font supply patch
 
 `patches/rhwp-zfont1.patch` gives Times New Roman a free substitute with the
