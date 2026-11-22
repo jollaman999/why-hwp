@@ -81,7 +81,7 @@ func download(ctx context.Context, c *http.Client, rawURL string, limit int64) (
 	}
 	resp, err := c.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("download %s: %w", rawURL, err)
+		return nil, &unreachableError{fmt.Errorf("download %s: %w", rawURL, err)}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
@@ -102,6 +102,13 @@ func download(ctx context.Context, c *http.Client, rawURL string, limit int64) (
 	}
 	return b, nil
 }
+
+// unreachableError is a download that got no response, so that the next one
+// is likely to fail the same way.
+type unreachableError struct{ err error }
+
+func (e *unreachableError) Error() string { return e.err.Error() }
+func (e *unreachableError) Unwrap() error { return e.err }
 
 // fetchFont downloads r and checks its SHA-256 when the plan gives one.
 func fetchFont(ctx context.Context, c *http.Client, r fontReq) ([]byte, error) {
@@ -157,9 +164,30 @@ func fontCacheDir() (string, error) {
 	return dir, nil
 }
 
-// missingFonts is returned by ensureFonts in offline mode: the URLs of the
-// fonts the document needs that are not in the cache.
-type missingFonts []string
+// missingFonts lists the fonts the document needs that ensureFonts left out
+// of the cache: in offline mode the URLs it did not download, otherwise the
+// downloads that failed.
+type missingFonts struct {
+	urls []string // offline mode
+	errs []error  // failed downloads
+}
+
+// warning is the text Warn gets for m, or "" when nothing is missing.
+func (m missingFonts) warning() string {
+	switch {
+	case len(m.urls) > 0:
+		return fmt.Sprintf("%s=1: at least %d font(s) not downloaded, output may use substitutes: %s",
+			EnvOffline, len(m.urls), strings.Join(m.urls, ", "))
+	case len(m.errs) > 0:
+		msgs := make([]string, len(m.errs))
+		for i, err := range m.errs {
+			msgs[i] = err.Error()
+		}
+		return fmt.Sprintf("%d font(s) could not be downloaded, output uses substitutes: %s",
+			len(m.errs), strings.Join(msgs, "; "))
+	}
+	return ""
+}
 
 // runner runs one engine command; *engine implements it.
 type runner interface {
@@ -174,9 +202,15 @@ const maxPlanRounds = 8
 // ensureFonts asks the engine which fonts guestIn needs and installs the
 // missing ones into fontsDir, repeating until the plan is empty. Fonts found
 // in hostFonts are not asked for. In offline mode nothing is downloaded and
-// the first plan's URLs are returned instead.
+// the first plan's URLs are returned instead. A font whose download fails is
+// not tried again and is returned with its error, so that the engine draws
+// the document with a substitute, as in offline mode. A download that gets
+// no response ends the downloads, the fonts not yet downloaded being left
+// out too; only a done ctx is an error.
 func ensureFonts(ctx context.Context, e runner, c *http.Client, inDir, guestIn, dlDir, fontsDir string, hostFonts []mount, offline bool) (missingFonts, error) {
 	installed := map[string]bool{}
+	failed := map[string]bool{}
+	var miss missingFonts
 	n := 0
 	for round := 0; round < maxPlanRounds; round++ {
 		out, err := e.run(ctx, []string{"font-plan", "--in", guestIn}, append([]mount{
@@ -184,43 +218,62 @@ func ensureFonts(ctx context.Context, e runner, c *http.Client, inDir, guestIn, 
 			{host: fontsDir, guest: "/fonts", readOnly: true},
 		}, hostFonts...))
 		if err != nil {
-			return nil, err
+			return missingFonts{}, err
 		}
 		reqs, err := parseFontPlan(out)
 		if err != nil {
-			return nil, err
-		}
-		if len(reqs) == 0 {
-			return nil, nil
+			return missingFonts{}, err
 		}
 		if offline {
-			var miss missingFonts
 			for _, r := range reqs {
-				miss = append(miss, r.URL)
+				miss.urls = append(miss.urls, r.URL)
 			}
 			return miss, nil
 		}
+		tried := false
 		for _, r := range reqs {
-			if installed[r.URL] {
-				return nil, fmt.Errorf("engine font-plan: %s is still missing after font-install", r.URL)
+			if failed[r.URL] {
+				continue
 			}
+			if installed[r.URL] {
+				return missingFonts{}, fmt.Errorf("engine font-plan: %s is still missing after font-install", r.URL)
+			}
+			tried = true
 			b, err := fetchFont(ctx, c, r)
 			if err != nil {
-				return nil, err
+				if ctx.Err() != nil {
+					return missingFonts{}, ctx.Err()
+				}
+				failed[r.URL] = true
+				miss.errs = append(miss.errs, err)
+				var ue *unreachableError
+				if errors.As(err, &ue) {
+					for _, rest := range reqs {
+						if !failed[rest.URL] && !installed[rest.URL] {
+							failed[rest.URL] = true
+							miss.errs = append(miss.errs, fmt.Errorf("download %s: not tried after the error above", rest.URL))
+						}
+					}
+					return miss, nil
+				}
+				continue
 			}
 			name := dlName(n, r.URL)
 			n++
 			if err := os.WriteFile(filepath.Join(dlDir, name), b, 0o644); err != nil {
-				return nil, err
+				return missingFonts{}, err
 			}
 			if _, err := e.run(ctx, []string{"font-install", "--url", r.URL, "--file", "/dl/" + name}, []mount{
 				{host: dlDir, guest: "/dl", readOnly: true},
 				{host: fontsDir, guest: "/fonts"},
 			}); err != nil {
-				return nil, fmt.Errorf("%w (font %s)", err, r.URL)
+				return missingFonts{}, fmt.Errorf("%w (font %s)", err, r.URL)
 			}
 			installed[r.URL] = true
 		}
+		if !tried {
+			return miss, nil
+		}
 	}
-	return nil, fmt.Errorf("engine font-plan: fonts still missing after %d rounds", maxPlanRounds)
+	return missingFonts{}, fmt.Errorf("engine font-plan: fonts still missing after %d rounds", maxPlanRounds)
 }

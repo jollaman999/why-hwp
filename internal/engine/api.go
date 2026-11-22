@@ -29,8 +29,9 @@ var convertFormats = map[string]bool{"hwp": true, "hwpx": true, "pdf": true, "tx
 // Convert converts the document at in to format to (hwp, hwpx, pdf or txt)
 // and writes it to out, replacing any existing file. Only pdf output draws
 // glyphs, so only then are fonts used: those the document needs are
-// downloaded into the font cache first unless WHY_HWP_OFFLINE=1, in which
-// case the missing fonts are reported through Warn. Fonts installed on this
+// downloaded into the font cache first unless WHY_HWP_OFFLINE=1. Fonts not
+// downloaded, in offline mode or because the download failed, are reported
+// through Warn and drawn with substitutes. Fonts installed on this
 // computer (see EnvFontDirs and EnvSystemFonts) are used as they are and not
 // downloaded.
 //
@@ -53,9 +54,8 @@ func Convert(ctx context.Context, in, out, to string) error {
 	_, err = detach(ctx, "convert", func() (missingFonts, error) {
 		return convertIn(ctx, e, work, in, outName, to)
 	}, func(miss missingFonts) error {
-		if len(miss) > 0 {
-			Warn(fmt.Sprintf("%s=1: at least %d font(s) not downloaded, output may use substitutes: %s",
-				EnvOffline, len(miss), strings.Join(miss, ", ")))
+		if msg := miss.warning(); msg != "" {
+			Warn(msg)
 		}
 		return copyFile(filepath.Join(work, "out", outName), out)
 	}, func() { os.RemoveAll(work) })
@@ -64,7 +64,7 @@ func Convert(ctx context.Context, in, out, to string) error {
 
 // convertIn does the work of Convert inside the work directory work: it
 // copies in there, installs the fonts a pdf needs and has the engine write
-// outName in work/out. It returns the fonts left out in offline mode.
+// outName in work/out. It returns the fonts left out of the cache.
 //
 // The font cache is planned against under the read lock, so that a run
 // left behind by a caller whose ctx ended does not hold up a document
@@ -73,7 +73,7 @@ func Convert(ctx context.Context, in, out, to string) error {
 func convertIn(ctx context.Context, e runner, work, in, outName, to string) (missingFonts, error) {
 	inName := "input" + strings.ToLower(filepath.Ext(in))
 	if err := copyFile(in, filepath.Join(work, "in", inName)); err != nil {
-		return nil, err
+		return missingFonts{}, err
 	}
 	guestIn := "/in/" + inName
 	mounts := []mount{
@@ -87,7 +87,7 @@ func convertIn(ctx context.Context, e runner, work, in, outName, to string) (mis
 		var err error
 		miss, fonts, err = drawingFonts(ctx, e, work, guestIn)
 		if err != nil {
-			return nil, err
+			return missingFonts{}, err
 		}
 		mounts = append(mounts, fonts...)
 	}
@@ -105,20 +105,20 @@ func convertIn(ctx context.Context, e runner, work, in, outName, to string) (mis
 func drawingFonts(ctx context.Context, e runner, work, guestIn string) (missingFonts, []mount, error) {
 	fontsDir, err := fontCacheDir()
 	if err != nil {
-		return nil, nil, err
+		return missingFonts{}, nil, err
 	}
 	hostFonts := hostFontMounts(hostFontDirs())
 	inDir, dlDir := filepath.Join(work, "in"), filepath.Join(work, "dl")
 	fontMu.RLock()
 	miss, err := ensureFonts(ctx, e, httpClient, inDir, guestIn, dlDir, fontsDir, hostFonts, true)
 	fontMu.RUnlock()
-	if err == nil && len(miss) > 0 && os.Getenv(EnvOffline) != "1" {
+	if err == nil && len(miss.urls) > 0 && os.Getenv(EnvOffline) != "1" {
 		fontMu.Lock()
 		miss, err = ensureFonts(ctx, e, httpClient, inDir, guestIn, dlDir, fontsDir, hostFonts, false)
 		fontMu.Unlock()
 	}
 	if err != nil {
-		return nil, nil, err
+		return missingFonts{}, nil, err
 	}
 	return miss, append([]mount{{host: fontsDir, guest: "/fonts", readOnly: true}}, hostFonts...), nil
 }
@@ -155,9 +155,8 @@ func Render(ctx context.Context, in string, dpi int, pages []int, keep func(coun
 	_, err = detach(ctx, "render", func() (rendered, error) {
 		return renderIn(ctx, e, work, in, dpi, pages)
 	}, func(r rendered) error {
-		if len(r.miss) > 0 {
-			Warn(fmt.Sprintf("%s=1: at least %d font(s) not downloaded, output may use substitutes: %s",
-				EnvOffline, len(r.miss), strings.Join(r.miss, ", ")))
+		if msg := r.miss.warning(); msg != "" {
+			Warn(msg)
 		}
 		return keep(r.count, r.images)
 	}, func() { os.RemoveAll(work) })

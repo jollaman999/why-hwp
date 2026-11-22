@@ -197,7 +197,7 @@ func TestEnsureFontsRounds(t *testing.T) {
 		return nil
 	}
 	f, miss, err := run(false, chain)
-	if err != nil || miss != nil {
+	if err != nil || miss.warning() != "" {
 		t.Fatalf("chain: miss %v, err %v", miss, err)
 	}
 	if strings.Join(f.installs, " ") != a+" "+b || f.round != 3 {
@@ -221,7 +221,7 @@ func TestEnsureFontsRounds(t *testing.T) {
 
 	before := hits.Load()
 	f, miss, err = run(true, chain)
-	if err != nil || len(miss) != 1 || miss[0] != a {
+	if err != nil || len(miss.urls) != 1 || miss.urls[0] != a || miss.errs != nil {
 		t.Errorf("offline: miss %v, err %v; want [%s]", miss, err, a)
 	}
 	if hits.Load() != before || len(f.installs) != 0 {
@@ -229,8 +229,73 @@ func TestEnsureFontsRounds(t *testing.T) {
 	}
 
 	f, miss, err = run(false, func(int, map[string]bool) []string { return nil })
-	if err != nil || miss != nil || f.round != 1 {
+	if err != nil || miss.warning() != "" || f.round != 1 {
 		t.Errorf("nothing missing: %d rounds, miss %v, err %v", f.round, miss, err)
+	}
+}
+
+func TestEnsureFontsDownloadFails(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path == "/gone.ttf" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte("font" + r.URL.Path))
+	}))
+	defer srv.Close()
+	gone, a, b := srv.URL+"/gone.ttf", srv.URL+"/a.ttf", srv.URL+"/b.ttf"
+
+	// gone fails and is asked for again in every round; a is installed in
+	// the first round, which lets the plan ask for b.
+	f := &fakePlanner{installed: map[string]bool{}, dlDir: t.TempDir(), files: map[string]string{}}
+	f.plan = func(_ int, inst map[string]bool) []string {
+		urls := []string{gone}
+		switch {
+		case !inst[a]:
+			urls = append(urls, a)
+		case !inst[b]:
+			urls = append(urls, b)
+		}
+		return urls
+	}
+	miss, err := ensureFonts(context.Background(), f, httpClient, t.TempDir(), "/in/x.hwp", f.dlDir, t.TempDir(), nil, false)
+	if err != nil {
+		t.Fatalf("err = %v; want the failed download as a warning", err)
+	}
+	if strings.Join(f.installs, " ") != a+" "+b || f.round != 3 {
+		t.Errorf("installs %v in %d plan rounds; want a then b in 3", f.installs, f.round)
+	}
+	if len(miss.errs) != 1 || miss.urls != nil || !strings.Contains(miss.errs[0].Error(), gone) {
+		t.Errorf("miss = %+v; want one error for %s", miss, gone)
+	}
+	if w := miss.warning(); !strings.Contains(w, "1 font(s) could not be downloaded") || !strings.Contains(w, "404") {
+		t.Errorf("warning = %q", w)
+	}
+	if hits.Load() != 3 {
+		t.Errorf("%d downloads; want 3 (gone once, a, b)", hits.Load())
+	}
+
+	// A download with no response ends the downloads.
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+	c1, c2 := deadURL+"/c1.ttf", deadURL+"/c2.ttf"
+	f = &fakePlanner{plan: func(int, map[string]bool) []string { return []string{c1, c2} }, installed: map[string]bool{}, dlDir: t.TempDir(), files: map[string]string{}}
+	miss, err = ensureFonts(context.Background(), f, httpClient, t.TempDir(), "/in/x.hwp", f.dlDir, t.TempDir(), nil, false)
+	if err != nil || f.round != 1 || len(f.installs) != 0 {
+		t.Fatalf("unreachable: %d rounds, installs %v, err %v; want 1 round, none", f.round, f.installs, err)
+	}
+	if len(miss.errs) != 2 || !strings.Contains(miss.errs[0].Error(), c1) || !strings.Contains(miss.errs[1].Error(), c2+": not tried") {
+		t.Errorf("unreachable: miss = %v", miss.errs)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f = &fakePlanner{plan: func(int, map[string]bool) []string { return []string{a} }, installed: map[string]bool{}, dlDir: t.TempDir(), files: map[string]string{}}
+	if _, err := ensureFonts(ctx, f, httpClient, t.TempDir(), "/in/x.hwp", f.dlDir, t.TempDir(), nil, false); err != context.Canceled {
+		t.Errorf("done ctx: err = %v; want context.Canceled", err)
 	}
 }
 
