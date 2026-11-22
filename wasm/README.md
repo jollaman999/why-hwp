@@ -495,6 +495,38 @@ systems except the Malgun Gothic line on Linux. What is left:
 - Linux, 1.00 pt at "또는" (p11) of the two-up document, unchanged by this
   patch; it was behind the 1.35 pt.
 
+`patches/rhwp-zlayout8.patch` raises the count on Linux from 16 to 17 of 18
+and, on Windows without the fonts Hancom Office installs, from 16 to 18 of 18.
+With those fonts installed nothing changes: all 54 outputs of the 18 documents
+are the same byte for byte.
+
+A PDF reader makes a word's box from the /Ascent and /Descent of its font's
+descriptor (poppler takes them as they are, ignores FontBBox and the embedded
+font's own tables, and uses 0.95 and -0.35 when they are missing), and the
+comparison takes the middle of that box. Hancom Office and svg2pdf both write a
+TrueType face's OS/2 sTypoAscender and sTypoDescender there. A glyph drawn with
+a substitute so got the substitute's values (HCR Dotum 830/-170) instead of the
+original font's: on page 4 of fdi-2025q2.hwp the baselines are within 0.10 pt of
+Hancom Office's, but the box middles of the HY헤드라인M and 휴먼명조 titles moved
+0.43 pt down and those of the Malgun Gothic table 0.37 pt up.
+
+| Change | Before |
+|--------|--------|
+| A run drawn with a display substitute names its original face first in its `font-family` list when rhwp knows that face's sTypoAscender and sTypoDescender, read from the font files (gulim.ttc, batang.ttc, malgun.ttf, malgunbd.ttf, times.ttf, wingding.ttf, Hancom Office's H2*, HY*, HANYGO2*0, HYHWPEQ and HMK* TrueType files, NanumGothic; numbers only). The face is not installed, so the substitute is still the one drawn. A metric face that names a measuring rule (`MalgunGothic-HancomBoldDecoration`) is named by the family it measures | The list started with the substitute |
+| When the font database has no face of the family a text names first, the patched svg2pdf gives that text's glyphs a font object of their own whose descriptor holds the family's values, from a lookup rhwp passes in `ConversionOptions::source_vertical_metrics`. When the family is installed, a glyph it lacks is drawn with a fallback face that keeps its own values, as in Hancom Office's PDF (footnote.hwp: `❏` `❍` in 휴먼명조 text are drawn with Haansoft Batang at 858/-141) | Every glyph of a face shared one font object with the face's own values |
+
+| Document | Linux before | Linux after | Windows without Hancom fonts before | after |
+|----------|--------------|-------------|-------------------------------------|-------|
+| fdi-2025q2.hwp | 1.34 pt | 0.83 pt | 1.44 pt | 0.83 pt |
+| biz-plan.hwp | 0.86 pt | 0.86 pt | 1.23 pt | 0.85 pt |
+
+When the original face is not installed, a glyph it would lack still gets its
+values, while Hancom Office gives such a glyph the values of the face it draws it
+with. rhwp's width tables show when the original face has no width for a
+character, but only sometimes name the face Hancom Office draws it with, so
+this is left as is: in footnote.hwp on Linux `❏` gets 휴먼명조's 859.4/-140.6
+instead of Haansoft Batang's 858.4/-141.6, which moves its box 0.015 pt.
+
 ## Font supply patch
 
 `patches/rhwp-zfont1.patch` gives Times New Roman a free substitute with the

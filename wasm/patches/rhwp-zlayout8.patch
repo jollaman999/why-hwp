@@ -1,0 +1,441 @@
+# rhwp vertical metrics for why-hwp: give a display substitute's glyphs the source
+# face's /Ascent and /Descent in the PDF font descriptor.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# earlier wasm/patches/*.patch in name order; apply this after
+# rhwp-zlayout7.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
+index 453fbac..babf676 100644
+--- a/src/renderer/font_metrics_data.rs
++++ b/src/renderer/font_metrics_data.rs
+@@ -13 +13 @@ mod vertical;
+-pub(crate) use vertical::win_descent_em;
++pub(crate) use vertical::{source_typo_vertical_em, win_descent_em};
+diff --git a/src/renderer/font_metrics_vertical.rs b/src/renderer/font_metrics_vertical.rs
+index 702b0f3..e5fff7c 100644
+--- a/src/renderer/font_metrics_vertical.rs
++++ b/src/renderer/font_metrics_vertical.rs
+@@ -35,0 +36,115 @@ pub(crate) fn win_descent_em(name: &str, bold: bool, italic: bool) -> Option<f64
++
++/// why-hwp: OS/2 sTypoAscender and sTypoDescender of source TrueType programs,
++/// read from the font files (Windows: gulim.ttc, batang.ttc, malgun.ttf,
++/// malgunbd.ttf, times.ttf, wingding.ttf; Hancom Office: H2*.TTF, HY*.TTF,
++/// HANYGO2*0.ttf, HYHWPEQ.TTF and the TrueType HMK*.TTF of its 휴먼 faces;
++/// NanumGothic*.ttf). PDF writers put these two
++/// values in a font descriptor's /Ascent and /Descent, and PDF text
++/// extraction builds a glyph's box from them. A display substitute has its
++/// own values, so its glyph boxes sit higher or lower on the same baseline.
++struct TypoMetric {
++    names: &'static [&'static str],
++    units_per_em: u16,
++    ascender: i16,
++    descender: i16,
++}
++
++const TYPO_METRICS: &[TypoMetric] = &[
++    TypoMetric {
++        names: &[
++            "Gulim", "GulimChe", "Dotum", "DotumChe", "Batang", "BatangChe", "Gungsuh",
++            "GungsuhChe",
++        ],
++        units_per_em: 1024,
++        ascender: 879,
++        descender: -145,
++    },
++    TypoMetric {
++        names: &[
++            "HYHeadLine-Medium", "HYMyeongJo-Extra", "HYGothic-Extra", "HYGothic-Medium",
++            "HYGraphic-Medium", "HYGungSo-Bold", "HYPMokGak-Bold", "HYPost-Light", "HYPost-Medium",
++            "HYShortSamul-Medium", "HYSinMyeongJo-Medium", "HYbdaL", "HYbdaM", "HYdnkB", "HYdnkM",
++            "HYkanB", "HYkanM", "HYnamB", "HYnamL", "HYnamM", "HYsanB", "HYsupB", "HYsupM",
++            "HYtbrB", "HYwulB", "HYwulM",
++        ],
++        units_per_em: 1024,
++        ascender: 879,
++        descender: -145,
++    },
++    TypoMetric {
++        names: &["Malgun Gothic"],
++        units_per_em: 2048,
++        ascender: 1638,
++        descender: -410,
++    },
++    TypoMetric {
++        names: &[
++            "Haan YGodic 230", "Haan YGodic 240", "Haan YGodic 250", "NanumGothic",
++            "NanumGothicExtraBold",
++        ],
++        units_per_em: 1000,
++        ascender: 800,
++        descender: -200,
++    },
++    TypoMetric {
++        names: &[
++            "휴먼명조", "HumanMyeongJo", "휴먼고딕", "휴먼가는샘체", "휴먼가는팸체", "휴먼굵은샘체",
++            "휴먼굵은팸체", "휴먼둥근헤드라인", "휴먼매직체", "휴먼아미체", "휴먼옛체", "휴먼중간샘체",
++            "휴먼중간팸체", "휴먼편지체",
++        ],
++        units_per_em: 512,
++        ascender: 440,
++        descender: -72,
++    },
++    TypoMetric {
++        names: &["HyhwpEQ"],
++        units_per_em: 1024,
++        ascender: 820,
++        descender: -204,
++    },
++    TypoMetric {
++        names: &["Times New Roman"],
++        units_per_em: 2048,
++        ascender: 1420,
++        descender: -442,
++    },
++    // The program stores a positive descender; it is kept as stored.
++    TypoMetric {
++        names: &["Wingdings"],
++        units_per_em: 2048,
++        ascender: 1579,
++        descender: 420,
++    },
++];
++
++/// Typographic ascender and descender of a source face in em, as its program
++/// states them. `None` for a face whose program has not been read. Every
++/// weight and style of a listed family states the same values.
++pub(crate) fn source_typo_vertical_em(name: &str) -> Option<(f64, f64)> {
++    let decision = find_metric_decision(name, false, false)?;
++    let metric = TYPO_METRICS
++        .iter()
++        .find(|entry| entry.names.contains(&decision.metric.name))?;
++    let em = f64::from(metric.units_per_em);
++    Some((f64::from(metric.ascender) / em, f64::from(metric.descender) / em))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::source_typo_vertical_em;
++
++    #[test]
++    fn source_typo_metrics_follow_program_and_alias() {
++        let gulim = (879.0 / 1024.0, -145.0 / 1024.0);
++        assert_eq!(source_typo_vertical_em("돋움체"), Some(gulim));
++        assert_eq!(source_typo_vertical_em("Gulim"), Some(gulim));
++        assert_eq!(source_typo_vertical_em("HY헤드라인M"), Some(gulim));
++        assert_eq!(
++            source_typo_vertical_em("맑은 고딕"),
++            Some((1638.0 / 2048.0, -410.0 / 2048.0))
++        );
++        assert_eq!(source_typo_vertical_em("휴먼명조"), Some((440.0 / 512.0, -72.0 / 512.0)));
++        assert_eq!(source_typo_vertical_em("HCR Dotum"), None);
++        assert_eq!(source_typo_vertical_em("No Such Face"), None);
++    }
++}
+diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
+index 2ce330d..57a3fe5 100644
+--- a/src/renderer/pdf.rs
++++ b/src/renderer/pdf.rs
+@@ -2433,0 +2434 @@ pub fn svg2pdf_to_chunk(
++    conversion.source_vertical_metrics = Some(source_vertical_metrics);
+@@ -2436,0 +2438,8 @@ pub fn svg2pdf_to_chunk(
++/// why-hwp: /Ascent and /Descent of a source face that SVG text names first and
++/// is drawn with a display substitute (see `display_substitute_source_family`).
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++fn source_vertical_metrics(family: &str) -> Option<(f32, f32)> {
++    let (ascent, descent) = super::font_metrics_data::source_typo_vertical_em(family)?;
++    Some(((ascent * 1000.0) as f32, (descent * 1000.0) as f32))
++}
++
+@@ -3186,0 +3196,76 @@ mod tests {
++    #[test]
++    fn display_substitute_glyphs_carry_source_face_vertical_metrics() {
++        let mut options = usvg::Options::default();
++        options.fontdb_mut().load_font_data(
++            include_bytes!("../../tests/fixtures/fonts/RHWPHostFixture-Regular.ttf").to_vec(),
++        );
++        let svg = concat!(
++            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\">",
++            "<text x=\"10\" y=\"30\" font-size=\"12\" font-family=\"'돋움체','RHWP Host Fixture'\">A</text>",
++            "<text x=\"10\" y=\"60\" font-size=\"12\" font-family=\"'RHWP Host Fixture'\">A</text>",
++            "</svg>"
++        );
++        let tree = usvg::Tree::from_str(svg, &options).expect("svg");
++        let (chunk, _) = svg2pdf_to_chunk(&tree, true).expect("chunk");
++        let pdf = String::from_utf8_lossy(chunk.as_bytes());
++        let values = |key: &str| -> Vec<f32> {
++            let mut values: Vec<f32> = pdf
++                .match_indices(key)
++                .map(|(at, _)| {
++                    pdf[at + key.len()..]
++                        .split(|c: char| c.is_whitespace() || c == '/' || c == '>')
++                        .find(|s| !s.is_empty())
++                        .unwrap()
++                        .parse()
++                        .unwrap()
++                })
++                .collect();
++            values.sort_by(f32::total_cmp);
++            values
++        };
++        // One font object for the face drawn as 돋움체 with 돋움체's sTypo values,
++        // one for the face drawn as itself with its own (800/-200).
++        let ascents = values("/Ascent ");
++        let descents = values("/Descent ");
++        assert_eq!(ascents.len(), 2, "{pdf}");
++        assert!((ascents[0] - 800.0).abs() < 0.01, "{ascents:?}");
++        assert!((ascents[1] - 879.0 / 1.024).abs() < 0.01, "{ascents:?}");
++        assert!((descents[0] - -200.0).abs() < 0.01, "{descents:?}");
++        assert!((descents[1] - -145.0 / 1.024).abs() < 0.01, "{descents:?}");
++
++        // When the named family is installed, a glyph it lacks is drawn with a
++        // fallback face, which keeps its own values (800/-200), as in Hancom
++        // Office's PDF.
++        let mut installed = usvg::Options::default();
++        installed.fontdb_mut().push_face_info(usvg::fontdb::FaceInfo {
++            id: usvg::fontdb::ID::dummy(),
++            source: usvg::fontdb::Source::Binary(std::sync::Arc::new(
++                include_bytes!("../../tests/fixtures/fonts/RHWPExactKerningSmoke.ttf").to_vec(),
++            )),
++            index: 0,
++            families: vec![("Gulim".to_string(), usvg::fontdb::Language::English_UnitedStates)],
++            post_script_name: "Gulim".to_string(),
++            style: usvg::fontdb::Style::Normal,
++            weight: usvg::fontdb::Weight::NORMAL,
++            stretch: usvg::fontdb::Stretch::Normal,
++            monospaced: false,
++        });
++        installed.fontdb_mut().load_font_data(
++            include_bytes!("../../tests/fixtures/fonts/RHWPBitmapSvgGlyphSmoke.ttf").to_vec(),
++        );
++        let svg = concat!(
++            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\">",
++            "<text x=\"10\" y=\"30\" font-size=\"12\" font-family=\"'Gulim'\">\u{e100}</text>",
++            "</svg>"
++        );
++        let tree = usvg::Tree::from_str(svg, &installed).expect("svg");
++        let (chunk, _) = svg2pdf_to_chunk(&tree, true).expect("chunk");
++        let pdf = String::from_utf8_lossy(chunk.as_bytes()).into_owned();
++        assert!(pdf.contains("RHWPBitmapSvgGlyphSmoke") || pdf.contains("Bitmap"), "{pdf}");
++        let ascents: Vec<&str> = pdf
++            .match_indices("/Ascent ")
++            .map(|(at, _)| pdf[at + "/Ascent ".len()..].split_whitespace().next().unwrap())
++            .collect();
++        assert_eq!(ascents, ["800"], "{pdf}");
++    }
++
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index d21797d..fc57a6f 100644
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -3544,0 +3545,2 @@ impl Renderer for SvgRenderer {
++        let source_font_family = display_substitute_source_family(style)
++            .map(|source| format!("'{}',{}", source, font_family));
+@@ -3634 +3636,4 @@ impl Renderer for SvgRenderer {
+-                measured_family.as_ref().unwrap_or(&font_family)
++                measured_family
++                    .as_ref()
++                    .or(source_font_family.as_ref())
++                    .unwrap_or(&font_family)
+@@ -4617,0 +4623,25 @@ fn draws_with_display_substitute(style: &TextStyle) -> bool {
++/// why-hwp: the source face of a run painted with a display substitute, when the
++/// typographic ascender and descender of its program are known. It goes first in
++/// the run's `font-family` list. It is not installed, so the substitute after it
++/// is still the face drawn; the PDF stage gives the substitute's glyphs the
++/// source face's /Ascent and /Descent, as the source face's own PDF has them.
++/// A metric face that names a measuring rule (Malgun Gothic's Hancom bold
++/// decoration) stands for the family it measures.
++fn display_substitute_source_family(style: &TextStyle) -> Option<&str> {
++    if !draws_with_display_substitute(style) {
++        return None;
++    }
++    let metric_face = style.metric_font_family.as_deref()?.trim();
++    let source = super::legacy_font_advances::measurement_face(metric_face);
++    let drawn_face = super::style_resolver::primary_font_name(&style.font_family)
++        .trim_matches(['\'', '"']);
++    if source.is_empty()
++        || source.contains(['\'', '"', ','])
++        || drawn_face.eq_ignore_ascii_case(source)
++    {
++        return None;
++    }
++    super::font_metrics_data::source_typo_vertical_em(source)?;
++    Some(source)
++}
++
+diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+index 47d229f..81bd2c8 100644
+--- a/src/renderer/svg/tests.rs
++++ b/src/renderer/svg/tests.rs
+@@ -1743,0 +1744,38 @@ fn test_svg_display_substitute_is_fitted_to_source_advance() {
++#[test]
++fn test_svg_display_substitute_names_source_face_first() {
++    let family = |drawn: &str, metric: Option<&str>| {
++        let style = TextStyle {
++            font_family: drawn.to_string(),
++            font_size: 12.0,
++            ratio: 1.0,
++            metric_font_family: metric.map(str::to_string),
++            ..Default::default()
++        };
++        let mut renderer = SvgRenderer::new();
++        renderer.begin_page(800.0, 600.0);
++        renderer.draw_text("가", 10.0, 20.0, &style);
++        let output = renderer.output();
++        let at = output.find("font-family=\"").expect("font-family") + "font-family=\"".len();
++        let end = output[at..].find('"').unwrap();
++        output[at..at + end].to_string()
++    };
++
++    // The source program's typographic metrics are known: it is named first.
++    let substituted = family("HCR Dotum", Some("돋움체"));
++    assert!(substituted.starts_with("&apos;돋움체&apos;,&apos;HCR Dotum&apos;"), "{substituted}");
++    let headline = family("HCR Dotum", Some("HY헤드라인M"));
++    assert!(headline.starts_with("&apos;HY헤드라인M&apos;,&apos;HCR Dotum&apos;"), "{headline}");
++    // A measuring-rule metric face is named by the family it measures.
++    let decorated = family("HCR Dotum", Some("MalgunGothic-HancomBoldDecoration"));
++    assert!(decorated.starts_with("&apos;Malgun Gothic&apos;,&apos;HCR Dotum&apos;"), "{decorated}");
++    assert_eq!(
++        family("Malgun Gothic", Some("MalgunGothic-HancomBoldDecoration")),
++        family("Malgun Gothic", None)
++    );
++
++    // Installed source face, no metric face, or a program not read: unchanged.
++    assert!(family("돋움체", Some("돋움체")).starts_with("&apos;돋움체&apos;,"));
++    assert!(family("HCR Dotum", None).starts_with("&apos;HCR Dotum&apos;,"));
++    assert!(family("HCR Batang", Some("HCR Dotum")).starts_with("&apos;HCR Batang&apos;,"));
++}
++
+@@ -1777 +1815,4 @@ fn test_svg_footnote_marker_of_display_substitute_is_fitted() {
+-    assert!(fitted.contains("font-family=\"&apos;HCR Dotum&apos;"), "{fitted}");
++    assert!(
++        fitted.contains("font-family=\"&apos;돋움체&apos;,&apos;HCR Dotum&apos;"),
++        "{fitted}"
++    );
+diff --git a/vendor/svg2pdf/src/lib.rs b/vendor/svg2pdf/src/lib.rs
+index b4eb7ce..c453069 100644
+--- a/vendor/svg2pdf/src/lib.rs
++++ b/vendor/svg2pdf/src/lib.rs
+@@ -167,0 +168,9 @@ pub struct ConversionOptions {
++
++    /// rhwp: typographic ascender and descender, in thousandths of an em, of a
++    /// font family a text names first but is drawn without (the family is not
++    /// installed and a later family stands in). The stand-in's glyphs then get a
++    /// font object of their own whose descriptor states these values, so a PDF
++    /// reader places their text boxes as it would for the named family.
++    ///
++    /// _Default:_ `None`.
++    pub source_vertical_metrics: Option<fn(&str) -> Option<(f32, f32)>>,
+@@ -176,0 +186 @@ impl Default for ConversionOptions {
++            source_vertical_metrics: None,
+diff --git a/vendor/svg2pdf/src/render/text.rs b/vendor/svg2pdf/src/render/text.rs
+index dc157eb..a7ff10d 100644
+--- a/vendor/svg2pdf/src/render/text.rs
++++ b/vendor/svg2pdf/src/render/text.rs
+@@ -58 +58,6 @@ pub fn write_font(chunk: &mut Chunk, alloc: &mut RefAllocator, font: &mut Font)
+-    let base_font = base_font_name(&ttf, glyph_set);
++    let base_font = match font.vertical {
++        None => base_font_name(&ttf, glyph_set),
++        Some((ascent, descent)) => {
++            base_font_name(&ttf, &(&*glyph_set, ascent.to_bits(), descent.to_bits()))
++        }
++    };
+@@ -137,0 +143 @@ pub fn write_font(chunk: &mut Chunk, alloc: &mut RefAllocator, font: &mut Font)
++    let (ascender, descender) = font.vertical.unwrap_or((ascender, descender));
+@@ -225,0 +232,2 @@ pub fn render(
++    let source = source_vertical(text, ctx);
++    let mut keys = HashMap::new();
+@@ -229 +237,4 @@ pub fn render(
+-            let Some(font) = ctx.font_ref(glyph.font) else {
++            let key = *keys
++                .entry(glyph.font)
++                .or_insert_with(|| font_key(source, glyph.font));
++            let Some(font) = ctx.font_ref(key) else {
+@@ -245 +256,2 @@ pub fn render(
+-                let Some(font) = fonts.get(&glyph.font).and_then(|f| f.as_ref()) else {
++                let key = keys.get(&glyph.font).copied().unwrap_or((glyph.font, None));
++                let Some(font) = fonts.get(&key).and_then(|f| f.as_ref()) else {
+@@ -525,0 +538,40 @@ pub struct Font {
++    /// rhwp: /Ascent and /Descent written instead of the face's own (see
++    /// [`ConversionOptions::source_vertical_metrics`](crate::ConversionOptions)).
++    pub vertical: Option<(f32, f32)>,
++}
++
++/// A font object: a face, and the vertical metrics that replace its own.
++pub type FontKey = (fontdb::ID, Option<(u32, u32)>);
++
++/// rhwp: the family every span of a text names first.
++fn first_family(text: &usvg::Text) -> Option<&str> {
++    let mut first = None;
++    for span in text.chunks().iter().flat_map(|chunk| chunk.spans()) {
++        let usvg::FontFamily::Named(name) = span.font().families().first()? else {
++            return None;
++        };
++        match first {
++            None => first = Some(name.as_str()),
++            Some(seen) if seen == name.as_str() => {}
++            Some(_) => return None,
++        }
++    }
++    first
++}
++
++/// rhwp: the vertical metrics the caller gives for the family a text names
++/// first, when the font database has no face of that family. Every glyph of
++/// such a text is drawn with a stand-in. When the family is installed, a glyph
++/// it lacks is drawn with a fallback face, which keeps its own metrics.
++fn source_vertical(text: &usvg::Text, ctx: &Context) -> Option<(f32, f32)> {
++    let lookup = ctx.options.source_vertical_metrics?;
++    let name = first_family(text)?;
++    if ctx.installed_families.get(name).copied().unwrap_or(true) {
++        return None;
++    }
++    lookup(name)
++}
++
++/// rhwp: the font object of a glyph drawn with face `id`.
++fn font_key(source: Option<(f32, f32)>, id: fontdb::ID) -> FontKey {
++    (id, source.map(|(ascent, descent)| (ascent.to_bits(), descent.to_bits())))
+@@ -532 +584,11 @@ pub fn fill_fonts(group: &Group, ctx: &mut Context, fontdb: &fontdb::Database) -
+-                let allocator = &mut ctx.ref_allocator;
++                if let Some(name) = first_family(t) {
++                    if !ctx.installed_families.contains_key(name) {
++                        let installed = fontdb.faces().any(|face| {
++                            face.families
++                                .iter()
++                                .any(|(family, _)| family == name || family.eq_ignore_ascii_case(name))
++                        });
++                        ctx.installed_families.insert(name.to_owned(), installed);
++                    }
++                }
++                let source = source_vertical(t, ctx);
+@@ -535 +597,6 @@ pub fn fill_fonts(group: &Group, ctx: &mut Context, fontdb: &fontdb::Database) -
+-                        let font = ctx.fonts.entry(g.font).or_insert_with(|| {
++                        let key = font_key(source, g.font);
++                        let vertical = key
++                            .1
++                            .map(|(ascent, descent)| (f32::from_bits(ascent), f32::from_bits(descent)));
++                        let allocator = &mut ctx.ref_allocator;
++                        let font = ctx.fonts.entry(key).or_insert_with(|| {
+@@ -552,0 +620 @@ pub fn fill_fonts(group: &Group, ctx: &mut Context, fontdb: &fontdb::Database) -
++                                            vertical,
+diff --git a/vendor/svg2pdf/src/util/context.rs b/vendor/svg2pdf/src/util/context.rs
+index 833abd3..f9b2680 100644
+--- a/vendor/svg2pdf/src/util/context.rs
++++ b/vendor/svg2pdf/src/util/context.rs
+@@ -7 +7 @@ use {
+-    crate::render::text::{write_font, Font},
++    crate::render::text::{write_font, Font, FontKey},
+@@ -23 +23,4 @@ pub struct Context {
+-    pub fonts: HashMap<ID, Option<Font>>,
++    pub fonts: HashMap<FontKey, Option<Font>>,
++    /// Whether the font database holds a face of each family a text names first.
++    #[cfg(feature = "text")]
++    pub installed_families: HashMap<String, bool>,
+@@ -36,0 +40,2 @@ impl Context {
++            #[cfg(feature = "text")]
++            installed_families: HashMap::new(),
+@@ -69,2 +74,2 @@ impl Context {
+-    pub fn font_ref(&self, id: ID) -> Option<&Font> {
+-        self.fonts.get(&id).and_then(|f| f.as_ref())
++    pub fn font_ref(&self, key: FontKey) -> Option<&Font> {
++        self.fonts.get(&key).and_then(|f| f.as_ref())
