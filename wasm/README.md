@@ -329,6 +329,34 @@ HWPX outputs differ only for the two HWP documents with memos, by the memo
 attributes and `hh:memoProperties` above, and Hancom Office prints those HWPX
 files with every word where it prints the originals.
 
+## Equation text patch
+
+`patches/rhwp-zeqn1.patch` is applied after the change-tracking patches and
+before the patches below. It makes the text of an equation in a PDF made
+without the HyhwpEQ font the same as with it. Hancom Office's PDF, and the
+engine's when HyhwpEQ is installed, hold the font's own codes (private-use
+digits, italic letters, operators and structure parts, such as U+E034 for `1`)
+at HyhwpEQ's advances. Without the font, `rhwp-layout3.patch` draws those
+glyphs as the characters they stand for in other fonts, so the PDF held `1`,
+`a`, `+` at those fonts' advances and nothing for the structure parts, which
+are drawn as paths. The comparison never pairs a changed letter or digit, so
+on Linux 106 of the 267 words of Hancom Office's PDF of math.hwpx had no
+partner.
+
+| Change | Before |
+|--------|--------|
+| When the PDF font database has no HyhwpEQ, each glyph of it is drawn as the paths of the character it stands for, in the fonts `rhwp-layout3.patch` uses, and written over them once more, transparent, in "RHWP Equation Text". That is a TrueType face the engine generates with one box glyph for each code it paints with HyhwpEQ, at HyhwpEQ's advance, and HyhwpEQ's ascender, descender and line gap (820, 204 and 152 of 1024). Structure parts keep their paths and get the same transparent text. The generated face is never used as a fallback for other text | The PDF text held the substitute characters at the substitute fonts' advances, and nothing for the structure parts |
+
+The generated face holds numbers only, no outline or byte of HyhwpEQ. Its
+advances are those of rhwp's equation glyph table, which come from the `hmtx`
+of HYHWPEQ.TTF, and from the same table the advances of the legacy percent
+(853 of 1024) and of the eight structure glyphs whose ink boxes
+`rhwp-layout5.patch` already holds (rule 512, radical sign 1024, braces 594,
+brace parts 506). The drawing does not change. On Linux math.hwpx passes
+(0.81 pt, every word paired) and 11 of 18 documents pass, up from 10; only its
+PDF changes. On Windows, where HyhwpEQ is installed, 17 of 18 pass as before
+and the 54 outputs of the 18 documents are the same byte for byte.
+
 ## Layout patches applied last
 
 These patches are applied after the change-tracking patches above and follow
@@ -350,8 +378,8 @@ PDFs of fdi-2025q2.hwp and of the two-up document change.
 
 `patches/rhwp-zlayout2.patch` raises the count on Windows to 17 of 18:
 math.hwpx, 1.48 pt off before, is within 0.82 pt. On Linux 9 of 18 pass before
-and after; math.hwpx cannot pass there without the HyhwpEQ equation font, which
-126 of its words use. Only the PDFs of math.hwpx, fdi-2025q2.hwp and the two-up document
+and after; math.hwpx could not pass there without the HyhwpEQ equation font,
+which 126 of its words use, until `rhwp-zeqn1.patch` (see above). Only the PDFs of math.hwpx, fdi-2025q2.hwp and the two-up document
 change.
 
 | Change | Before |

@@ -1,0 +1,808 @@
+# rhwp equation text without the HyhwpEQ face, for why-hwp.
+# Base: rhwp 7213ed1f9 after wasm/patch-rhwp.sh and the patches before this one
+# in byte order; apply after rhwp-trackchange3.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - equation/text_layer_face.rs: a generated TrueType face, "RHWP Equation
+#   Text", with one box glyph per code painted with HyhwpEQ and HyhwpEQ's hmtx
+#   advance and vertical metrics. Numbers only, no outline or byte of the face.
+# - equation/hancom_glyphs.rs, equation/svg_render.rs: the advances, from the
+#   glyph table and the structure glyphs.
+# - pdf.rs: when the PDF font database has no HyhwpEQ, its glyphs are drawn as
+#   paths of the characters they stand for and written once more in the
+#   generated face, transparent, so the PDF text holds HyhwpEQ's codes at its
+#   advances whatever fonts are installed. Structure glyph hints do the same
+#   over their paths. The generated face is never a fallback face.
+# - pdf.rs and equation/text_layer_face.rs cover these changes.
+diff --git a/src/renderer/equation/hancom_glyphs.rs b/src/renderer/equation/hancom_glyphs.rs
+--- a/src/renderer/equation/hancom_glyphs.rs
++++ b/src/renderer/equation/hancom_glyphs.rs
+@@ -196,0 +197,33 @@ pub(crate) fn semantic_fallback_glyph(family: &str, encoded: char) -> Option<(ch
++/// The HYhwpEQ hmtx advance (UPM 1024) of every code `glyph` paints with the
++/// face. The table's advances are the hmtx ones except the legacy percent,
++/// whose one-em HFT slot stands in for its hmtx 853/1024.
++pub(crate) fn face_advances() -> &'static std::collections::BTreeMap<char, u16> {
++    use std::collections::BTreeMap;
++    use std::sync::OnceLock;
++    static ADVANCES: OnceLock<BTreeMap<char, u16>> = OnceLock::new();
++    ADVANCES.get_or_init(|| {
++        let mut map = BTreeMap::new();
++        let characters = ('A'..='Z')
++            .chain('a'..='z')
++            .chain('0'..='9')
++            .chain("+-=:<>×÷≤≥∴∵,()∏'△․%".chars());
++        for character in characters {
++            for role in [
++                Role::Variable { italic: false },
++                Role::Variable { italic: true },
++                Role::Number,
++                Role::Operator,
++                Role::SmallOperator,
++                Role::QuotedLiteral,
++                Role::LegacyLiteral,
++            ] {
++                if let Some((code, advance)) = glyph(character, role) {
++                    map.entry(code).or_insert(advance);
++                }
++            }
++        }
++        map.insert('\u{e042}', 853);
++        map
++    })
++}
++
+diff --git a/src/renderer/equation/mod.rs b/src/renderer/equation/mod.rs
+--- a/src/renderer/equation/mod.rs
++++ b/src/renderer/equation/mod.rs
+@@ -52,0 +53,2 @@ pub mod symbols;
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++pub(crate) mod text_layer_face;
+diff --git a/src/renderer/equation/svg_render.rs b/src/renderer/equation/svg_render.rs
+--- a/src/renderer/equation/svg_render.rs
++++ b/src/renderer/equation/svg_render.rs
+@@ -180,0 +181,14 @@ const BRACE_EXTENDER_INK: StructureInk = StructureInk {
++/// hmtx advance in 1/1024 em of the structure glyphs that are not also
++/// painted as text (see `hancom_glyphs::face_advances`), from the same glyph
++/// file as the ink boxes.
++pub(crate) const STRUCTURE_ADVANCES: [(char, u16); 8] = [
++    (RULE_INK.code, 512),
++    (RADICAL_INK.code, 1024),
++    (LEFT_BRACE_INK.code, 594),
++    (RIGHT_BRACE_INK.code, 594),
++    (BRACE_TOP_INK.code, 506),
++    (BRACE_MIDDLE_INK.code, 506),
++    (BRACE_BOTTOM_INK.code, 506),
++    (BRACE_EXTENDER_INK.code, 506),
++];
++
+diff --git a/src/renderer/equation/text_layer_face.rs b/src/renderer/equation/text_layer_face.rs
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/equation/text_layer_face.rs
+@@ -0,0 +1,326 @@
++//! A face that carries the text of HYhwpEQ glyphs in a PDF made without it.
++//!
++//! Hancom Office, and this producer when HYhwpEQ is installed, write the
++//! face's own codes (private-use digits and italic letters, structure parts)
++//! with its advances. Without the face the glyphs are drawn with other fonts,
++//! which report other characters and advances, so the text of the PDF would
++//! depend on the installed fonts. This face maps every code painted with
++//! HYhwpEQ to a box glyph with the HYhwpEQ advance and vertical metrics. It is
++//! painted transparent over the drawn glyphs. It holds those numbers only, no
++//! outline or byte of the original face.
++
++/// Family name of the generated face.
++pub(crate) const FAMILY: &str = "RHWP Equation Text";
++
++const POSTSCRIPT_NAME: &str = "RHWPEquationText";
++// HYHWPEQ.TTF hhea/OS/2 vertical metrics, UPM 1024.
++const UNITS_PER_EM: u16 = 1024;
++const ASCENDER: i16 = 820;
++const DESCENDER: i16 = -204;
++const LINE_GAP: i16 = 152;
++
++/// Every code painted with HYhwpEQ and its hmtx advance, by code.
++pub(crate) fn hyhwpeq_advances() -> Vec<(char, u16)> {
++    let mut advances: std::collections::BTreeMap<char, u16> =
++        super::hancom_glyphs::face_advances().clone();
++    for (code, advance) in super::svg_render::STRUCTURE_ADVANCES {
++        advances.entry(code).or_insert(advance);
++    }
++    advances.into_iter().collect()
++}
++
++/// The HYhwpEQ advance of `code`, when the face covers it.
++pub(crate) fn hyhwpeq_advance(code: char) -> Option<u16> {
++    super::hancom_glyphs::face_advances()
++        .get(&code)
++        .copied()
++        .or_else(|| {
++            super::svg_render::STRUCTURE_ADVANCES
++                .iter()
++                .find(|(c, _)| *c == code)
++                .map(|(_, advance)| *advance)
++        })
++}
++
++/// A TrueType face of [`FAMILY`] with one box glyph per BMP code of
++/// `glyphs`, each with its advance in 1/1024 em. Glyph 0 is an empty
++/// `.notdef`.
++pub(crate) fn build(glyphs: &[(char, u16)]) -> Vec<u8> {
++    let mut glyphs: Vec<(char, u16)> = glyphs
++        .iter()
++        .copied()
++        .filter(|(code, _)| (*code as u32) < 0xffff)
++        .collect();
++    glyphs.sort_by_key(|(code, _)| *code);
++    glyphs.dedup_by_key(|(code, _)| *code);
++    let count = u16::try_from(glyphs.len() + 1).unwrap_or(u16::MAX);
++    let glyphs = &glyphs[..usize::from(count) - 1];
++    let max_advance = glyphs.iter().map(|(_, a)| *a).max().unwrap_or(0);
++
++    let mut glyf = Vec::new();
++    let mut loca = vec![0u32, 0];
++    let mut hmtx = Vec::new();
++    put16(&mut hmtx, 0);
++    put16(&mut hmtx, 0);
++    for &(_, advance) in glyphs {
++        let right = i16::try_from(advance.max(1)).unwrap_or(i16::MAX);
++        put16(&mut glyf, 1);
++        for v in [0, DESCENDER, right, ASCENDER] {
++            put16(&mut glyf, v as u16);
++        }
++        put16(&mut glyf, 3);
++        put16(&mut glyf, 0);
++        glyf.extend_from_slice(&[1, 1, 1, 1]);
++        for dx in [0, right, 0, -right] {
++            put16(&mut glyf, dx as u16);
++        }
++        for dy in [DESCENDER, 0, ASCENDER - DESCENDER, 0] {
++            put16(&mut glyf, dy as u16);
++        }
++        while glyf.len() % 4 != 0 {
++            glyf.push(0);
++        }
++        loca.push(glyf.len() as u32);
++        put16(&mut hmtx, advance);
++        put16(&mut hmtx, 0);
++    }
++    let loca: Vec<u8> = loca.iter().flat_map(|o| o.to_be_bytes()).collect();
++
++    let mut head = Vec::new();
++    put32(&mut head, 0x0001_0000);
++    put32(&mut head, 0x0001_0000);
++    put32(&mut head, 0);
++    put32(&mut head, 0x5f0f_3cf5);
++    put16(&mut head, 0x000b);
++    put16(&mut head, UNITS_PER_EM);
++    head.extend_from_slice(&[0; 16]);
++    for v in [0, DESCENDER, max_advance as i16, ASCENDER] {
++        put16(&mut head, v as u16);
++    }
++    put16(&mut head, 0);
++    put16(&mut head, 8);
++    put16(&mut head, 2);
++    put16(&mut head, 1);
++    put16(&mut head, 0);
++
++    let mut hhea = Vec::new();
++    put32(&mut hhea, 0x0001_0000);
++    for v in [ASCENDER, DESCENDER, LINE_GAP] {
++        put16(&mut hhea, v as u16);
++    }
++    put16(&mut hhea, max_advance);
++    put16(&mut hhea, 0);
++    put16(&mut hhea, 0);
++    put16(&mut hhea, max_advance);
++    put16(&mut hhea, 1);
++    hhea.extend_from_slice(&[0; 12]);
++    put16(&mut hhea, 0);
++    put16(&mut hhea, count);
++
++    let mut maxp = Vec::new();
++    put32(&mut maxp, 0x0001_0000);
++    put16(&mut maxp, count);
++    put16(&mut maxp, 4);
++    put16(&mut maxp, 1);
++    put16(&mut maxp, 0);
++    put16(&mut maxp, 0);
++    put16(&mut maxp, 2);
++    maxp.extend_from_slice(&[0; 16]);
++
++    let first = glyphs.first().map_or(0, |(c, _)| *c as u16);
++    let last = glyphs.last().map_or(0, |(c, _)| *c as u16);
++    let average = if glyphs.is_empty() {
++        0
++    } else {
++        glyphs.iter().map(|(_, a)| u32::from(*a)).sum::<u32>() / glyphs.len() as u32
++    };
++    let mut os2 = Vec::new();
++    put16(&mut os2, 4);
++    put16(&mut os2, average as u16);
++    put16(&mut os2, 400);
++    put16(&mut os2, 5);
++    put16(&mut os2, 0);
++    os2.extend_from_slice(&[0; 22]);
++    os2.extend_from_slice(&[0; 10]);
++    os2.extend_from_slice(&[0; 16]);
++    os2.extend_from_slice(b"RHWP");
++    put16(&mut os2, 0x0040);
++    put16(&mut os2, first);
++    put16(&mut os2, last);
++    for v in [ASCENDER, DESCENDER, LINE_GAP] {
++        put16(&mut os2, v as u16);
++    }
++    put16(&mut os2, ASCENDER as u16);
++    put16(&mut os2, (-DESCENDER) as u16);
++    os2.extend_from_slice(&[0; 8]);
++    os2.extend_from_slice(&[0; 4]);
++    put16(&mut os2, 0);
++    put16(&mut os2, 0x20);
++    put16(&mut os2, 0);
++
++    let mut post = Vec::new();
++    put32(&mut post, 0x0003_0000);
++    post.extend_from_slice(&[0; 28]);
++
++    let mut cmap = Vec::new();
++    let segments = glyphs.len() + 1;
++    let search = 2 * (1usize << (usize::BITS - 1 - segments.leading_zeros()));
++    put16(&mut cmap, 0);
++    put16(&mut cmap, 1);
++    put16(&mut cmap, 3);
++    put16(&mut cmap, 1);
++    put32(&mut cmap, 12);
++    put16(&mut cmap, 4);
++    put16(&mut cmap, (16 + 8 * segments) as u16);
++    put16(&mut cmap, 0);
++    put16(&mut cmap, (2 * segments) as u16);
++    put16(&mut cmap, search as u16);
++    put16(&mut cmap, (search / 2).trailing_zeros() as u16);
++    put16(&mut cmap, (2 * segments - search) as u16);
++    let codes = glyphs.iter().map(|(c, _)| *c as u16).chain([0xffff]);
++    for code in codes.clone() {
++        put16(&mut cmap, code);
++    }
++    put16(&mut cmap, 0);
++    for code in codes.clone() {
++        put16(&mut cmap, code);
++    }
++    for (index, code) in codes.enumerate() {
++        let glyph = if code == 0xffff { 0 } else { index as u16 + 1 };
++        put16(&mut cmap, glyph.wrapping_sub(code));
++    }
++    for _ in 0..segments {
++        put16(&mut cmap, 0);
++    }
++
++    let records = [
++        (1, FAMILY),
++        (2, "Regular"),
++        (3, POSTSCRIPT_NAME),
++        (4, FAMILY),
++        (6, POSTSCRIPT_NAME),
++    ];
++    let mut strings = Vec::new();
++    let mut name = Vec::new();
++    put16(&mut name, 0);
++    put16(&mut name, records.len() as u16);
++    put16(&mut name, (6 + 12 * records.len()) as u16);
++    for (id, text) in records {
++        let offset = strings.len();
++        for unit in text.encode_utf16() {
++            put16(&mut strings, unit);
++        }
++        for v in [3, 1, 0x0409, id, (strings.len() - offset) as u16, offset as u16] {
++            put16(&mut name, v);
++        }
++    }
++    name.extend_from_slice(&strings);
++
++    let tables: [(&[u8; 4], Vec<u8>); 10] = [
++        (b"OS/2", os2),
++        (b"cmap", cmap),
++        (b"glyf", glyf),
++        (b"head", head),
++        (b"hhea", hhea),
++        (b"hmtx", hmtx),
++        (b"loca", loca),
++        (b"maxp", maxp),
++        (b"name", name),
++        (b"post", post),
++    ];
++    let mut font = Vec::new();
++    put32(&mut font, 0x0001_0000);
++    put16(&mut font, tables.len() as u16);
++    put16(&mut font, 128);
++    put16(&mut font, 3);
++    put16(&mut font, (16 * tables.len() - 128) as u16);
++    let mut offset = 12 + 16 * tables.len();
++    let mut head_offset = 0;
++    for (tag, data) in &tables {
++        if *tag == b"head" {
++            head_offset = offset;
++        }
++        font.extend_from_slice(*tag);
++        put32(&mut font, checksum(data));
++        put32(&mut font, offset as u32);
++        put32(&mut font, data.len() as u32);
++        offset += data.len().div_ceil(4) * 4;
++    }
++    for (_, data) in &tables {
++        font.extend_from_slice(data);
++        while font.len() % 4 != 0 {
++            font.push(0);
++        }
++    }
++    let adjustment = 0xb1b0_afbau32.wrapping_sub(checksum(&font));
++    font[head_offset + 8..head_offset + 12].copy_from_slice(&adjustment.to_be_bytes());
++    font
++}
++
++fn put16(out: &mut Vec<u8>, value: u16) {
++    out.extend_from_slice(&value.to_be_bytes());
++}
++
++fn put32(out: &mut Vec<u8>, value: u32) {
++    out.extend_from_slice(&value.to_be_bytes());
++}
++
++fn checksum(data: &[u8]) -> u32 {
++    data.chunks(4).fold(0u32, |sum, chunk| {
++        let mut word = [0u8; 4];
++        word[..chunk.len()].copy_from_slice(chunk);
++        sum.wrapping_add(u32::from_be_bytes(word))
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn face_maps_each_code_to_a_box_with_its_advance() {
++        let bytes = build(&[('\u{e034}', 512), ('A', 768), ('\u{e05c}', 1024), ('A', 1)]);
++        let face = ttf_parser::Face::parse(&bytes, 0).expect("generated face parses");
++        assert_eq!(face.units_per_em(), 1024);
++        assert_eq!(face.number_of_glyphs(), 4);
++        assert_eq!(face.ascender(), 820);
++        assert_eq!(face.descender(), -204);
++        let family = face
++            .names()
++            .into_iter()
++            .find(|name| name.name_id == ttf_parser::name_id::FAMILY)
++            .and_then(|name| name.to_string());
++        assert_eq!(family.as_deref(), Some(FAMILY));
++        let advance = |c: char| {
++            let glyph = face.glyph_index(c)?;
++            Some((glyph.0, face.glyph_hor_advance(glyph)?))
++        };
++        assert_eq!(advance('A'), Some((1, 768)));
++        assert_eq!(advance('\u{e034}'), Some((2, 512)));
++        assert_eq!(advance('\u{e05c}'), Some((3, 1024)));
++        assert_eq!(advance('B'), None);
++        let rect = face
++            .glyph_bounding_box(ttf_parser::GlyphId(3))
++            .expect("box glyph");
++        assert_eq!((rect.x_min, rect.y_min, rect.x_max, rect.y_max), (0, -204, 1024, 820));
++    }
++
++    #[test]
++    fn hyhwpeq_advances_hold_the_face_hmtx() {
++        let advances = hyhwpeq_advances();
++        let get = |c: char| advances.iter().find(|(code, _)| *code == c).map(|(_, a)| *a);
++        assert_eq!(get('\u{e034}'), Some(512));
++        assert_eq!(get('\u{e0e5}'), Some(541));
++        assert_eq!(get('\u{e000}'), Some(768));
++        assert_eq!(get('A'), Some(768));
++        assert_eq!(get('\u{e046}'), Some(774));
++        assert_eq!(get('\u{e042}'), Some(853));
++        assert_eq!(get('\u{e06d}'), Some(512));
++        assert_eq!(get('\u{e05c}'), Some(1024));
++        assert_eq!(get('\u{e04b}'), Some(594));
++        assert_eq!(get('\u{e07b}'), Some(506));
++        assert_eq!(hyhwpeq_advance('\u{e0fc}'), Some(585));
++        assert_eq!(hyhwpeq_advance('\u{e078}'), Some(506));
++        assert_eq!(hyhwpeq_advance('\u{e09d}'), None);
++    }
++}
+diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
+--- a/src/renderer/pdf.rs
++++ b/src/renderer/pdf.rs
+@@ -1720,0 +1721,17 @@ pub fn pdf_font_resolver_with_limits(
++            // The transparent equation text face is never a fallback.
++            let text_layer: Vec<usvg::fontdb::ID> = fontdb
++                .faces()
++                .filter(|face| {
++                    face.families.iter().any(|(name, _)| {
++                        name == crate::renderer::equation::text_layer_face::FAMILY
++                    })
++                })
++                .map(|face| face.id)
++                .collect();
++            let skipped;
++            let used_fonts = if text_layer.is_empty() || used_fonts.is_empty() {
++                used_fonts
++            } else {
++                skipped = [used_fonts, &text_layer].concat();
++                &skipped[..]
++            };
+@@ -1816,12 +1833,28 @@ fn decode_missing_hancom_equation_glyphs<'a>(
+-        let mut italic = false;
+-        let mut body = String::with_capacity(close);
+-        for ch in after[..close].chars() {
+-            match crate::renderer::equation::hancom_glyphs::semantic_fallback_glyph(family, ch) {
+-                Some((semantic, intrinsic_italic)) => {
+-                    italic |= intrinsic_italic;
+-                    match semantic {
+-                        '&' => body.push_str("&amp;"),
+-                        '<' => body.push_str("&lt;"),
+-                        '>' => body.push_str("&gt;"),
+-                        _ => body.push(semantic),
+-                    }
++        out.push_str(&decoded_hancom_equation_text(
++            family,
++            &attr,
++            tag,
++            &after[..close],
++        ));
++        rest = &after[close + CLOSE.len()..];
++    }
++    out.push_str(rest);
++    std::borrow::Cow::Owned(out)
++}
++
++/// The `<text>` element `tag` + `body` + `</text>` of a missing Hancom
++/// equation face, redrawn with the characters its glyphs stand for in the
++/// default equation fonts. `attr` is the tag's `font-family` attribute.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++fn decoded_hancom_equation_text(family: &str, attr: &str, tag: &str, body: &str) -> String {
++    let mut italic = false;
++    let mut decoded = String::with_capacity(body.len());
++    for ch in body.chars() {
++        match crate::renderer::equation::hancom_glyphs::semantic_fallback_glyph(family, ch) {
++            Some((semantic, intrinsic_italic)) => {
++                italic |= intrinsic_italic;
++                match semantic {
++                    '&' => decoded.push_str("&amp;"),
++                    '<' => decoded.push_str("&lt;"),
++                    '>' => decoded.push_str("&gt;"),
++                    _ => decoded.push(semantic),
+@@ -1829 +1861,0 @@ fn decode_missing_hancom_equation_glyphs<'a>(
+-                None => body.push(ch),
+@@ -1830,0 +1863 @@ fn decode_missing_hancom_equation_glyphs<'a>(
++            None => decoded.push(ch),
+@@ -1832,5 +1865,44 @@ fn decode_missing_hancom_equation_glyphs<'a>(
+-        let family_attr = crate::renderer::equation::svg_render::DEFAULT_EQUATION_FONT_FAMILY_ATTR;
+-        let replacement = if italic {
+-            format!("font-style=\"italic\" {family_attr}")
+-        } else {
+-            family_attr.to_string()
++    }
++    let family_attr = crate::renderer::equation::svg_render::DEFAULT_EQUATION_FONT_FAMILY_ATTR;
++    let replacement = if italic {
++        format!("font-style=\"italic\" {family_attr}")
++    } else {
++        family_attr.to_string()
++    };
++    format!("{}{decoded}</text>", tag.replacen(attr, &replacement, 1))
++}
++
++/// Without HyhwpEQ, its glyphs are drawn as the characters they stand for
++/// (see [`decode_missing_hancom_equation_glyphs`]), but the PDF text would
++/// then hold those characters and their advances in another font. Draw each
++/// such `<text>` as the paths of that rendering instead, and write the
++/// original codes once more over it in the transparent text face (see
++/// `equation::text_layer_face`), which has HyhwpEQ's advances. The text of
++/// the page is then what HyhwpEQ itself gives.
++///
++/// An element is left for the decoder when the face has no advance for one
++/// of its codes or its rendering gives no path.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++fn paint_missing_hyhwpeq_glyphs<'a>(
++    svg: &'a str,
++    options: &usvg::Options<'_>,
++    export_options: &PdfExportOptions,
++) -> Result<std::borrow::Cow<'a, str>, String> {
++    use crate::renderer::equation::{hancom_glyphs, text_layer_face};
++    const CLOSE: &str = "</text>";
++    const ID: &str = "rhwp-eq-text-";
++    let family = hancom_glyphs::FONT_FAMILY;
++    let attr = format!("font-family=\"{family}\"");
++    // Pieces of the output: copied text, or an index into `elements`.
++    enum Piece<'s> {
++        Copy(&'s str),
++        Element(usize),
++    }
++    let mut pieces = Vec::new();
++    let mut elements: Vec<(&str, &str)> = Vec::new();
++    let mut rest = svg;
++    while let Some(start) = rest.find("<text") {
++        pieces.push(Piece::Copy(&rest[..start]));
++        rest = &rest[start..];
++        let Some(tag_end) = rest.find('>') else {
++            break;
+@@ -1838,4 +1910,140 @@ fn decode_missing_hancom_equation_glyphs<'a>(
+-        out.push_str(&tag.replacen(&attr, &replacement, 1));
+-        out.push_str(&body);
+-        out.push_str(CLOSE);
+-        rest = &after[close + CLOSE.len()..];
++        let tag = &rest[..=tag_end];
++        let after = &rest[tag_end + 1..];
++        let body = after
++            .find(CLOSE)
++            .filter(|&close| !tag.ends_with("/>") && !after[..close].contains(['<', '&']))
++            .map(|close| &after[..close])
++            .filter(|body| {
++                tag.contains(&attr)
++                    && !body.is_empty()
++                    && body
++                        .chars()
++                        .all(|ch| text_layer_face::hyhwpeq_advance(ch).is_some())
++            });
++        let Some(body) = body else {
++            pieces.push(Piece::Copy(&rest[.."<text".len()]));
++            rest = &rest["<text".len()..];
++            continue;
++        };
++        pieces.push(Piece::Element(elements.len()));
++        elements.push((tag, body));
++        rest = &after[body.len() + CLOSE.len()..];
++    }
++    pieces.push(Piece::Copy(rest));
++    if elements.is_empty() {
++        return Ok(std::borrow::Cow::Borrowed(svg));
++    }
++
++    let decoded: Vec<String> = elements
++        .iter()
++        .map(|(tag, body)| decoded_hancom_equation_text(family, &attr, tag, body))
++        .collect();
++    let mut probe = String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\">");
++    for (index, element) in decoded.iter().enumerate() {
++        probe.push_str(&format!("<g id=\"{ID}{index}\">{element}</g>"));
++    }
++    probe.push_str("</svg>");
++    let probe = apply_pdf_font_options(&probe, export_options);
++    let (tree, _) = parse_svg_with_synthetic_italic(&probe, options)?;
++    let mut paths: Vec<Option<String>> = vec![None; elements.len()];
++    collect_text_paths(tree.root(), ID, None, &mut paths);
++
++    let mut out = String::with_capacity(svg.len());
++    for piece in pieces {
++        match piece {
++            Piece::Copy(text) => out.push_str(text),
++            Piece::Element(index) => {
++                let (tag, body) = elements[index];
++                match &paths[index] {
++                    Some(drawn) => {
++                        out.push_str(drawn);
++                        let layer = format!(
++                            "font-family=\"{}\" fill-opacity=\"0\"",
++                            text_layer_face::FAMILY
++                        );
++                        out.push_str(&tag.replacen(&attr, &layer, 1));
++                        out.push_str(body);
++                        out.push_str(CLOSE);
++                    }
++                    None => out.push_str(&decoded[index]),
++                }
++            }
++        }
++    }
++    Ok(std::borrow::Cow::Owned(out))
++}
++
++/// Write the outlines of the texts under each group with id `prefix` + n as
++/// filled `<path>` elements into `paths[n]`. An entry stays `None` when its
++/// texts give no outline or something other than a solid filled outline.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++fn collect_text_paths(
++    group: &usvg::Group,
++    prefix: &str,
++    index: Option<usize>,
++    paths: &mut [Option<String>],
++) {
++    use std::fmt::Write;
++    use usvg::tiny_skia_path::PathSegment;
++    let index = group
++        .id()
++        .strip_prefix(prefix)
++        .and_then(|n| n.parse::<usize>().ok())
++        .filter(|n| *n < paths.len())
++        .or(index);
++    for node in group.children() {
++        match node {
++            usvg::Node::Group(child) => collect_text_paths(child, prefix, index, paths),
++            usvg::Node::Text(text) => {
++                let Some(index) = index else { continue };
++                let mut drawn = String::new();
++                let mut solid = true;
++                for child in text.flattened().children() {
++                    let usvg::Node::Path(path) = child else {
++                        solid = false;
++                        continue;
++                    };
++                    let fill = path.fill().and_then(|fill| match fill.paint() {
++                        usvg::Paint::Color(color) => Some((*color, fill.opacity().get())),
++                        _ => None,
++                    });
++                    let data = path.data().clone().transform(text.abs_transform());
++                    let (Some((color, opacity)), Some(data), None) = (fill, data, path.stroke())
++                    else {
++                        solid = false;
++                        continue;
++                    };
++                    let mut d = String::new();
++                    for segment in data.segments() {
++                        let _ = match segment {
++                            PathSegment::MoveTo(p) => write!(d, "M{:.3} {:.3}", p.x, p.y),
++                            PathSegment::LineTo(p) => write!(d, "L{:.3} {:.3}", p.x, p.y),
++                            PathSegment::QuadTo(a, p) => {
++                                write!(d, "Q{:.3} {:.3} {:.3} {:.3}", a.x, a.y, p.x, p.y)
++                            }
++                            PathSegment::CubicTo(a, b, p) => write!(
++                                d,
++                                "C{:.3} {:.3} {:.3} {:.3} {:.3} {:.3}",
++                                a.x, a.y, b.x, b.y, p.x, p.y
++                            ),
++                            PathSegment::Close => write!(d, "Z"),
++                        };
++                    }
++                    let _ = write!(
++                        drawn,
++                        "<path d=\"{d}\" fill=\"#{:02x}{:02x}{:02x}\"",
++                        color.red, color.green, color.blue
++                    );
++                    if opacity < 1.0 {
++                        let _ = write!(drawn, " fill-opacity=\"{opacity}\"");
++                    }
++                    drawn.push_str("/>\n");
++                }
++                if !solid || drawn.is_empty() {
++                    paths[index] = None;
++                    continue;
++                }
++                paths[index].get_or_insert_with(String::new).push_str(&drawn);
++            }
++            _ => {}
++        }
+@@ -1843,2 +2050,0 @@ fn decode_missing_hancom_equation_glyphs<'a>(
+-    out.push_str(rest);
+-    std::borrow::Cow::Owned(out)
+@@ -1850 +2056,2 @@ fn decode_missing_hancom_equation_glyphs<'a>(
+-/// tags and keep the paths.
++/// tags and keep the paths, and with `text_layer` write the glyphs over them
++/// in the transparent text face (see `equation::text_layer_face`).
+@@ -1854,0 +2062 @@ fn apply_hancom_equation_structure_glyphs(
++    text_layer: bool,
+@@ -1882 +2090 @@ fn apply_hancom_equation_structure_glyphs(
+-        match parse_structure_glyphs(value).filter(|_| face_available) {
++        match parse_structure_glyphs(value).filter(|_| face_available || text_layer) {
+@@ -1883,0 +2092,9 @@ fn apply_hancom_equation_structure_glyphs(
++                let (family, paint) = if face_available {
++                    (family, "")
++                } else {
++                    out.push_str(body);
++                    (
++                        crate::renderer::equation::text_layer_face::FAMILY,
++                        " fill-opacity=\"0\"",
++                    )
++                };
+@@ -1886 +2103 @@ fn apply_hancom_equation_structure_glyphs(
+-                        "<text x=\"0\" y=\"0\" transform=\"translate({:.4},{:.4}) scale({:.8},1)\" font-size=\"{:.4}\" fill=\"{color}\" font-family=\"{family}\">{}</text>\n",
++                        "<text x=\"0\" y=\"0\" transform=\"translate({:.4},{:.4}) scale({:.8},1)\" font-size=\"{:.4}\" fill=\"{color}\"{paint} font-family=\"{family}\">{}</text>\n",
+@@ -2542 +2759 @@ where
+-    let fontdb = create_fontdb(export_options);
++    let mut fontdb = create_fontdb(export_options);
+@@ -2543,0 +2761,6 @@ where
++    let text_layer = missing_equation_families
++        .contains(&crate::renderer::equation::hancom_glyphs::FONT_FAMILY);
++    if text_layer {
++        use crate::renderer::equation::text_layer_face;
++        fontdb.load_font_data(text_layer_face::build(&text_layer_face::hyhwpeq_advances()));
++    }
+@@ -2568,5 +2791 @@ where
+-        let structure_svg = apply_hancom_equation_structure_glyphs(
+-            svg,
+-            !missing_equation_families
+-                .contains(&crate::renderer::equation::hancom_glyphs::FONT_FAMILY),
+-        );
++        let structure_svg = apply_hancom_equation_structure_glyphs(svg, !text_layer, text_layer);
+@@ -2574 +2793,6 @@ where
+-        let svg = decode_missing_hancom_equation_glyphs(svg, &missing_equation_families);
++        let painted_svg = if text_layer {
++            paint_missing_hyhwpeq_glyphs(svg, &options, export_options)?
++        } else {
++            std::borrow::Cow::Borrowed(svg)
++        };
++        let svg = decode_missing_hancom_equation_glyphs(&painted_svg, &missing_equation_families);
+@@ -3023 +3247 @@ mod tests {
+-            apply_hancom_equation_structure_glyphs(&svg, false),
++            apply_hancom_equation_structure_glyphs(&svg, false, false),
+@@ -3027 +3251 @@ mod tests {
+-            apply_hancom_equation_structure_glyphs(&svg, true),
++            apply_hancom_equation_structure_glyphs(&svg, true, false),
+@@ -3029,0 +3254,5 @@ mod tests {
++        // Without the face, the text face writes the glyph over the path.
++        assert_eq!(
++            apply_hancom_equation_structure_glyphs(&svg, false, true),
++            format!("<svg>{path}<text x=\"0\" y=\"0\" transform=\"translate(1.0000,8.0400) scale(3.00000000,1)\" font-size=\"10.0000\" fill=\"#102030\" fill-opacity=\"0\" font-family=\"RHWP Equation Text\">\u{e06d}</text>\n<g>x</g></svg>")
++        );
+@@ -3033 +3262 @@ mod tests {
+-            apply_hancom_equation_structure_glyphs(&broken, true),
++            apply_hancom_equation_structure_glyphs(&broken, true, false),
+@@ -3050 +3279 @@ mod tests {
+-            apply_hancom_equation_structure_glyphs(&hinted, false),
++            apply_hancom_equation_structure_glyphs(&hinted, false, false),
+@@ -3053 +3282 @@ mod tests {
+-        let glyphs = apply_hancom_equation_structure_glyphs(&hinted, true);
++        let glyphs = apply_hancom_equation_structure_glyphs(&hinted, true, false);
+@@ -3071 +3300,66 @@ mod tests {
+-        assert_eq!(apply_hancom_equation_structure_glyphs(&plain, true), plain);
++        assert_eq!(apply_hancom_equation_structure_glyphs(&plain, true, false), plain);
++    }
++
++    #[test]
++    fn missing_hyhwpeq_glyphs_are_drawn_as_paths_under_their_codes() {
++        use crate::renderer::equation::text_layer_face;
++        let mut database = usvg::fontdb::Database::new();
++        database.load_font_data(
++            include_bytes!("../../assets/fonts/LatinModernMath-VariableOutline-subset.otf")
++                .to_vec(),
++        );
++        database.set_serif_family("RHWP LMM Variable Outline");
++        database.load_font_data(text_layer_face::build(&text_layer_face::hyhwpeq_advances()));
++        let options = usvg::Options {
++            fontdb: std::sync::Arc::new(database),
++            font_resolver: pdf_font_resolver_with_limits(
++                PDF_FONT_FALLBACK_INDEX_MAX_CHARS,
++                PDF_FONT_FALLBACK_INDEX_MAX_FACE_SLOTS,
++            ),
++            ..usvg::Options::default()
++        };
++        let export = PdfExportOptions::default();
++        let text = |code: char, family: &str| {
++            format!(
++                "<text x=\"0\" y=\"0\" transform=\"matrix(1 0 -0 1 3.00 20.00)\" font-size=\"10.00\" fill=\"#000000\" {family}>{code}</text>"
++            )
++        };
++        let hyhwpeq = "font-family=\"HyhwpEQ\"";
++        // Italic a: drawn by the outline face, written in the text face.
++        let italic_a = text('\u{e0e5}', hyhwpeq);
++        // 1: no installed face draws it, so it is left to the decoder.
++        let digit = text('\u{e034}', hyhwpeq);
++        // Greek alpha has no HyhwpEQ advance here; another face is not touched.
++        let greek = text('\u{e09d}', hyhwpeq);
++        let other = text('\u{e0e5}', "font-family=\"Other\"");
++        let svg = format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{italic_a}{digit}{greek}{other}</svg>");
++        let out = paint_missing_hyhwpeq_glyphs(&svg, &options, &export).unwrap();
++
++        let head = "<svg xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M";
++        assert!(out.starts_with(head), "{out}");
++        let path_end = out.find("/>\n").unwrap();
++        assert!(out[..path_end].ends_with("fill=\"#000000\""), "{out}");
++        let first: Vec<f64> = out[head.len()..]
++            .split(|c: char| c.is_ascii_alphabetic())
++            .next()
++            .unwrap()
++            .split(' ')
++            .map(|v| v.parse().unwrap())
++            .collect();
++        assert!((3.0..13.0).contains(&first[0]) && (12.0..21.0).contains(&first[1]), "{first:?}");
++        let layer = text(
++            '\u{e0e5}',
++            "font-family=\"RHWP Equation Text\" fill-opacity=\"0\"",
++        );
++        let decoded_digit = format!(
++            "<text x=\"0\" y=\"0\" transform=\"matrix(1 0 -0 1 3.00 20.00)\" font-size=\"10.00\" fill=\"#000000\" {}>1</text>",
++            crate::renderer::equation::svg_render::DEFAULT_EQUATION_FONT_FAMILY_ATTR
++        );
++        assert_eq!(
++            &out[path_end..],
++            format!("/>\n{layer}{decoded_digit}{greek}{other}</svg>")
++        );
++        assert!(matches!(
++            paint_missing_hyhwpeq_glyphs(&greek, &options, &export),
++            Ok(std::borrow::Cow::Borrowed(_))
++        ));
