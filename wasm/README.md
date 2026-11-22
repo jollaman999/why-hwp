@@ -40,7 +40,7 @@ Exit codes: 0 success, 1 failure (one line on stderr), 2 usage.
 |---------|------|
 | `convert --to hwp\|hwpx\|pdf\|txt --in <file> --out <file>` | Converts. PDF fonts come from `/fonts` and the `RHWP_FONT_PATH` folders |
 | `font-plan --in <file>` | Prints the fonts the document needs that neither `/fonts` nor the `RHWP_FONT_PATH` folders have, plus the PDF fallback font below when it is needed: `[{"url":..., "sha256":... or null}]` |
-| `font-install --url <url> --file <file>` | Checks a downloaded font against rhwp's font ledger and stores it in `/fonts` |
+| `font-install --url <url> --file <file>` | Checks a downloaded font against rhwp's font ledger (or the Tinos files below) and stores it in `/fonts` |
 | `svg2png --in <svg> --out <png> --width <px> --height <px> [--font <file> ...]` | Draws the SVG on white at that size, with only the given fonts |
 | `version` | `why-hwp-engine <version> rhwp <commit> resvg <version>` |
 
@@ -372,6 +372,28 @@ found, is 1.27 pt off.
 | Bold Hanyang Junggothic (한양중고딕) curly quotes advance as the HFT program gives them (225/1000 em for `‘` `’`, 375/1000 for `“` `”`), as the regular face's do | The bold face used the substitute font's widths, and each quote moved the rest of its line by 0.5 pt |
 | A full-width HFT symbol (`–`, `†`, `※`) drawn by a substitute font is centred in its em cell, as Hancom Office centres the HFT glyph | It was drawn at the left of the cell |
 
+## Font supply patch
+
+`patches/rhwp-zfont1.patch` gives Times New Roman a free substitute with the
+same character widths. rhwp's ledger has no rule for it, since the font may not
+be redistributed, so on a computer without it, such as most Linux
+computers, its text took the document's substitute font,
+HCR Dotum (함초롬돋움) for english.hwp, and moved: 1.96 pt off Hancom Office's
+print, against 0.39 pt with the Windows Times New Roman files.
+
+| Change | Before |
+|--------|--------|
+| A document font named Times New Roman (or TimesNewRomanPSMT) that is not installed is mapped onto Tinos 1.340 (SIL OFL 1.1). An installed Tinos is used; otherwise its regular, bold, italic and bold italic files are supplied from Google Fonts at the commit rhwp pins for Noto Serif, `ofl/tinos/` there, each checked against a SHA-256 in the patch. The mapping names the family `Tinos`, which the PDF stage looks fonts up by | It fell back to the document's substitute font, or Noto Sans KR |
+
+Tinos's advance widths are those of Times New Roman for every character the
+two have in common below U+0370, in all four styles (compared from the `hmtx`
+tables of the Windows files). When a Tinos file is neither installed nor
+cached, the patch reports every missing file to the host and Times New Roman
+falls back as before, so with `WHY_HWP_OFFLINE=1` or a failed download the
+PDF is the same as without the patch. Times New Roman installed on the computer is used as
+before, so on Windows nothing changes. On Linux english.hwp passes
+(0.39 pt) and 10 of 18 documents pass, up from 9; only its PDF changes.
+
 ## fontdb
 
 Without memory mapping, fontdb 0.23 reads the whole font file from disk every
@@ -462,7 +484,7 @@ The engine links rhwp (MIT, `LICENSES/rhwp-LICENSE`), resvg (Apache-2.0 or MIT,
 `LICENSES/tiny-skia-LICENSE`) and the other crates listed with their licenses in
 `LICENSES/CRATES.md`. rhwp embeds a subset of the Latin Modern Math font for
 equations (GUST Font License, `LICENSES/LatinModernMath-GUST-FONT-LICENSE.txt`).
-Fonts downloaded at run time keep their own licenses; rhwp's ledger records them.
+Fonts downloaded at run time keep their own licenses; rhwp's ledger records them, and Tinos, which `rhwp-zfont1.patch` adds, is under the SIL Open Font License 1.1.
 
 This software is based in part on the work of the Independent JPEG Group.
 rhwp's vendored JPEG decoder (`rhwp-zune-jpeg`) and encoder

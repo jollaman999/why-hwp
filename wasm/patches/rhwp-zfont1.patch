@@ -1,0 +1,133 @@
+# rhwp font supply for why-hwp: Times New Roman falls back to Tinos.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# earlier wasm/patches/*.patch in name order; apply this after
+# rhwp-trackchange3.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - native_webfonts.rs: a document font named Times New Roman that is not
+#   installed and has no ledger rule is mapped onto Tinos, which has the same
+#   advance widths, instead of the document's substitute or Noto Sans KR. An
+#   installed Tinos is used as it is; otherwise its four styles are supplied
+#   from Google Fonts at the commit rhwp's NOTO_SERIF pins, each checked
+#   against a fixed SHA-256. The mapping names the family "Tinos", which is
+#   what the PDF stage looks fonts up by (the ledger path maps onto PostScript
+#   names). When a style is neither installed nor cached, every missing file
+#   is reported to the host and the font falls back as before.
+diff --git a/src/renderer/native_webfonts.rs b/src/renderer/native_webfonts.rs
+--- a/src/renderer/native_webfonts.rs
++++ b/src/renderer/native_webfonts.rs
+@@ -174 +174,5 @@
+-        _ => None,
++        _ => WHY_HWP_TINOS
++            .files
++            .iter()
++            .find(|(file, _)| *file == url)
++            .map(|(_, sha256)| *sha256),
+@@ -380,0 +385,18 @@
++        if rule.is_none() {
++            let twin = [source.as_str()]
++                .into_iter()
++                .chain(primary.iter().map(String::as_str))
++                .find_map(why_hwp_metric_twin);
++            if let Some(twin) = twin {
++                if why_hwp_supply_twin(
++                    twin,
++                    &source,
++                    &present,
++                    cache.as_deref(),
++                    &mut result,
++                    &mut face_paths,
++                ) {
++                    continue;
++                }
++            }
++        }
+@@ -719,0 +742 @@
++    sources.extend(WHY_HWP_TINOS.files.iter().map(|(url, _)| (*url).to_owned()));
+@@ -777,0 +801,86 @@
++
++/// A free font family with the advance widths of a font that is not free to
++/// redistribute, so that text keeps its line breaks and positions.
++pub struct WhyHwpMetricTwin {
++    pub family: &'static str,
++    /// Every style of the family: URL and SHA-256 of the file.
++    pub files: &'static [(&'static str, &'static str)],
++}
++
++/// Tinos 1.340 (SIL OFL 1.1) from Google Fonts at the commit NOTO_SERIF pins.
++/// Its advances match Times New Roman's for every character the two share
++/// below U+0370, in all four styles.
++pub const WHY_HWP_TINOS: WhyHwpMetricTwin = WhyHwpMetricTwin {
++    family: "Tinos",
++    files: &[
++        (
++            "https://cdn.jsdelivr.net/gh/google/fonts@2fe1e8c6b137fb13041a7cfca6fdcd8a910ea4dc/ofl/tinos/Tinos-Regular.ttf",
++            "60a0e8ef0c04dd5dd69ffe91025fa2ae5836cbd35600a82ba031977557e2cb61",
++        ),
++        (
++            "https://cdn.jsdelivr.net/gh/google/fonts@2fe1e8c6b137fb13041a7cfca6fdcd8a910ea4dc/ofl/tinos/Tinos-Bold.ttf",
++            "393269dbab8899f938db19783eca5eac92eb431f7ae0ab45b8349ca895f1a06b",
++        ),
++        (
++            "https://cdn.jsdelivr.net/gh/google/fonts@2fe1e8c6b137fb13041a7cfca6fdcd8a910ea4dc/ofl/tinos/Tinos-Italic.ttf",
++            "5942266ed398b155d7dc23e36833e7ec6be988f2439bdbeb8ef1bede808eaa91",
++        ),
++        (
++            "https://cdn.jsdelivr.net/gh/google/fonts@2fe1e8c6b137fb13041a7cfca6fdcd8a910ea4dc/ofl/tinos/Tinos-BoldItalic.ttf",
++            "a5de79f0fe863ea0954757acb3d47b3ccd0a930ce3dd5b97230cd3866790a06e",
++        ),
++    ],
++};
++
++/// The metric twin of a document font name that has no ledger rule.
++pub fn why_hwp_metric_twin(name: &str) -> Option<&'static WhyHwpMetricTwin> {
++    matches!(
++        normalized(name).as_str(),
++        "timesnewroman" | "timesnewromanpsmt"
++    )
++    .then_some(&WHY_HWP_TINOS)
++}
++
++/// Maps `source` onto `twin`: the installed family when there is one, else
++/// all its styles from the cache. The mapping names the family, which is what
++/// the PDF stage looks fonts up by. Returns false, leaving `prepare` to its
++/// other substitutes, when a style is neither installed nor cached; every
++/// missing file is still recorded for the host to download.
++fn why_hwp_supply_twin(
++    twin: &WhyHwpMetricTwin,
++    source: &str,
++    present: &dyn Fn(&str) -> bool,
++    cache: Option<&Path>,
++    result: &mut NativeWebfontSupply,
++    face_paths: &mut BTreeMap<String, PathBuf>,
++) -> bool {
++    if present(twin.family) {
++        result.mappings.insert(source.to_owned(), twin.family.into());
++        return true;
++    }
++    let Some(cache) = cache else {
++        return false;
++    };
++    let supplied: Vec<_> = twin
++        .files
++        .iter()
++        .map(|(url, _)| (*url, prepare_resource(url, cache)))
++        .collect();
++    if let Some(error) = supplied.iter().find_map(|(_, font)| font.as_ref().err()) {
++        result
++            .unavailable
++            .push(format!("{source} ({}): {error}", twin.family));
++        return false;
++    }
++    for (index, (url, font)) in supplied.into_iter().enumerate() {
++        let (folder, face) = font.unwrap();
++        if index == 0 {
++            face_paths.insert(twin.family.into(), folder.clone());
++        }
++        face_paths.insert(face.clone(), folder.clone());
++        result.web_fonts.insert(face, url.to_owned());
++        result.paths.push(folder);
++    }
++    result.mappings.insert(source.to_owned(), twin.family.into());
++    true
++}

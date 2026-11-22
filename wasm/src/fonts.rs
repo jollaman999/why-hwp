@@ -211,6 +211,40 @@ mod tests {
     }
 
     #[test]
+    fn times_new_roman_twin_is_pinned_tinos() {
+        for name in ["Times New Roman", "times new roman", "TimesNewRomanPSMT"] {
+            let twin = native_webfonts::why_hwp_metric_twin(name).expect(name);
+            assert_eq!(twin.family, "Tinos");
+        }
+        for name in ["Times", "Arial", "바탕", ""] {
+            assert!(native_webfonts::why_hwp_metric_twin(name).is_none(), "{name}");
+        }
+        let twin = native_webfonts::why_hwp_metric_twin("Times New Roman").unwrap();
+        let styles: Vec<_> = twin
+            .files
+            .iter()
+            .map(|(url, _)| url.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(
+            styles,
+            [
+                "Tinos-Regular.ttf",
+                "Tinos-Bold.ttf",
+                "Tinos-Italic.ttf",
+                "Tinos-BoldItalic.ttf"
+            ]
+        );
+        for (url, sha256) in twin.files {
+            assert!(native_webfonts::why_hwp_known_url(url), "{url}");
+            assert_eq!(
+                native_webfonts::why_hwp_expected_source_sha256(url),
+                Some(*sha256),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
     fn fallback_only_when_a_default_family_is_missing() {
         let defaults = PdfExportOptions::default();
         let all = [
