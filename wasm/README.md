@@ -438,19 +438,62 @@ system.
 
 What is left in that document:
 
-- 1.29 pt on Windows and 1.35 pt on Linux at "어지러움": in a bold Human
-  Myeongjo line with 2 % letter spacing, Hancom Office prints the Hangul of
-  one run at the narrowed glyph's own advance (horizontal scale 95 %, 13.34 pt,
-  with a 0.58 pt step now and then) instead of the laid-out 14.0 pt. rhwp uses
-  14.0 pt, and both start the next run at the same place (within 0.01 pt), so
-  the word edges inside the run drift by up to 1.3 pt. A bold line of the same
-  font without letter spacing is printed at its laid-out advance (13.68 pt
-  against 13.72 pt).
+- 1.29 pt on Windows and 1.35 pt on Linux at "어지러움", a bold Human
+  Myeongjo word with 98 % width and 2 % letter spacing, which
+  `rhwp-zlayout7.patch` explains and removes.
 - Linux, 216 chart labels only in the candidate: Hancom Office draws chart
   text as outlines of Malgun Gothic and Calibri, and a candidate word without
   a partner passes only where the reference draws the same shape. Windows
   draws the 371 labels with the same fonts and all pass; Linux draws them with
   HCR Dotum and Noto Sans KR.
+
+`patches/rhwp-zlayout7.patch` takes the two-up document from 1.29 pt to
+0.88 pt on Windows and from 1.35 pt to 1.00 pt on Linux, so all 18 pass on
+Windows (17 before) and 16 of 18 still pass on Linux. Four other PDFs change
+on both systems (biz-plan.hwp, el-school.hwp, english.hwp, fdi-2025q2.hwp);
+their largest deviations stay the same except el-school.hwp on Windows, 0.35
+to 0.32 pt.
+
+Hancom Office prints TrueType text through a 600 dpi GDI font and its PDF draws
+that font with a horizontal scale (`Tz`) of `lfWidth / tmAveCharWidth`, where
+`lfWidth` is the width ratio times the regular face's `xAvgCharWidth` at the
+point size and `tmAveCharWidth` is the drawn face's at the rounded em, plus
+one pixel for synthesized bold. Each glyph advances by the laid-out distance
+between device pixels, except a full-width glyph whose laid-out distance is
+exactly the em: it gets no adjustment in the PDF and advances by its scaled
+width. HFT text does the same with `Tz` equal to the ratio. Every word, and
+every change of script, starts a new run at its laid-out place, so the
+shortfall adds up only inside a word. Measured on synthetic documents printed
+by Hancom Office 2024 (휴먼명조, 바탕, 맑은 고딕, 함초롬바탕, Arial and
+한양신명조 at 10-14 pt, ratio 90-100 %, letter spacing -3 to +10 %, bold and
+not):
+
+| Case | `Tf`, `Tz` in the PDF | Glyph advance where the laid-out step is the em |
+|------|-----------------------|-----------------------------------------------|
+| 휴먼명조 bold 14 pt, 98 %, +2 % | 117, 95 (57/60) | 111.15 px (13.34 pt) instead of 117 (14.04 pt) |
+| 휴먼명조 14 pt, 98 %, +2 % | 117, 96.61 (57/59) | 113.03 px |
+| 휴먼명조 bold 12 pt, 95 %, +5 % | 100, 94.12 (48/51) | 94.12 px |
+| 바탕 bold 14 pt, 98 %, +2 % | 117, 95 | 111.15 px |
+| 맑은 고딕 Bold 14 pt, 98 %, +2 % | 117, 92.98 (53/57) | 108.79 px |
+| 함초롬바탕 14 pt, 100 %, +3 % | 117, 100 | none: its Hangul advance is 0.97 em |
+| 한양신명조 (HFT) 14 pt, 98 %, +2 % | 117, 98 | 114.66 px |
+| 휴먼명조 bold 14 pt, 98 %, 0 % | 117, 95 | none: laid out 114 and 115 px apart |
+
+| Change | Before |
+|--------|--------|
+| A run with a width ratio is drawn at those origins inside each word and, for TrueType, at that `Tz`. The `xAvgCharWidth` comes from a table of the TrueType faces installed with Windows 11 and Hancom Office 2024 (OS/2 values only); a slot not declared HFT whose face is in it is taken as TrueType, as HWP 5 documents seldom declare the type | Every glyph was drawn at its laid-out place and at the ratio: "어지러움" ended 1.8 pt (1.3 pt on the two-up sheet) past Hancom Office's |
+
+On synthetic lines where the rule applies, rhwp went from 1.4-9.6 pt off
+Hancom Office's print (13 pt for bold Malgun Gothic) to within 0.3 pt, on both
+systems except the Malgun Gothic line on Linux. What is left:
+
+- On Linux, a face that the font environment replaces without keeping the
+  original name (Malgun Gothic) is looked up under the substitute's name, which
+  the table does not have, so such a line keeps the old drawing: a bold Malgun
+  Gothic line at 98 % and +2 % is 13 pt off at its end on Linux and 0.10 pt on
+  Windows.
+- Linux, 1.00 pt at "또는" (p11) of the two-up document, unchanged by this
+  patch; it was behind the 1.35 pt.
 
 ## Font supply patch
 

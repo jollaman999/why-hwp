@@ -1,0 +1,1041 @@
+# rhwp print geometry for why-hwp: place and size the glyphs of a run with a
+# character width ratio as Hancom Office's PDF print does.
+# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# earlier wasm/patches/*.patch in name order; apply this after
+# rhwp-zlayout5.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# Hancom Office prints TrueType text through a 600 dpi GDI font whose lfWidth
+# is round(ratio * xAvgCharWidth(regular face) * size). Its PDF draws that font
+# with Tz = lfWidth / tmAveCharWidth (the drawn face's xAvgCharWidth at the
+# rounded em, plus one pixel for synthesized bold): 휴먼명조 bold 14 pt at 98 %
+# is Tz 95, not 98. Each glyph advances by the laid out distance between device
+# pixels (positions truncated to the pixel), except a full width glyph whose
+# laid out advance equals the em: it gets no adjustment and advances by its Tz
+# scaled width. With ratio 98 % and spacing +2 % (a 14.0 pt pitch, laid out
+# 117, 116, 117 pixels apart) the 117 ones advance 111.15 pixels. HFT text
+# (Type 3) does the same with Tz equal to the ratio. The PDF places a run again
+# after every space and where the script changes, so the shortfall adds up only
+# inside a word.
+#
+# - gdi_text_out.rs: the Tz and em of a style, the glyph origins inside a word,
+#   and the xAvgCharWidth of TrueType faces by family name (OS/2 of the
+#   TrueType programs installed with Windows 11 and Hancom Office 2024;
+#   metadata only, no font data). A slot not declared HFT whose face is in the
+#   table is taken as TrueType, since HWP 5 documents seldom declare the type.
+# - svg.rs: draw_text_positioned draws such a run at those origins and, for
+#   TrueType, at that Tz; layout and the start of every word are unchanged.
+diff --git a/src/renderer/gdi_text_out.rs b/src/renderer/gdi_text_out.rs
+new file mode 100644
+index 0000000..0ea4c7a
+--- /dev/null
++++ b/src/renderer/gdi_text_out.rs
+@@ -0,0 +1,967 @@
++//! why-hwp: where Hancom Office's PDF print puts the glyphs of a TrueType run
++//! with a character width ratio.
++//!
++//! Hancom Office prints TrueType text through a GDI font at 600 dpi whose
++//! `lfWidth` is `round(ratio * xAvgCharWidth(regular face) * size)`. The PDF
++//! writer draws that font with `Tz = lfWidth / tmAveCharWidth`, where
++//! `tmAveCharWidth` is the drawn face's `xAvgCharWidth` at the rounded em plus
++//! one pixel for synthesized bold. Each glyph advances by the laid out distance
++//! between device pixels (positions truncated to the pixel), except a full width glyph (advance of one em) whose
++//! laid out advance equals the em: it gets no adjustment and advances by its
++//! `Tz` scaled width. HFT text, printed as Type 3 fonts, does the same with
++//! `Tz` equal to the ratio. The writer places a run again after every space and
++//! where the script changes, so the shortfall adds up only inside a word.
++//!
++//! Measured on Hancom Office 2024 prints of 휴먼명조, 바탕, 맑은 고딕, 함초롬바탕,
++//! Arial and 한양신명조 (HFT) at 10-14 pt, ratio 90-100 %, spacing -3 to +10 %,
++//! bold and not.
++
++use super::font_metrics_data;
++use super::style_resolver;
++use super::TextStyle;
++
++const DEVICE_PER_PX: f64 = 600.0 / 96.0;
++const HWPUNIT_PER_PX: f64 = 7200.0 / 96.0;
++const HWPUNIT_PER_DEVICE: i64 = 12;
++
++/// OS/2 `xAvgCharWidth` and units per em of the TrueType faces installed with
++/// Windows 11 and Hancom Office 2024, by family name (English and Korean) and
++/// style. Sorted for binary search.
++static X_AVG_CHAR_WIDTH: &[(&str, bool, bool, u16, u16)] = &[
++    ("Agency FB", false, false, 648, 2048),
++    ("Agency FB", true, false, 700, 2048),
++    ("Algerian", false, false, 1110, 2048),
++    ("AmeriGarmnd BT", false, false, 380, 1000),
++    ("AmeriGarmnd BT", false, true, 334, 1000),
++    ("AmeriGarmnd BT", true, false, 414, 1000),
++    ("AmeriGarmnd BT", true, true, 383, 1000),
++    ("Ami R", false, false, 256, 512),
++    ("AniMe Vision - MB_EN", false, false, 741, 1000),
++    ("Arial", false, false, 904, 2048),
++    ("Arial", false, true, 904, 2048),
++    ("Arial", true, false, 980, 2048),
++    ("Arial", true, true, 980, 2048),
++    ("Arial Black", false, false, 1131, 2048),
++    ("Arial Narrow", false, false, 741, 2048),
++    ("Arial Narrow", false, true, 741, 2048),
++    ("Arial Narrow", true, false, 803, 2048),
++    ("Arial Narrow", true, true, 803, 2048),
++    ("Arial Rounded MT Bold", false, false, 990, 2048),
++    ("Bahnschrift", false, false, 1169, 2048),
++    ("Baloo", false, false, 699, 1000),
++    ("Baskerville Old Face", false, false, 803, 2048),
++    ("Batang", false, false, 512, 1024),
++    ("BatangChe", false, false, 512, 1024),
++    ("Bauhaus 93", false, false, 909, 2048),
++    ("Bell MT", false, false, 835, 2048),
++    ("Bell MT", false, true, 751, 2048),
++    ("Bell MT", true, false, 899, 2048),
++    ("Berlin Sans FB", false, false, 847, 2048),
++    ("Berlin Sans FB", true, false, 976, 2048),
++    ("Berlin Sans FB Demi", true, false, 911, 2048),
++    ("Bernard MT Condensed", false, false, 793, 2048),
++    ("BernhardFashion BT", false, false, 333, 1000),
++    ("Blackadder ITC", false, false, 639, 2048),
++    ("Blippo Blk BT", false, false, 454, 1000),
++    ("Bodoni Bd BT", false, false, 439, 1000),
++    ("Bodoni Bd BT", false, true, 440, 1000),
++    ("Bodoni Bk BT", false, false, 386, 1000),
++    ("Bodoni Bk BT", false, true, 378, 1000),
++    ("Bodoni MT", false, false, 856, 2048),
++    ("Bodoni MT", false, true, 798, 2048),
++    ("Bodoni MT", true, false, 837, 2048),
++    ("Bodoni MT", true, true, 941, 2048),
++    ("Bodoni MT Black", false, false, 1044, 2048),
++    ("Bodoni MT Black", false, true, 1114, 2048),
++    ("Bodoni MT Condensed", false, false, 582, 2048),
++    ("Bodoni MT Condensed", false, true, 589, 2048),
++    ("Bodoni MT Condensed", true, false, 689, 2048),
++    ("Bodoni MT Condensed", true, true, 694, 2048),
++    ("Bodoni MT Poster Compressed", false, false, 490, 2048),
++    ("Book Antiqua", false, false, 912, 2048),
++    ("Book Antiqua", false, true, 821, 2048),
++    ("Book Antiqua", true, false, 940, 2048),
++    ("Book Antiqua", true, true, 915, 2048),
++    ("Bookman Old Style", false, false, 1008, 2048),
++    ("Bookman Old Style", false, true, 988, 2048),
++    ("Bookman Old Style", true, false, 1079, 2048),
++    ("Bookman Old Style", true, true, 1102, 2048),
++    ("Bookshelf Symbol 7", false, false, 168, 256),
++    ("Bradley Hand ITC", false, false, 857, 2048),
++    ("Britannic Bold", false, false, 914, 2048),
++    ("Broadway", false, false, 1114, 2048),
++    ("BroadwayEngraved BT", false, false, 559, 1000),
++    ("Brush Script MT", false, true, 654, 2048),
++    ("BrushScript BT", false, true, 354, 1000),
++    ("Calibri", false, false, 1067, 2048),
++    ("Calibri", false, true, 1067, 2048),
++    ("Calibri", true, false, 1098, 2048),
++    ("Calibri", true, true, 1099, 2048),
++    ("Calibri Light", false, false, 1065, 2048),
++    ("Calibri Light", false, true, 1067, 2048),
++    ("Californian FB", false, false, 829, 2048),
++    ("Californian FB", false, true, 691, 2048),
++    ("Californian FB", true, false, 876, 2048),
++    ("Calisto MT", false, false, 863, 2048),
++    ("Calisto MT", false, true, 765, 2048),
++    ("Calisto MT", true, false, 894, 2048),
++    ("Calisto MT", true, true, 805, 2048),
++    ("Cambria", false, false, 1260, 2048),
++    ("Cambria", false, true, 1111, 2048),
++    ("Cambria", true, false, 1228, 2048),
++    ("Cambria", true, true, 1198, 2048),
++    ("Cambria Math", false, false, 1260, 2048),
++    ("Candara", false, false, 1068, 2048),
++    ("Candara", false, true, 1031, 2048),
++    ("Candara", true, false, 1082, 2048),
++    ("Candara", true, true, 1059, 2048),
++    ("Candara Light", false, false, 1060, 2048),
++    ("Candara Light", false, true, 1013, 2048),
++    ("Castellar", false, false, 1365, 2048),
++    ("CentSchbook BT", false, false, 456, 1000),
++    ("CentSchbook BT", false, true, 450, 1000),
++    ("CentSchbook BT", true, false, 520, 1000),
++    ("CentSchbook BT", true, true, 513, 1000),
++    ("Centaur", false, false, 742, 2048),
++    ("Century", false, false, 951, 2048),
++    ("Century Gothic", false, false, 995, 2048),
++    ("Century Gothic", false, true, 995, 2048),
++    ("Century Gothic", true, false, 994, 2048),
++    ("Century Gothic", true, true, 994, 2048),
++    ("Century Schoolbook", false, false, 951, 2048),
++    ("Century Schoolbook", false, true, 938, 2048),
++    ("Century Schoolbook", true, false, 1073, 2048),
++    ("Century Schoolbook", true, true, 1054, 2048),
++    ("Chiller", false, false, 601, 2048),
++    ("Colonna MT", false, false, 859, 2048),
++    ("Comic Sans MS", false, false, 959, 2048),
++    ("Comic Sans MS", false, true, 1325, 2048),
++    ("Comic Sans MS", true, false, 1014, 2048),
++    ("Comic Sans MS", true, true, 1343, 2048),
++    ("CommercialScript BT", false, true, 367, 1000),
++    ("Consolas", false, false, 1126, 2048),
++    ("Consolas", false, true, 1126, 2048),
++    ("Consolas", true, false, 1126, 2048),
++    ("Consolas", true, true, 1126, 2048),
++    ("Constantia", false, false, 1110, 2048),
++    ("Constantia", false, true, 1093, 2048),
++    ("Constantia", true, false, 1176, 2048),
++    ("Constantia", true, true, 1166, 2048),
++    ("Cooper Black", false, false, 1048, 2048),
++    ("Cooper Blk BT", false, false, 554, 1000),
++    ("Cooper Blk BT", false, true, 535, 1000),
++    ("Copperplate Gothic Bold", false, false, 1186, 2048),
++    ("Copperplate Gothic Light", false, false, 1133, 2048),
++    ("Corbel", false, false, 1084, 2048),
++    ("Corbel", false, true, 1055, 2048),
++    ("Corbel", true, false, 1131, 2048),
++    ("Corbel", true, true, 1111, 2048),
++    ("Corbel Light", false, false, 1045, 2048),
++    ("Corbel Light", false, true, 1013, 2048),
++    ("Courier New", false, false, 1229, 2048),
++    ("Courier New", false, true, 1229, 2048),
++    ("Courier New", true, false, 1229, 2048),
++    ("Courier New", true, true, 1229, 2048),
++    ("Courier10 BT", true, false, 602, 1000),
++    ("Courier10 BT", true, true, 602, 1000),
++    ("Curlz MT", false, false, 780, 2048),
++    ("DejaVu Sans Mono", false, false, 1233, 2048),
++    ("DejaVu Sans Mono", false, true, 1233, 2048),
++    ("DejaVu Sans Mono", true, false, 1233, 2048),
++    ("DejaVu Sans Mono", true, true, 1233, 2048),
++    ("Diplomata", false, false, 964, 1000),
++    ("DomCasual BT", false, false, 311, 1000),
++    ("Dotum", false, false, 512, 1024),
++    ("DotumChe", false, false, 512, 1024),
++    ("Dubai", false, false, 513, 1000),
++    ("Dubai", true, false, 532, 1000),
++    ("Dubai Light", false, false, 505, 1000),
++    ("Dubai Medium", false, false, 521, 1000),
++    ("Ebrima", false, false, 1237, 2048),
++    ("Ebrima", true, false, 1340, 2048),
++    ("Edwardian Script ITC", false, false, 522, 2048),
++    ("Elephant", false, false, 488, 1000),
++    ("Elephant", false, true, 495, 1000),
++    ("Engravers MT", false, false, 1622, 2048),
++    ("Eras Bold ITC", false, false, 1039, 2048),
++    ("Eras Demi ITC", false, false, 971, 2048),
++    ("Eras Light ITC", false, false, 851, 2048),
++    ("Eras Medium ITC", false, false, 909, 2048),
++    ("Expo M", false, false, 256, 512),
++    ("FZSong_Superfont", false, false, 512, 1024),
++    ("Felix Titling", false, false, 1206, 2048),
++    ("Footlight MT Light", false, false, 843, 2048),
++    ("Forte", false, false, 873, 2048),
++    ("Franklin Gothic Book", false, false, 863, 2048),
++    ("Franklin Gothic Book", false, true, 867, 2048),
++    ("Franklin Gothic Demi", false, false, 898, 2048),
++    ("Franklin Gothic Demi", false, true, 895, 2048),
++    ("Franklin Gothic Demi Cond", false, false, 768, 2048),
++    ("Franklin Gothic Heavy", false, false, 969, 2048),
++    ("Franklin Gothic Heavy", false, true, 962, 2048),
++    ("Franklin Gothic Medium", false, false, 878, 2048),
++    ("Franklin Gothic Medium", false, true, 876, 2048),
++    ("Franklin Gothic Medium Cond", false, false, 739, 2048),
++    ("Freehand591 BT", false, false, 349, 1000),
++    ("Freestyle Script", false, false, 529, 2048),
++    ("French Script MT", false, false, 572, 2048),
++    ("FuturaBlack BT", false, false, 437, 1000),
++    ("Gabriola", false, false, 2017, 4096),
++    ("Gadugi", false, false, 1313, 2048),
++    ("Gadugi", true, false, 1412, 2048),
++    ("Garamond", false, false, 793, 2048),
++    ("Garamond", false, true, 664, 2048),
++    ("Garamond", true, false, 865, 2048),
++    ("Georgia", false, false, 901, 2048),
++    ("Georgia", false, true, 920, 2048),
++    ("Georgia", true, false, 1051, 2048),
++    ("Georgia", true, true, 1073, 2048),
++    ("Gigi", false, false, 808, 2048),
++    ("Gill Sans MT", false, false, 834, 2048),
++    ("Gill Sans MT", false, true, 769, 2048),
++    ("Gill Sans MT", true, false, 956, 2048),
++    ("Gill Sans MT", true, true, 900, 2048),
++    ("Gill Sans MT Condensed", false, false, 623, 2048),
++    ("Gill Sans MT Ext Condensed Bold", false, false, 469, 2048),
++    ("Gill Sans Ultra Bold", false, false, 1290, 2048),
++    ("Gill Sans Ultra Bold Condensed", false, false, 913, 2048),
++    ("Gloucester MT Extra Condensed", false, false, 566, 2048),
++    ("Goudy Old Style", false, false, 806, 2048),
++    ("Goudy Old Style", false, true, 718, 2048),
++    ("Goudy Old Style", true, false, 829, 2048),
++    ("Goudy Stout", false, false, 2272, 2048),
++    ("GoudyOlSt BT", false, false, 398, 1000),
++    ("GoudyOlSt BT", false, true, 367, 1000),
++    ("GoudyOlSt BT", true, false, 419, 1000),
++    ("GoudyOlSt BT", true, true, 400, 1000),
++    ("Gulim", false, false, 512, 1024),
++    ("GulimChe", false, false, 512, 1024),
++    ("Gungsuh", false, false, 512, 1024),
++    ("GungsuhChe", false, false, 512, 1024),
++    ("HCR Batang", false, false, 933, 1000),
++    ("HCR Batang", true, false, 933, 1000),
++    ("HCR Batang Ext", false, false, 882, 1000),
++    ("HCR Batang ExtB", false, false, 999, 1000),
++    ("HCR Batang ExtB", true, false, 999, 1000),
++    ("HCR Dotum", false, false, 931, 1000),
++    ("HCR Dotum", true, false, 932, 1000),
++    ("HCR Dotum Ext", false, false, 882, 1000),
++    ("HYGothic-Extra", false, false, 512, 1024),
++    ("HYGothic-Medium", false, false, 512, 1024),
++    ("HYGraphic-Medium", false, false, 512, 1024),
++    ("HYGungSo-Bold", false, false, 512, 1024),
++    ("HYHeadLine M", false, false, 512, 1024),
++    ("HYHeadLine-Medium", false, false, 512, 1024),
++    ("HYMyeongJo-Extra", false, false, 512, 1024),
++    ("HYPMokGak-Bold", false, false, 512, 1024),
++    ("HYPost-Light", false, false, 512, 1024),
++    ("HYPost-Medium", false, false, 512, 1024),
++    ("HYShortSamul-Medium", false, false, 512, 1024),
++    ("HYSinMyeongJo-Medium", false, false, 512, 1024),
++    ("HYbdaL", false, false, 512, 1024),
++    ("HYbdaM", false, false, 512, 1024),
++    ("HYbsrB", false, false, 512, 1024),
++    ("HYcysM", false, false, 512, 1024),
++    ("HYdnkB", false, false, 512, 1024),
++    ("HYdnkM", false, false, 512, 1024),
++    ("HYgprM", false, false, 512, 1024),
++    ("HYgsrB", false, false, 512, 1024),
++    ("HYgtrE", false, false, 512, 1024),
++    ("HYhaeseo", false, false, 560, 1024),
++    ("HYkanB", false, false, 512, 1024),
++    ("HYkanM", false, false, 512, 1024),
++    ("HYmjrE", false, false, 512, 1024),
++    ("HYmprL", false, false, 512, 1024),
++    ("HYnamB", false, false, 512, 1024),
++    ("HYnamL", false, false, 512, 1024),
++    ("HYnamM", false, false, 512, 1024),
++    ("HYporM", false, false, 512, 1024),
++    ("HYsanB", false, false, 512, 1024),
++    ("HYsnrL", false, false, 512, 1024),
++    ("HYsupB", false, false, 512, 1024),
++    ("HYsupM", false, false, 512, 1024),
++    ("HYtbrB", false, false, 512, 1024),
++    ("HYwulB", false, false, 512, 1024),
++    ("HYwulM", false, false, 512, 1024),
++    ("HY강B", false, false, 512, 1024),
++    ("HY강M", false, false, 512, 1024),
++    ("HY견고딕", false, false, 512, 1024),
++    ("HY견명조", false, false, 512, 1024),
++    ("HY궁서", false, false, 512, 1024),
++    ("HY궁서B", false, false, 512, 1024),
++    ("HY그래픽", false, false, 512, 1024),
++    ("HY그래픽M", false, false, 512, 1024),
++    ("HY나무B", false, false, 512, 1024),
++    ("HY나무L", false, false, 512, 1024),
++    ("HY나무M", false, false, 512, 1024),
++    ("HY동녘B", false, false, 512, 1024),
++    ("HY동녘M", false, false, 512, 1024),
++    ("HY목각파임B", false, false, 512, 1024),
++    ("HY목판L", false, false, 512, 1024),
++    ("HY바다L", false, false, 512, 1024),
++    ("HY바다M", false, false, 512, 1024),
++    ("HY백송B", false, false, 512, 1024),
++    ("HY산B", false, false, 512, 1024),
++    ("HY센스L", false, false, 512, 1024),
++    ("HY수평선B", false, false, 512, 1024),
++    ("HY수평선M", false, false, 512, 1024),
++    ("HY신명조", false, false, 512, 1024),
++    ("HY얕은샘물M", false, false, 512, 1024),
++    ("HY엽서L", false, false, 512, 1024),
++    ("HY엽서M", false, false, 512, 1024),
++    ("HY울릉도B", false, false, 512, 1024),
++    ("HY울릉도M", false, false, 512, 1024),
++    ("HY중고딕", false, false, 512, 1024),
++    ("HY크리스탈M", false, false, 512, 1024),
++    ("HY태백B", false, false, 512, 1024),
++    ("HY헤드라인M", false, false, 512, 1024),
++    ("Haan Baekje B", false, false, 500, 1000),
++    ("Haan Baekje M", false, false, 500, 1000),
++    ("Haan Cooljazz B", false, false, 500, 1000),
++    ("Haan Cooljazz L", false, false, 500, 1000),
++    ("Haan Cooljazz M", false, false, 500, 1000),
++    ("Haan Sale B", false, false, 500, 1000),
++    ("Haan Sale M", false, false, 500, 1000),
++    ("Haan Sollip B", false, false, 500, 1000),
++    ("Haan Sollip M", false, false, 500, 1000),
++    ("Haan Somang B", false, false, 500, 1000),
++    ("Haan Somang M", false, false, 500, 1000),
++    ("Haan Wing2", false, false, 1700, 1000),
++    ("Haan YGodic 230", false, false, 500, 1000),
++    ("Haan YGodic 240", false, false, 500, 1000),
++    ("Haan YGodic 250", false, false, 500, 1000),
++    ("Haan YHead B", false, false, 500, 1000),
++    ("Haan YHead L", false, false, 500, 1000),
++    ("Haan YHead M", false, false, 500, 1000),
++    ("Haan YoonGothic 720", false, false, 900, 1000),
++    ("Haan YoonGothic 740", false, false, 929, 1000),
++    ("Haan YoonGothic 760", false, false, 960, 1000),
++    ("Haansoft Batang", false, false, 512, 1024),
++    ("Haansoft Dotum", false, false, 512, 1024),
++    ("Haettenschweiler", false, false, 638, 2048),
++    ("Han Santteut Dotum", false, false, 976, 1000),
++    ("Han Santteut Dotum", true, false, 976, 1000),
++    ("Hancom Gothic", false, false, 976, 1000),
++    ("Hancom Gothic", true, false, 976, 1000),
++    ("Hancom Hoonminjeongeum_H", false, false, 438, 1000),
++    ("Hancom Hoonminjeongeum_V", false, false, 913, 1000),
++    ("Hancom MalangMalang Bold", false, false, 861, 1000),
++    ("Hancom MalangMalang Regular", false, false, 861, 1000),
++    ("Hancom Ulju Bangudae Petroglyph", false, false, 878, 1000),
++    ("Hancom Ulju Cheonjeonri Petroglyph", false, false, 970, 1000),
++    ("HancomEQN", false, false, 512, 1024),
++    ("Harlow Solid Italic", false, true, 781, 2048),
++    ("Harrington", false, false, 890, 2048),
++    ("Headline R", false, false, 256, 512),
++    ("High Tower Text", false, false, 857, 2048),
++    ("High Tower Text", false, true, 768, 2048),
++    ("Hobo BT", false, false, 430, 1000),
++    ("HyhwpEQ", false, false, 512, 1024),
++    ("Impact", false, false, 1222, 2048),
++    ("Imprint MT Shadow", false, false, 862, 2048),
++    ("Informal Roman", false, false, 740, 2048),
++    ("Ink Free", false, false, 557, 1000),
++    ("Javanese Text", false, false, 1665, 2048),
++    ("Jokerman", false, false, 1000, 2048),
++    ("Juice ITC", false, false, 597, 2048),
++    ("Kristen ITC", false, false, 1005, 2048),
++    ("Kunstler Script", false, false, 503, 2048),
++    ("Leelawadee", false, false, 1094, 2048),
++    ("Leelawadee", true, false, 1191, 2048),
++    ("Leelawadee UI", false, false, 1103, 2048),
++    ("Leelawadee UI", true, false, 1208, 2048),
++    ("Leelawadee UI Semilight", false, false, 1094, 2048),
++    ("Liberty BT", false, true, 259, 1000),
++    ("Limelight", false, false, 1245, 2048),
++    ("Lucida Bright", false, false, 1007, 2048),
++    ("Lucida Bright", false, true, 988, 2048),
++    ("Lucida Bright", true, false, 1048, 2048),
++    ("Lucida Bright", true, true, 1040, 2048),
++    ("Lucida Calligraphy", false, false, 1100, 2048),
++    ("Lucida Console", false, false, 1234, 2048),
++    ("Lucida Fax", false, false, 1053, 2048),
++    ("Lucida Fax", false, true, 1035, 2048),
++    ("Lucida Fax", true, false, 1105, 2048),
++    ("Lucida Fax", true, true, 1087, 2048),
++    ("Lucida Handwriting", false, false, 1168, 2048),
++    ("Lucida Sans", false, false, 1003, 2048),
++    ("Lucida Sans", false, true, 1003, 2048),
++    ("Lucida Sans", true, false, 1068, 2048),
++    ("Lucida Sans", true, true, 1064, 2048),
++    ("Lucida Sans Typewriter", false, false, 1234, 2048),
++    ("Lucida Sans Typewriter", false, true, 1234, 2048),
++    ("Lucida Sans Typewriter", true, false, 1234, 2048),
++    ("Lucida Sans Typewriter", true, true, 1234, 2048),
++    ("Lucida Sans Unicode", false, false, 1003, 2048),
++    ("MDAlong", false, false, 512, 1024),
++    ("MDArt", false, false, 512, 1024),
++    ("MDEasop", false, false, 512, 1024),
++    ("MDGaesung", false, false, 512, 1024),
++    ("MDSol", false, false, 512, 1024),
++    ("MD개성체", false, false, 512, 1024),
++    ("MD솔체", false, false, 512, 1024),
++    ("MD아롱체", false, false, 512, 1024),
++    ("MD아트체", false, false, 512, 1024),
++    ("MD이솝체", false, false, 512, 1024),
++    ("MS Gothic", false, false, 128, 256),
++    ("MS Outlook", false, false, 1954, 2048),
++    ("MS PGothic", false, false, 107, 256),
++    ("MS Reference Sans Serif", false, false, 1041, 2048),
++    ("MS Reference Specialty", false, false, 1465, 2048),
++    ("MS UI Gothic", false, false, 107, 256),
++    ("MT Extra", false, false, 630, 1000),
++    ("MV Boli", false, false, 1151, 2048),
++    ("Magic R", false, false, 256, 512),
++    ("Magneto", true, false, 1124, 2048),
++    ("Maiandra GD", false, false, 896, 2048),
++    ("Malgun Gothic", false, false, 949, 2048),
++    ("Malgun Gothic", true, false, 1000, 2048),
++    ("Malgun Gothic Semilight", false, false, 2009, 2048),
++    ("Marlett", false, false, 1964, 2048),
++    ("Matura MT Script Capitals", false, false, 877, 2048),
++    ("Microsoft Himalaya", false, false, 840, 2048),
++    ("Microsoft JhengHei", false, false, 959, 2048),
++    ("Microsoft JhengHei", true, false, 987, 2048),
++    ("Microsoft JhengHei Light", false, false, 2024, 2048),
++    ("Microsoft JhengHei UI", false, false, 959, 2048),
++    ("Microsoft JhengHei UI", true, false, 987, 2048),
++    ("Microsoft JhengHei UI Light", false, false, 2024, 2048),
++    ("Microsoft New Tai Lue", false, false, 1197, 2048),
++    ("Microsoft New Tai Lue", true, false, 1271, 2048),
++    ("Microsoft PhagsPa", false, false, 1557, 2048),
++    ("Microsoft PhagsPa", true, false, 1604, 2048),
++    ("Microsoft Sans Serif", false, false, 901, 2048),
++    ("Microsoft Tai Le", false, false, 1202, 2048),
++    ("Microsoft Tai Le", true, false, 1268, 2048),
++    ("Microsoft Uighur", false, false, 809, 2048),
++    ("Microsoft Uighur", true, false, 836, 2048),
++    ("Microsoft YaHei", false, false, 987, 2048),
++    ("Microsoft YaHei", true, false, 1040, 2048),
++    ("Microsoft YaHei Light", false, false, 975, 2048),
++    ("Microsoft YaHei UI", false, false, 987, 2048),
++    ("Microsoft YaHei UI", true, false, 1040, 2048),
++    ("Microsoft YaHei UI Light", false, false, 975, 2048),
++    ("Microsoft Yi Baiti", false, false, 1324, 2048),
++    ("MingLiU-ExtB", false, false, 512, 1024),
++    ("MingLiU_HKSCS-ExtB", false, false, 512, 1024),
++    ("MingLiU_MSCS-ExtB", false, false, 512, 1024),
++    ("Mistral", false, false, 660, 2048),
++    ("Moba_Fanta", false, false, 1233, 2048),
++    ("Moba_Fira", false, false, 1233, 2048),
++    ("Moba_Font", false, false, 1233, 2048),
++    ("Modern No. 20", false, false, 400, 1000),
++    ("MoeumT R", false, false, 256, 512),
++    ("Mongolian Baiti", false, false, 881, 2048),
++    ("Monotype Corsiva", false, true, 717, 2048),
++    ("MurrayHill Bd BT", false, false, 301, 1000),
++    ("Myanmar Text", false, false, 1126, 2048),
++    ("Myanmar Text", true, false, 1185, 2048),
++    ("NSimSun", false, false, 128, 256),
++    ("Nanum Brush Script", false, false, 330, 1000),
++    ("New Gulim", false, false, 512, 1024),
++    ("NewJumja", false, false, 583, 1000),
++    ("Niagara Engraved", false, false, 486, 2048),
++    ("Niagara Solid", false, false, 486, 2048),
++    ("Nirmala Text", false, false, 1950, 2048),
++    ("Nirmala Text", true, false, 2130, 2048),
++    ("Nirmala Text Semilight", false, false, 1923, 2048),
++    ("Nirmala UI", false, false, 1991, 2048),
++    ("Nirmala UI", true, false, 2178, 2048),
++    ("Nirmala UI Semilight", false, false, 1928, 2048),
++    ("Noto Sans KR", false, false, 944, 1000),
++    ("Noto Serif KR", false, false, 969, 1000),
++    ("OCR A Extended", false, false, 1237, 2048),
++    ("OCR-A BT", false, false, 618, 1000),
++    ("OCR-B-10 BT", false, false, 602, 1000),
++    ("Old English Text MT", false, false, 797, 2048),
++    ("Oleo Script Swash Caps", false, false, 504, 1000),
++    ("Onyx", false, false, 490, 2048),
++    ("Orator10 BT", false, false, 602, 1000),
++    ("Orbit-B BT", false, false, 448, 1000),
++    ("PMingLiU-ExtB", false, false, 512, 1024),
++    ("Palace Script MT", false, true, 459, 2048),
++    ("Palatino Linotype", false, false, 912, 2048),
++    ("Palatino Linotype", false, true, 821, 2048),
++    ("Palatino Linotype", true, false, 940, 2048),
++    ("Palatino Linotype", true, true, 915, 2048),
++    ("Papyrus", false, false, 845, 2048),
++    ("Parchment", false, false, 356, 2048),
++    ("ParkAvenue BT", false, true, 319, 1000),
++    ("Perpetua", false, false, 737, 2048),
++    ("Perpetua", false, true, 653, 2048),
++    ("Perpetua", true, false, 873, 2048),
++    ("Perpetua", true, true, 796, 2048),
++    ("Perpetua Titling MT", false, false, 1219, 2048),
++    ("Perpetua Titling MT", true, false, 1331, 2048),
++    ("Playbill", false, false, 503, 2048),
++    ("Poor Richard", false, false, 752, 2048),
++    ("Pristina", false, false, 625, 2048),
++    ("Pyunji R", false, false, 256, 512),
++    ("ROG Fonts", false, false, 718, 1000),
++    ("Rage Italic", false, false, 721, 2048),
++    ("Ravie", false, false, 1413, 2048),
++    ("Rochester", false, false, 918, 2048),
++    ("Rockwell", false, false, 943, 2048),
++    ("Rockwell", false, true, 912, 2048),
++    ("Rockwell", true, false, 1007, 2048),
++    ("Rockwell", true, true, 971, 2048),
++    ("Rockwell Condensed", false, false, 686, 2048),
++    ("Rockwell Condensed", true, false, 848, 2048),
++    ("Rockwell Extra Bold", false, false, 1233, 2048),
++    ("Sans Serif Collection", false, false, 699, 1000),
++    ("Schoolbell", false, false, 419, 1024),
++    ("Script MT Bold", false, false, 805, 2048),
++    ("Segoe Fluent Icons", false, false, 2060, 2048),
++    ("Segoe MDL2 Assets", false, false, 2106, 2048),
++    ("Segoe Print", false, false, 1314, 2048),
++    ("Segoe Print", true, false, 1312, 2048),
++    ("Segoe Script", false, false, 1394, 2048),
++    ("Segoe Script", true, false, 1390, 2048),
++    ("Segoe UI", false, false, 1103, 2048),
++    ("Segoe UI", false, true, 1113, 2048),
++    ("Segoe UI", true, false, 1208, 2048),
++    ("Segoe UI", true, true, 1206, 2048),
++    ("Segoe UI Black", false, false, 1257, 2048),
++    ("Segoe UI Black", false, true, 1256, 2048),
++    ("Segoe UI Emoji", false, false, 2786, 2048),
++    ("Segoe UI Historic", false, false, 1713, 2048),
++    ("Segoe UI Light", false, false, 1080, 2048),
++    ("Segoe UI Light", false, true, 1078, 2048),
++    ("Segoe UI Semibold", false, false, 1157, 2048),
++    ("Segoe UI Semibold", false, true, 1178, 2048),
++    ("Segoe UI Semilight", false, false, 1159, 2048),
++    ("Segoe UI Semilight", false, true, 1101, 2048),
++    ("Segoe UI Symbol", false, false, 1444, 2048),
++    ("Segoe UI Variable", false, false, 1154, 2048),
++    ("Showcard Gothic", false, false, 1133, 2048),
++    ("SimSun", false, false, 128, 256),
++    ("SimSun-ExtB", false, false, 128, 256),
++    ("SimSun-ExtG", false, false, 128, 256),
++    ("Sitka Text", false, false, 1352, 2250),
++    ("Sitka Text", false, true, 1346, 2250),
++    ("Snap ITC", false, false, 1192, 2048),
++    ("Stencil", false, false, 1135, 2048),
++    ("Stencil BT", false, false, 601, 1000),
++    ("Swis721 BT", false, false, 430, 1000),
++    ("Swis721 BT", false, true, 424, 1000),
++    ("Sylfaen", false, false, 859, 2048),
++    ("Symbol", false, false, 1229, 2048),
++    ("Tahoma", false, false, 910, 2048),
++    ("Tahoma", true, false, 1036, 2048),
++    ("Tempus Sans ITC", false, false, 853, 2048),
++    ("Times New Roman", false, false, 821, 2048),
++    ("Times New Roman", false, true, 823, 2048),
++    ("Times New Roman", true, false, 874, 2048),
++    ("Times New Roman", true, true, 844, 2048),
++    ("Trebuchet MS", false, false, 929, 2048),
++    ("Trebuchet MS", false, true, 939, 2048),
++    ("Trebuchet MS", true, false, 970, 2048),
++    ("Trebuchet MS", true, true, 986, 2048),
++    ("Tw Cen MT", false, false, 817, 2048),
++    ("Tw Cen MT", false, true, 785, 2048),
++    ("Tw Cen MT", true, false, 860, 2048),
++    ("Tw Cen MT", true, true, 781, 2048),
++    ("Tw Cen MT Condensed", false, false, 616, 2048),
++    ("Tw Cen MT Condensed", true, false, 724, 2048),
++    ("Tw Cen MT Condensed Extra Bold", false, false, 780, 2048),
++    ("Unispace", true, false, 611, 1000),
++    ("Vast Shadow", false, false, 1584, 2048),
++    ("Verdana", false, false, 1041, 2048),
++    ("Verdana", false, true, 1041, 2048),
++    ("Verdana", true, false, 1163, 2048),
++    ("Verdana", true, true, 1163, 2048),
++    ("Viner Hand ITC", false, false, 934, 2048),
++    ("Vivaldi", false, true, 604, 2048),
++    ("Vladimir Script", false, false, 666, 2048),
++    ("Webdings", false, false, 1989, 2048),
++    ("Wide Latin", false, false, 1693, 2048),
++    ("Wingdings", false, false, 1822, 2048),
++    ("Wingdings 2", false, false, 1700, 2048),
++    ("Wingdings 3", false, false, 1584, 2048),
++    ("YJ BELLA Medium", false, false, 500, 1000),
++    ("YJ INJANG Medium", false, false, 500, 1000),
++    ("Yet R", false, false, 256, 512),
++    ("Yj BACDOO Bold ", false, false, 500, 1000),
++    ("Yj BLOCK Medium", false, false, 500, 1000),
++    ("Yj BONMOKGAK Medium ", false, false, 500, 1000),
++    ("Yj BUTGOT Light ", false, false, 500, 1000),
++    ("Yj CHMSOOT Bold", false, false, 500, 1000),
++    ("Yj DOOLGI Medium", false, false, 500, 1000),
++    ("Yj DWMMOOGJO", false, false, 500, 1000),
++    ("Yj GABI", false, false, 500, 1000),
++    ("Yj GOTGAE Medium", false, false, 500, 1000),
++    ("Yj INITIALPOSITIVE Medium", false, false, 500, 1000),
++    ("Yj MAEHWA  SemiBold", false, false, 500, 1000),
++    ("Yj NANCHO Medium", false, false, 500, 1000),
++    ("Yj SHANALL Medium ", false, false, 500, 1000),
++    ("Yj SOSEL SemiBold", false, false, 500, 1000),
++    ("Yj TEUNTEUN Bold", false, false, 500, 1000),
++    ("Yj WADAG Medium", false, false, 500, 1000),
++    ("Yu Gothic", false, false, 1972, 2048),
++    ("Yu Gothic", true, false, 1975, 2048),
++    ("Yu Gothic Light", false, false, 1968, 2048),
++    ("Yu Gothic Medium", false, false, 1972, 2048),
++    ("Yu Gothic UI", false, false, 1103, 2048),
++    ("Yu Gothic UI", true, false, 1208, 2048),
++    ("Yu Gothic UI Light", false, false, 1080, 2048),
++    ("Yu Gothic UI Semibold", true, false, 1208, 2048),
++    ("Yu Gothic UI Semilight", false, false, 1094, 2048),
++    ("ahn2006-B", false, false, 512, 1024),
++    ("ahn2006-L", false, false, 512, 1024),
++    ("ahn2006-M", false, false, 512, 1024),
++    ("ÅÂ ³ª¹«", false, false, 512, 1000),
++    ("ÆæÈê¸²", false, false, 512, 1000),
++    ("宋体", false, false, 128, 256),
++    ("微軟正黑體", false, false, 959, 2048),
++    ("微軟正黑體", true, false, 987, 2048),
++    ("微軟正黑體 Light", false, false, 2024, 2048),
++    ("微软雅黑", false, false, 987, 2048),
++    ("微软雅黑", true, false, 1040, 2048),
++    ("微软雅黑 Light", false, false, 975, 2048),
++    ("新宋体", false, false, 128, 256),
++    ("新細明體-ExtB", false, false, 512, 1024),
++    ("游ゴシック", false, false, 1972, 2048),
++    ("游ゴシック", true, false, 1975, 2048),
++    ("游ゴシック Light", false, false, 1968, 2048),
++    ("游ゴシック Medium", false, false, 1972, 2048),
++    ("細明體-ExtB", false, false, 512, 1024),
++    ("細明體_HKSCS-ExtB", false, false, 512, 1024),
++    ("細明體_MSCS-ExtB", false, false, 512, 1024),
++    ("가는안상수체", false, false, 256, 512),
++    ("굴림", false, false, 512, 1024),
++    ("굴림체", false, false, 512, 1024),
++    ("굵은안상수체", false, false, 256, 512),
++    ("궁서", false, false, 512, 1024),
++    ("궁서체", false, false, 512, 1024),
++    ("나눔손글씨 붓", false, false, 330, 1000),
++    ("돋움", false, false, 512, 1024),
++    ("돋움체", false, false, 512, 1024),
++    ("맑은 고딕", false, false, 949, 2048),
++    ("맑은 고딕", true, false, 1000, 2048),
++    ("맑은 고딕 Semilight", false, false, 2009, 2048),
++    ("바탕", false, false, 512, 1024),
++    ("바탕체", false, false, 512, 1024),
++    ("새굴림", false, false, 512, 1024),
++    ("안상수2006가는", false, false, 512, 1024),
++    ("안상수2006굵은", false, false, 512, 1024),
++    ("안상수2006중간", false, false, 512, 1024),
++    ("양재깨비체B", false, false, 500, 1000),
++    ("양재꽃게체M", false, false, 500, 1000),
++    ("양재난초체M", false, false, 500, 1000),
++    ("양재다운명조M", false, false, 500, 1000),
++    ("양재둘기체M", false, false, 500, 1000),
++    ("양재매화체S", false, false, 500, 1000),
++    ("양재백두체B", false, false, 500, 1000),
++    ("양재벨라체M", false, false, 500, 1000),
++    ("양재본목각체M", false, false, 500, 1000),
++    ("양재붓꽃체L", false, false, 500, 1000),
++    ("양재블럭체", false, false, 500, 1000),
++    ("양재샤넬체M", false, false, 500, 1000),
++    ("양재소슬체S", false, false, 500, 1000),
++    ("양재와당체M", false, false, 500, 1000),
++    ("양재이니셜체", false, false, 500, 1000),
++    ("양재인장체M", false, false, 500, 1000),
++    ("양재참숯체B", false, false, 500, 1000),
++    ("양재튼튼체B", false, false, 500, 1000),
++    ("중간안상수체", false, false, 256, 512),
++    ("태 나무", false, false, 512, 1000),
++    ("펜흘림", false, false, 512, 1000),
++    ("한양해서", false, false, 560, 1024),
++    ("한컴 고딕", false, false, 976, 1000),
++    ("한컴 고딕", true, false, 976, 1000),
++    ("한컴 말랑말랑 Bold", false, false, 861, 1000),
++    ("한컴 말랑말랑 Regular", false, false, 861, 1000),
++    ("한컴 바겐세일 B", false, false, 500, 1000),
++    ("한컴 바겐세일 M", false, false, 500, 1000),
++    ("한컴 백제 B", false, false, 500, 1000),
++    ("한컴 백제 M", false, false, 500, 1000),
++    ("한컴 소망 B", false, false, 500, 1000),
++    ("한컴 소망 M", false, false, 500, 1000),
++    ("한컴 솔잎 B", false, false, 500, 1000),
++    ("한컴 솔잎 M", false, false, 500, 1000),
++    ("한컴 울주 반구대 암각화체", false, false, 878, 1000),
++    ("한컴 울주 천전리 각석체", false, false, 970, 1000),
++    ("한컴 윤고딕 230", false, false, 500, 1000),
++    ("한컴 윤고딕 240", false, false, 500, 1000),
++    ("한컴 윤고딕 250", false, false, 500, 1000),
++    ("한컴 윤고딕 720", false, false, 900, 1000),
++    ("한컴 윤고딕 740", false, false, 929, 1000),
++    ("한컴 윤고딕 760", false, false, 960, 1000),
++    ("한컴 윤체 B", false, false, 500, 1000),
++    ("한컴 윤체 L", false, false, 500, 1000),
++    ("한컴 윤체 M", false, false, 500, 1000),
++    ("한컴 쿨재즈 B", false, false, 500, 1000),
++    ("한컴 쿨재즈 L", false, false, 500, 1000),
++    ("한컴 쿨재즈 M", false, false, 500, 1000),
++    ("한컴 훈민정음 가로쓰기", false, false, 438, 1000),
++    ("한컴 훈민정음 세로쓰기", false, false, 913, 1000),
++    ("한컴돋움", false, false, 512, 1024),
++    ("한컴바탕", false, false, 512, 1024),
++    ("한컴바탕확장", false, false, 512, 1024),
++    ("한컴산뜻돋움", false, false, 976, 1000),
++    ("한컴산뜻돋움", true, false, 976, 1000),
++    ("함초롬돋움", false, false, 931, 1000),
++    ("함초롬돋움", true, false, 932, 1000),
++    ("함초롬돋움 확장", false, false, 882, 1000),
++    ("함초롬바탕", false, false, 933, 1000),
++    ("함초롬바탕", true, false, 933, 1000),
++    ("함초롬바탕 확장", false, false, 882, 1000),
++    ("함초롬바탕 확장B", false, false, 999, 1000),
++    ("함초롬바탕 확장B", true, false, 999, 1000),
++    ("휴먼가는샘체", false, false, 256, 512),
++    ("휴먼가는팸체", false, false, 256, 512),
++    ("휴먼고딕", false, false, 256, 512),
++    ("휴먼굵은샘체", true, false, 256, 512),
++    ("휴먼굵은팸체", true, false, 256, 512),
++    ("휴먼둥근헤드라인", false, false, 256, 512),
++    ("휴먼매직체", false, false, 256, 512),
++    ("휴먼명조", false, false, 256, 512),
++    ("휴먼모음T", false, false, 256, 512),
++    ("휴먼아미체", false, false, 256, 512),
++    ("휴먼엑스포", false, false, 256, 512),
++    ("휴먼옛체", false, false, 256, 512),
++    ("휴먼중간샘체", false, false, 256, 512),
++    ("휴먼중간팸체", false, false, 256, 512),
++    ("휴먼편지체", false, false, 256, 512),
++    ("ＭＳ ゴシック", false, false, 128, 256),
++    ("ＭＳ Ｐゴシック", false, false, 107, 256),
++];
++
++fn x_avg_char_width(names: &[&str], bold: bool, italic: bool) -> Option<(i64, i64)> {
++    names.iter().find_map(|name| {
++        X_AVG_CHAR_WIDTH
++            .binary_search_by(|&(n, b, i, _, _)| (n, b, i).cmp(&(*name, bold, italic)))
++            .ok()
++            .map(|k| (i64::from(X_AVG_CHAR_WIDTH[k].3), i64::from(X_AVG_CHAR_WIDTH[k].4)))
++    })
++}
++
++fn round_div(num: i64, den: i64) -> i64 {
++    (2 * num + den).div_euclid(2 * den)
++}
++
++/// Script classes the PDF writer starts a new run at.
++fn script_class(ch: char) -> Option<u8> {
++    if ch.is_whitespace() {
++        return None;
++    }
++    Some(match ch as u32 {
++        0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7A3 | 0xD7B0..=0xD7FF => 0,
++        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF => 1,
++        _ => 2,
++    })
++}
++
++#[derive(Debug)]
++pub(crate) struct GdiTextOut {
++    metric: &'static font_metrics_data::FontMetric,
++    /// Rounded em in device pixels (the PDF `Tf`).
++    em: f64,
++    /// Horizontal scale of the drawn glyphs (the PDF `Tz`).
++    tz: f64,
++    /// Glyph ratio to draw with, relative to the style's font size. None for
++    /// HFT text, whose drawing keeps its own ratio contract.
++    draw_ratio: Option<f64>,
++}
++
++impl GdiTextOut {
++    pub(crate) fn for_style(style: &TextStyle) -> Option<Self> {
++        let ratio = (style.ratio * 100.0).round() as i64;
++        if ratio <= 0 || ratio == 100 {
++            return None;
++        }
++        let font_size = style.effective_font_size();
++        let height = (font_size * HWPUNIT_PER_PX).round() as i64;
++        if height <= 0 {
++            return None;
++        }
++        let em = round_div(height, HWPUNIT_PER_DEVICE);
++        let source = style_resolver::primary_font_name(
++            style.metric_font_family.as_deref().unwrap_or(&style.font_family),
++        );
++        let found = font_metrics_data::find_metric(source, style.bold, style.italic)?;
++        let metric = found.metric;
++        if metric.em_size == 0 {
++            return None;
++        }
++        if style.source_font_is_hft {
++            return Some(Self {
++                metric,
++                em: em as f64,
++                tz: ratio as f64 / 100.0,
++                draw_ratio: None,
++            });
++        }
++        // Any other slot is TrueType when the table knows its face; HWP 5
++        // documents seldom declare the type.
++        let names = [source, metric.name];
++        let regular = x_avg_char_width(&names, false, style.italic)
++            .or_else(|| x_avg_char_width(&names, false, false))?;
++        let (face, synthesized) = match style.bold {
++            true => x_avg_char_width(&names, true, style.italic)
++                .or_else(|| x_avg_char_width(&names, true, false))
++                .map_or((regular, true), |face| (face, false)),
++            false => (regular, false),
++        };
++        let width = round_div(ratio * regular.0 * height, 100 * regular.1 * HWPUNIT_PER_DEVICE);
++        let average = round_div(face.0 * em, face.1) + i64::from(synthesized);
++        if width <= 0 || average <= 0 {
++            return None;
++        }
++        let tz = width as f64 / average as f64;
++        Some(Self {
++            metric,
++            em: em as f64,
++            tz,
++            draw_ratio: Some(em as f64 * tz / (font_size * DEVICE_PER_PX)),
++        })
++    }
++
++    pub(crate) fn draw_ratio(&self) -> Option<f64> {
++        self.draw_ratio
++    }
++
++    /// Glyph origins of `text` drawn at `x`, from the laid out `positions`.
++    /// None when no glyph moves.
++    pub(crate) fn origins(&self, text: &str, x: f64, positions: &[f64]) -> Option<Vec<f64>> {
++        let chars: Vec<char> = text.chars().collect();
++        if positions.len() != chars.len() + 1 {
++            return None;
++        }
++        let device = |p: f64| ((x + p) * DEVICE_PER_PX + 1e-6).floor();
++        let em_size = self.metric.em_size;
++        let mut out = positions.to_vec();
++        let mut moved = false;
++        let mut lag = 0.0;
++        let mut previous: Option<u8> = None;
++        for (j, &ch) in chars.iter().enumerate() {
++            let class = script_class(ch);
++            if class.is_some() && previous.is_some() && previous != class {
++                lag = 0.0;
++            }
++            if lag != 0.0 {
++                out[j] = (device(positions[j]) - lag) / DEVICE_PER_PX - x;
++                moved = true;
++            }
++            let laid = device(positions[j + 1]) - device(positions[j]);
++            if self.metric.get_width(ch) == Some(em_size) && laid == self.em {
++                lag += laid - self.em * self.tz;
++            }
++            if class.is_none() {
++                lag = 0.0;
++                previous = None;
++            } else {
++                previous = class;
++            }
++        }
++        moved.then_some(out)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn style(face: &str, size_pt: f64, ratio: f64, bold: bool) -> TextStyle {
++        TextStyle {
++            font_family: face.to_string(),
++            font_size: size_pt * 96.0 / 72.0,
++            ratio,
++            bold,
++            ..Default::default()
++        }
++    }
++
++    #[test]
++    fn tz_follows_gdi_average_width() {
++        // Hancom Office 2024 PDF: Tf 117 with Tz 95 (bold, synthesized) and
++        // 96.6102 (regular) for 휴먼명조 14 pt at 98 %; Tz 88.3333 at 90 %;
++        // 맑은 고딕 Bold Tz 92.9825; 함초롬바탕 Bold Tz 98.1651; 10 pt Tf 83 Tz 95.3488.
++        let cases = [
++            ("휴먼명조", 14.0, 0.98, true, 117.0, 95.0),
++            ("휴먼명조", 14.0, 0.98, false, 117.0, 96.6102),
++            ("휴먼명조", 14.0, 0.90, true, 117.0, 88.3333),
++            ("휴먼명조", 12.0, 0.95, true, 100.0, 94.1176),
++            ("휴먼명조", 10.0, 0.98, true, 83.0, 95.3488),
++            ("바탕", 14.0, 0.98, true, 117.0, 95.0),
++            ("맑은 고딕", 14.0, 0.98, true, 117.0, 92.9825),
++            ("함초롬바탕", 14.0, 0.98, true, 117.0, 98.1651),
++        ];
++        for (face, size, ratio, bold, em, tz) in cases {
++            let out = GdiTextOut::for_style(&style(face, size, ratio, bold)).expect(face);
++            assert_eq!(out.em, em, "{face} {size} {ratio} {bold}");
++            assert!((out.tz * 100.0 - tz).abs() < 0.001, "{face} {size} {ratio} {bold}: {}", out.tz);
++        }
++        assert!(GdiTextOut::for_style(&style("휴먼명조", 14.0, 1.0, true)).is_none());
++        // Arial 14 pt: Tz 94.2308 at 95 %, 88.4615 at 90 %.
++        for (ratio, tz) in [(0.95, 94.2308), (0.90, 88.4615)] {
++            let out = GdiTextOut::for_style(&style("Arial", 14.0, ratio, false)).unwrap();
++            assert!((out.tz * 100.0 - tz).abs() < 0.001, "{ratio}: {}", out.tz);
++        }
++        // HFT: the Type 3 font is drawn with Tz equal to the ratio.
++        let mut hft = style("한양신명조", 14.0, 0.98, false);
++        hft.source_font_is_hft = true;
++        let out = GdiTextOut::for_style(&hft).unwrap();
++        assert_eq!((out.em, out.tz, out.draw_ratio()), (117.0, 0.98, None));
++    }
++
++    /// Left margin of the measured prints: 5669 HWPUNIT, 472.42 device pixels.
++    const X: f64 = 5669.0 / HWPUNIT_PER_PX;
++
++    fn device(x: f64) -> Vec<f64> {
++        vec![(X + x) * DEVICE_PER_PX]
++    }
++
++    #[test]
++    fn glyph_with_unscaled_advance_keeps_its_drawn_width() {
++        // 휴먼명조 bold 14 pt, 98 % and +2 %, from the left margin: the 14 pt
++        // pitch truncated to device pixels lays the glyphs out 117, 116, 117,
++        // 117, 116 apart. Hancom Office's PDF draws them at 472, 583.15,
++        // 699.15, 810.30, 921.45: the 117 ones advance 111.15 (Tz 95).
++        let st = style("휴먼명조", 14.0, 0.98, true);
++        let out = GdiTextOut::for_style(&st).unwrap();
++        let pitch = 14.0 * 96.0 / 72.0;
++        let positions: Vec<f64> = (0..=7).map(|i| f64::from(i) * pitch).collect();
++        let origins = out.origins("어지러움 흉통", X, &positions).unwrap();
++        let drawn: Vec<f64> = origins.iter().flat_map(|&p| device(p)).collect();
++        assert!((drawn[0] - 472.42).abs() < 0.01, "{drawn:?}");
++        for (i, e) in [(1, 583.15), (2, 699.15), (3, 810.30)] {
++            assert!((drawn[i] - e).abs() < 0.01, "{i}: {drawn:?}");
++        }
++        // The word after the space starts at its laid out place again.
++        assert_eq!(origins[5], positions[5]);
++    }
++
++    #[test]
++    fn hft_full_width_glyph_lags_by_its_ratio() {
++        // 한양신명조 (HFT) 14 pt, 98 % and +2 %: Hancom Office's PDF advances
++        // a glyph laid out 117 pixels on by 114.66 (Tz 98).
++        let mut st = style("한양신명조", 14.0, 0.98, false);
++        st.source_font_is_hft = true;
++        let out = GdiTextOut::for_style(&st).unwrap();
++        let pitch = 14.0 * 96.0 / 72.0;
++        let positions: Vec<f64> = (0..=3).map(|i| f64::from(i) * pitch).collect();
++        let origins = out.origins("가나다", X, &positions).unwrap();
++        let drawn = device(origins[1])[0];
++        assert!((drawn - (472.0 + 117.0 * 0.98)).abs() < 0.01, "{drawn}");
++    }
++
++    #[test]
++    fn script_change_starts_a_new_run() {
++        let st = style("휴먼명조", 14.0, 0.98, true);
++        let out = GdiTextOut::for_style(&st).unwrap();
++        let pitch = 14.0 * 96.0 / 72.0;
++        let positions: Vec<f64> = (0..=3).map(|i| f64::from(i) * pitch).collect();
++        let origins = out.origins("건가,", X, &positions).unwrap();
++        assert!(origins[1] < positions[1] - 0.5);
++        assert_eq!(origins[2], positions[2]);
++    }
++
++    #[test]
++    fn no_glyph_moves_without_a_ratio_or_full_width_match() {
++        let pitch = 14.0 * 96.0 / 72.0;
++        let positions: Vec<f64> = (0..=3).map(|i| f64::from(i) * pitch * 0.98).collect();
++        let out = GdiTextOut::for_style(&style("휴먼명조", 14.0, 0.98, true)).unwrap();
++        assert!(out.origins("가나다", X, &positions).is_none());
++    }
++}
+diff --git a/src/renderer/mod.rs b/src/renderer/mod.rs
+index 6731148..9375810 100644
+--- a/src/renderer/mod.rs
++++ b/src/renderer/mod.rs
+@@ -46,0 +47 @@ pub(crate) mod form_caption;
++pub(crate) mod gdi_text_out;
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index 4c9dfa6..d21797d 100644
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -3548,0 +3549,8 @@ impl Renderer for SvgRenderer {
++        // why-hwp: a TrueType run with a width ratio is drawn as Hancom Office prints it.
++        let gdi_text_out = (script_advance_scale == 1.0)
++            .then(|| super::gdi_text_out::GdiTextOut::for_style(style))
++            .flatten();
++        let ratio = gdi_text_out
++            .as_ref()
++            .and_then(|out| out.draw_ratio())
++            .unwrap_or(ratio);
+@@ -3661 +3669 @@ impl Renderer for SvgRenderer {
+-        let char_positions =
++        let laid_positions =
+@@ -3662,0 +3671,7 @@ impl Renderer for SvgRenderer {
++        let char_positions: std::borrow::Cow<[f64]> = match gdi_text_out
++            .as_ref()
++            .and_then(|out| out.origins(metric_text, x, &laid_positions))
++        {
++            Some(origins) => std::borrow::Cow::Owned(origins),
++            None => std::borrow::Cow::Borrowed(&laid_positions[..]),
++        };
+@@ -3718 +3733,9 @@ impl Renderer for SvgRenderer {
+-            super::glyph_fit_positions(metric_text, style, layout_positions, &char_positions);
++            super::glyph_fit_positions(metric_text, style, layout_positions, &laid_positions);
++        let fit_positions: std::borrow::Cow<[f64]> =
++            match gdi_text_out.as_ref().and_then(|out| out.draw_ratio()) {
++                Some(draw_ratio) => {
++                    let scale = draw_ratio / style.ratio_draw_params(1.0).1;
++                    std::borrow::Cow::Owned(fit_positions.iter().map(|p| p * scale).collect())
++                }
++                None => fit_positions,
++            };
