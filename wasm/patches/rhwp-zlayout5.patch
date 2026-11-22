@@ -1,0 +1,184 @@
+diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
+--- a/src/renderer/pdf.rs
++++ b/src/renderer/pdf.rs
+@@ -3996,0 +3997,55 @@ endbfchar <DB80DEB1>";
++
++    #[test]
++    fn outline_marked_text_is_drawn_as_outlines_once() {
++        use usvg::fontdb::{Database, FaceInfo, Language, Source, Stretch, Style, Weight, ID};
++        assert_eq!(
++            crate::renderer::svg::OUTLINE_TEXT_ID_PREFIX,
++            svg2pdf::OUTLINE_TEXT_ID_PREFIX
++        );
++        let font: &[u8] = include_bytes!("../../tests/fixtures/fonts/RHWPExactKerningSmoke.ttf");
++        let mut database = Database::new();
++        database.push_face_info(FaceInfo {
++            id: ID::dummy(),
++            source: Source::Binary(std::sync::Arc::new(font.to_vec())),
++            index: 0,
++            families: vec![("Fixture".to_string(), Language::English_UnitedStates)],
++            post_script_name: "Fixture".to_string(),
++            style: Style::Normal,
++            weight: Weight::NORMAL,
++            stretch: Stretch::Normal,
++            monospaced: false,
++        });
++        let options = usvg::Options {
++            fontdb: std::sync::Arc::new(database),
++            ..Default::default()
++        };
++        let pdf = |body: &str| {
++            let svg = format!(
++                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\">\
++                 <g font-family=\"Fixture\" font-size=\"20\">{body}</g></svg>"
++            );
++            let tree = usvg::Tree::from_str(&svg, &options).unwrap();
++            let bytes = svg2pdf::to_pdf(
++                &tree,
++                svg2pdf::ConversionOptions {
++                    compress: false,
++                    ..Default::default()
++                },
++                Default::default(),
++            )
++            .unwrap();
++            let text = String::from_utf8_lossy(&bytes).into_owned();
++            let shows = text.lines().filter(|line| line.ends_with(" Tj")).count();
++            let fills = text.lines().filter(|line| line.trim() == "f").count();
++            (shows, fills)
++        };
++        let marked = format!(
++            "<text id=\"{}1\" x=\"10\" y=\"40\">HAT</text>",
++            svg2pdf::OUTLINE_TEXT_ID_PREFIX
++        );
++        let (shows, fills) = pdf(&marked);
++        assert_eq!(shows, 0);
++        assert!(fills > 0, "{fills}");
++        let (shows, _) = pdf("<text id=\"t1\" x=\"10\" y=\"40\">HAT</text>");
++        assert_eq!(shows, 3);
++    }
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -133,0 +134,2 @@ pub struct SvgRenderer {
++    /// why-hwp: counter of the ids that mark a glyph drawn as outlines (see `OUTLINE_TEXT_ID_PREFIX`)
++    outline_text_counter: u32,
+@@ -281,0 +284 @@ impl SvgRenderer {
++            outline_text_counter: 0,
+@@ -3933 +3936 @@ impl Renderer for SvgRenderer {
+-                let length_attrs = svg_cluster_text_length_attrs(
++                let mut length_attrs = svg_cluster_text_length_attrs(
+@@ -3945,0 +3949,24 @@ impl Renderer for SvgRenderer {
++                    if outline_attrs.is_none() && style.text_paint.is_none() {
++                        if let Some(cell) = style
++                            .glyph_fit_advance(glyph_advance(*char_idx, cluster_str))
++                            .filter(|w| w.is_finite() && *w > 0.0)
++                        {
++                            self.output.push_str(&format!(
++                                "<text x=\"{:.4}\" y=\"{:.4}\" font-family=\"{}\" font-size=\"{}\" fill=\"{}\" \
++                                 fill-opacity=\"0\" textLength=\"{:.4}\" lengthAdjust=\"spacingAndGlyphs\">{}</text>\n",
++                                x + cluster_x(*char_idx, cluster_str),
++                                y,
++                                escape_xml(&font_family),
++                                font_size,
++                                color,
++                                cell * script_advance_scale,
++                                escape_xml(cluster_str),
++                            ));
++                            self.outline_text_counter += 1;
++                            common_attrs.push_str(&format!(
++                                " id=\"{OUTLINE_TEXT_ID_PREFIX}{}\"",
++                                self.outline_text_counter
++                            ));
++                            length_attrs.clear();
++                        }
++                    }
+@@ -4417,0 +4445,10 @@ fn color_to_svg(color: u32) -> String {
++/// why-hwp: id prefix of a `<text>` whose glyph the PDF stage draws as outlines.
++///
++/// A full-width HFT symbol drawn by a substitute face is centred in its cell
++/// (see `centers_in_fullwidth_cell`), so as text its PDF glyph box would be the
++/// substitute's own advance, half the cell for `–` in Malgun Gothic. Hancom Office
++/// draws the HFT glyph as outlines under invisible text one cell wide. The cell gets
++/// an invisible `<text>` fitted to it and the visible glyph is drawn as outlines, so
++/// the text is extracted once, from the cell. svg2pdf checks this prefix.
++pub(crate) const OUTLINE_TEXT_ID_PREFIX: &str = "rhwp-outline-text-";
++
+diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+--- a/src/renderer/svg/tests.rs
++++ b/src/renderer/svg/tests.rs
+@@ -1600,0 +1601 @@ fn test_svg_hidden_middle_dot_text_is_fitted_to_glyph_advance() {
++}
+@@ -1610 +1611,3 @@ fn hft_fullwidth_symbol_is_centred_in_its_cell() {
+-    let dash = |style: &TextStyle| -> (f64, bool) {
++    // Every `<text>` holding the dash: (x, centred, id, textLength, fill-opacity).
++    type Dash = (f64, bool, Option<String>, Option<f64>, Option<String>);
++    let dashes = |style: &TextStyle| -> Vec<Dash> {
+@@ -1615,5 +1618,18 @@ fn hft_fullwidth_symbol_is_centred_in_its_cell() {
+-        let close = output.find(">\u{2013}</text>").expect("dash text");
+-        let tag = &output[output[..close].rfind("<text").unwrap()..close];
+-        let at = tag.find(" x=\"").expect("x") + 4;
+-        let x: f64 = tag[at..at + tag[at..].find('"').unwrap()].parse().unwrap();
+-        (x, tag.contains(" text-anchor=\"middle\""))
++        let attr = |tag: &str, name: &str| -> Option<String> {
++            let key = format!(" {name}=\"");
++            let at = tag.find(&key)? + key.len();
++            Some(tag[at..at + tag[at..].find('"').unwrap()].to_string())
++        };
++        output
++            .match_indices(">\u{2013}</text>")
++            .map(|(close, _)| {
++                let tag = &output[output[..close].rfind("<text").unwrap()..close];
++                (
++                    attr(tag, "x").unwrap().parse().unwrap(),
++                    tag.contains(" text-anchor=\"middle\""),
++                    attr(tag, "id"),
++                    attr(tag, "textLength").map(|v| v.parse().unwrap()),
++                    attr(tag, "fill-opacity"),
++                )
++            })
++            .collect()
+@@ -1629,2 +1645,15 @@ fn hft_fullwidth_symbol_is_centred_in_its_cell() {
+-    let (x, centred) = dash(&hft);
+-    assert!(centred);
++    let found = dashes(&hft);
++    assert_eq!(found.len(), 2, "{found:?}");
++    // The invisible copy covers the cell and gives the PDF its text.
++    let (x, centred, id, length, opacity) = &found[0];
++    assert!(!centred && id.is_none());
++    assert_eq!(opacity.as_deref(), Some("0"));
++    assert!((x - origin).abs() < 0.001, "{x} {origin}");
++    assert!((length.unwrap() - width).abs() < 0.001, "{length:?} {width}");
++    // The visible glyph is centred and marked to be drawn as outlines.
++    // It keeps its own width: no `textLength` stretches it to the cell.
++    let (x, centred, id, length, opacity) = &found[1];
++    assert!(*centred && opacity.is_none() && length.is_none(), "{length:?}");
++    assert!(id
++        .as_deref()
++        .is_some_and(|id| id.starts_with(super::OUTLINE_TEXT_ID_PREFIX)));
+@@ -1635,2 +1664,4 @@ fn hft_fullwidth_symbol_is_centred_in_its_cell() {
+-    let (x, centred) = dash(&plain);
+-    assert!(!centred);
++    let found = dashes(&plain);
++    assert_eq!(found.len(), 1, "{found:?}");
++    let (x, centred, id, _, _) = &found[0];
++    assert!(!centred && id.is_none());
+@@ -1639 +1669,0 @@ fn hft_fullwidth_symbol_is_centred_in_its_cell() {
+-}
+diff --git a/vendor/svg2pdf/src/lib.rs b/vendor/svg2pdf/src/lib.rs
+--- a/vendor/svg2pdf/src/lib.rs
++++ b/vendor/svg2pdf/src/lib.rs
+@@ -62,0 +63,5 @@ pub use usvg;
++/// why-hwp: a `<text>` whose id starts with this is drawn as outlines even when
++/// text is embedded. rhwp marks a glyph that is drawn under an invisible copy of
++/// itself fitted to its layout cell, so the copy alone gives the extracted text.
++pub const OUTLINE_TEXT_ID_PREFIX: &str = "rhwp-outline-text-";
++
+diff --git a/vendor/svg2pdf/src/render/mod.rs b/vendor/svg2pdf/src/render/mod.rs
+--- a/vendor/svg2pdf/src/render/mod.rs
++++ b/vendor/svg2pdf/src/render/mod.rs
+@@ -126 +126,3 @@ impl Render for Node {
+-                if ctx.options.embed_text {
++                if ctx.options.embed_text
++                    && !text.id().starts_with(crate::OUTLINE_TEXT_ID_PREFIX)
++                {

@@ -426,6 +426,32 @@ ascent and descent differ from the original font's, so the word box Hancom
 Office's print is compared with sits higher or lower while the baseline is
 within 0.10 pt.
 
+`patches/rhwp-zlayout5.patch` leaves the count at 17 of 18 on Windows and 16
+of 18 on Linux. The two-up document goes from 2.41 pt to 1.29 pt on Windows
+and from 3.22 pt to 1.35 pt on Linux; its full-width HFT symbols go from up to
+2.41 pt (3.22 pt on Linux) to 0.31 pt on both. Only its PDF changes, on either
+system.
+
+| Change | Before |
+|--------|--------|
+| The centred symbol of `rhwp-zlayout3.patch` gets an invisible copy fitted to its em cell, and the visible glyph, which keeps its own width, is drawn as outlines: the patched svg2pdf draws a `<text>` whose id starts with `rhwp-outline-text-` as outlines even when text is embedded. Hancom Office prints such a glyph the same way, as outlines under invisible Type 3 text one cell wide. The PDF text box is the cell, the ink stays centred and the text is extracted once. These symbols are HFT slots, which `rhwp-zlayout4.patch` does not fit | The glyph was text, so its PDF box was the substitute's own advance: `–` in Malgun Gothic Bold is 0.51 em wide in a 1 em cell, 2.4 pt short at each side |
+
+What is left in that document:
+
+- 1.29 pt on Windows and 1.35 pt on Linux at "어지러움": in a bold Human
+  Myeongjo line with 2 % letter spacing, Hancom Office prints the Hangul of
+  one run at the narrowed glyph's own advance (horizontal scale 95 %, 13.34 pt,
+  with a 0.58 pt step now and then) instead of the laid-out 14.0 pt. rhwp uses
+  14.0 pt, and both start the next run at the same place (within 0.01 pt), so
+  the word edges inside the run drift by up to 1.3 pt. A bold line of the same
+  font without letter spacing is printed at its laid-out advance (13.68 pt
+  against 13.72 pt).
+- Linux, 216 chart labels only in the candidate: Hancom Office draws chart
+  text as outlines of Malgun Gothic and Calibri, and a candidate word without
+  a partner passes only where the reference draws the same shape. Windows
+  draws the 371 labels with the same fonts and all pass; Linux draws them with
+  HCR Dotum and Noto Sans KR.
+
 ## Font supply patch
 
 `patches/rhwp-zfont1.patch` gives Times New Roman a free substitute with the
