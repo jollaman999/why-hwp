@@ -353,8 +353,9 @@ of HYHWPEQ.TTF, and from the same table the advances of the legacy percent
 (853 of 1024) and of the eight structure glyphs whose ink boxes
 `rhwp-layout5.patch` already holds (rule 512, radical sign 1024, braces 594,
 brace parts 506). The drawing does not change. On Linux math.hwpx passes
-(0.81 pt, every word paired) and 11 of 18 documents pass, up from 10; only its
-PDF changes. On Windows, where HyhwpEQ is installed, 17 of 18 pass as before
+(0.81 pt, every word paired) and 16 of 18 documents pass with all the patches
+here applied, up from 15 (11 up from 10 without `rhwp-zlayout4.patch`); only
+its PDF changes. On Windows, where HyhwpEQ is installed, 17 of 18 pass as before
 and the 54 outputs of the 18 documents are the same byte for byte.
 
 ## Layout patches applied last
