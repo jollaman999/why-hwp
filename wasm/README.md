@@ -510,6 +510,31 @@ character, but only sometimes name the face Hancom Office draws it with, so
 this is left as is: in footnote.hwp on Linux `❏` gets 휴먼명조's 859.4/-140.6
 instead of Haansoft Batang's 858.4/-141.6, which moves its box 0.015 pt.
 
+`patches/rhwp-zlayout9.patch` fits a symbol that rhwp lays out with its source
+program's width but draws as its display substitute. Wingdings U+F0FC is laid
+out 1609/2048 em wide and, without Wingdings, drawn as `✔` from whatever face
+has it. The glyph was fitted to that width only when the run's own face was
+missing too, so on Linux with Malgun Gothic supplied and Wingdings not,
+oss-result.hwpx drew `✔` 10.67 pt wide in HCR Dotum where Hancom Office's
+Wingdings `ü` is 8.67 pt: 2.03 pt off, the one document of 18 that failed.
+
+| Change | Before |
+|--------|--------|
+| A one-to-one display substitute of a symbol with a source program width (`implicit_symbol_advance_em`) gets `textLength` at that width, whether or not the run's face is installed. A symbol drawn with its own program (a supplied Wingdings) is left alone | Fitted only when the run's face was drawn by a display substitute |
+
+| Fonts | before | after |
+|-------|--------|-------|
+| Linux, none supplied | 17 of 18 | 17 of 18, same bytes |
+| Linux, Calibri and Malgun Gothic | 17 of 18 (oss-result.hwpx 2.03 pt) | 18 of 18 (0.47 pt) |
+| Linux, Calibri, Malgun Gothic and Wingdings | 18 of 18 | 18 of 18, same bytes |
+| Linux, the Windows font folder | 18 of 18 | 18 of 18 |
+| Windows | 18 of 18 | 18 of 18 |
+
+On Windows and with the Windows font folder only el-school.hwp changes: its
+`►` (the Haansoft Batang program U+F02FC, 0.5 em) was 14.05 pt wide and is now
+7.21 pt, where Hancom Office's is 7.03 pt. The reference has another code
+point there, so the verdict does not count it either way.
+
 ## Font supply patch
 
 `patches/rhwp-zfont1.patch` gives Times New Roman a free substitute with the

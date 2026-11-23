@@ -1,0 +1,87 @@
+# rhwp symbol substitutes for why-hwp: fit a symbol drawn as its display substitute to
+# its source program's advance, also when the run's own face is installed.
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and every
+# earlier wasm/patches/*.patch in name order; apply this after
+# rhwp-zlayout8.patch.
+# Zero-context diff (apply with git apply --unidiff-zero).
+diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+--- a/src/renderer/svg.rs
++++ b/src/renderer/svg.rs
+@@ -3688,0 +3689,23 @@ impl Renderer for SvgRenderer {
++        // why-hwp: a symbol whose layout advance is its source program's (Wingdings
++        // U+F0FC is 1609/2048 em) but which is drawn as its display substitute (U+2714)
++        // in whatever face has that glyph. Its glyph is fitted to the advance whether or
++        // not the run's own face is installed, so the glyph box keeps the program's width.
++        let program_sources = (metric_source.chars().count() == text.chars().count())
++            .then(|| metric_source.chars().collect::<Vec<_>>());
++        let draws_program_substitute = |char_idx: usize, cluster_str: &str| {
++            let mut chars = cluster_str.chars();
++            let (Some(drawn), None) = (chars.next(), chars.next()) else {
++                return false;
++            };
++            program_sources
++                .as_ref()
++                .and_then(|sources| sources.get(char_idx).copied())
++                .is_some_and(|source| {
++                    source != drawn
++                        && super::font_metrics_data::implicit_symbol_advance_em(source).is_some()
++                        && !style
++                            .native_pua_metrics
++                            .as_ref()
++                            .is_some_and(|program| program.advance_em(source).is_some())
++                })
++        };
+@@ -3840,0 +3864 @@ impl Renderer for SvgRenderer {
++                        draws_program_substitute(*char_idx, cluster_str),
+@@ -4053,0 +4078 @@ impl Renderer for SvgRenderer {
++                    draws_program_substitute(*char_idx, cluster_str),
+@@ -4657,0 +4683 @@ fn svg_cluster_text_length_attrs(
++    program_substitute: bool,
+@@ -4705,0 +4732 @@ fn svg_cluster_text_length_attrs(
++            || program_substitute
+diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+--- a/src/renderer/svg/tests.rs
++++ b/src/renderer/svg/tests.rs
+@@ -1818,0 +1819,42 @@ fn wingdings_pua_uses_wingdings_only_when_supplied() {
++
++#[test]
++fn wingdings_check_substitute_is_fitted_to_wingdings_advance() {
++    // The run's face is installed (no display substitute for the run), so only the
++    // symbol's own substitution decides whether its glyph is fitted.
++    let style = TextStyle {
++        font_size: 13.333,
++        font_family: "맑은 고딕".to_string(),
++        ..Default::default()
++    };
++    let draw = |coverage: crate::renderer::pua_glyph::FontCoverage| {
++        let mut renderer = SvgRenderer::new();
++        renderer.source_font_coverage = coverage;
++        renderer.begin_page(800.0, 600.0);
++        renderer.draw_text("가\u{F0FC}나", 10.0, 20.0, &style);
++        renderer.output().to_string()
++    };
++    let text_length_of = |output: &str, text: &str| -> Option<f64> {
++        let close = output.find(&format!(">{text}</text>"))?;
++        let open = output[..close].rfind("<text")?;
++        let tag = &output[open..close];
++        let at = tag.find(" textLength=\"")? + 13;
++        let end = tag[at..].find('"')?;
++        tag[at..at + end].parse().ok()
++    };
++
++    let mut missing = crate::renderer::pua_glyph::FontCoverage::default();
++    missing.register_symbol_program("Wingdings", None);
++    let output = draw(missing);
++    let fitted = text_length_of(&output, "\u{2714}").expect("U+2714 is fitted");
++    let program = style.font_size * 1609.0 / 2048.0;
++    assert!(
++        (fitted - program).abs() < 0.1,
++        "U+2714 textLength {fitted:.3}, want Wingdings advance {program:.3}"
++    );
++    assert_eq!(text_length_of(&output, "가"), None);
++
++    let mut supplied = crate::renderer::pua_glyph::FontCoverage::default();
++    supplied.supply_symbol_program_for_test(&['\u{F0FC}']);
++    let output = draw(supplied);
++    assert_eq!(text_length_of(&output, "\u{F0FC}"), None);
++}
