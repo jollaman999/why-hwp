@@ -13,7 +13,7 @@
 #   CARGO, RUSTC      toolchain overrides; RUSTUP_HOME and CARGO_HOME work as usual.
 set -euo pipefail
 
-RHWP_COMMIT=7213ed1f96266b95e22cd5645a07851c9c18298e
+RHWP_COMMIT=981ce66b4183b13c1a3b5907e04a8969c8c42034
 TARGET=wasm32-wasip1
 
 wasm_dir=$(cd "$(dirname "$0")" && pwd)

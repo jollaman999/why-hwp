@@ -62,7 +62,7 @@ has.
 
 ## What the patch changes in rhwp
 
-rhwp is pinned to commit `7213ed1f96266b95e22cd5645a07851c9c18298e`.
+rhwp is pinned to commit `981ce66b4183b13c1a3b5907e04a8969c8c42034` (v0.9.1).
 `patch-rhwp.sh` changes it in five ways:
 
 1. rhwp writes `target_arch = "wasm32"` to mean its browser build and switches
@@ -79,7 +79,7 @@ rhwp is pinned to commit `7213ed1f96266b95e22cd5645a07851c9c18298e`.
    order (below).
 
 The first four are a script rather than a diff because the first one rewrites
-313 lines in 49 files: a pattern says what was done in one line and still
+343 lines in 50 files: a pattern says what was done in one line and still
 applies when rhwp moves those lines. Each step checks whether it is already
 applied and fails if it finds neither the old nor the new text, so running the
 script twice gives the same tree and an rhwp change cannot slip past it. Step 5
@@ -98,11 +98,11 @@ test documents have every word within 1 pt of Hancom Office's position, up from 
 |--------|--------|
 | HCR Batang (함초롬바탕) box-drawing characters (U+2500-U+257F) advance 970/1000 em, as the font's `hmtx` gives for all 128 of them and Hancom Office prints them. Hancom's own line-drawing private-use characters, which display as these, keep their half-em advance | rhwp's verified symbol widths had no entry for them |
 | Bold text measures a character with the regular face's advance when the bold width table lacks it and the glyph is not known to be missing | Such characters fell through to the bold face's missing-width path |
-| A table or picture caption paragraph with a bullet head draws its bullet before the text | The caption text was laid out without the bullet |
+| A table or picture caption paragraph with a bullet head draws its bullet before the text (rhwp does this itself since v0.9.1, commit 050e78455; only the test is kept) | The caption text was laid out without the bullet |
 | The first line of an hwpx single column, when its stored line position equals the paragraph's spacing-before, does not add that spacing again | The spacing-before was counted twice at the top of the column |
 | Text output puts a space after a list bullet | The bullet and the first word were joined in `txt` output |
 | PDF font fallback looks for a missing character in the rest of the SVG `font-family` list before the font database order | The database order alone chose the substitute |
-| "한컴 윤고딕 250" is measured with the Haan YGodic 250 widths | The Korean name matched no width table |
+| "한컴 윤고딕 250" is measured with the Haan YGodic 250 widths (rhwp does this itself since v0.9.1, commit c87e50142; only the test is kept) | The Korean name matched no width table |
 | Glyphs under negative letter spacing are fitted to their natural advance | Only positive spacing was taken out of the glyph fit |
 | An ASCII bullet (`-`) takes a half-em cell, other bullets a full em | ASCII bullets took the glyph's own width |
 | A space after Latin text advances with the Hangul em and width ratio when they differ from the Latin ones | It used the Latin em and ratio |
@@ -127,7 +127,7 @@ three, 13 of 18 test documents pass.
 | Change | Before |
 |--------|--------|
 | When the PDF font database has no HyhwpEQ or HancomEQN, equation private-use characters of that face are drawn as the characters they stand for (`a`, `<`, `α`, ...) in the default equation fonts, as rhwp's Skia renderer already does | The private-use code points went to PDF font fallback, which picked whatever installed font covered them (on the Linux test computer: OpenSymbol, Font Awesome, Meslo, Adwaita) |
-| A Wingdings private-use character (U+F020-U+F0FF) that the run's font lacks is drawn as itself in Wingdings when a Wingdings font is found and has the glyph, as Hancom Office prints it. Without Wingdings the Unicode substitute (such as `✔`) is kept | The Unicode substitute was always drawn, in the run's font, so its width and position differed from Hancom Office's Wingdings glyph |
+| A Wingdings private-use character (U+F020-U+F0FF) that the run's font lacks is drawn as itself in Wingdings when a Wingdings font is found and has the glyph, as Hancom Office prints it. Without Wingdings the Unicode substitute (such as `✔`) is kept. rhwp v0.9.1 draws the Wingdings bullet U+F09F as an ellipse of its own (commit ce3629235); with a Wingdings font found, the font draws it instead, as Hancom Office 2024 prints it | The Unicode substitute was always drawn, in the run's font, so its width and position differed from Hancom Office's Wingdings glyph |
 
 `patches/rhwp-layout4.patch` is applied after `rhwp-layout3.patch`. With all
 four, 15 of 18 test documents pass: 13 have every word within 1 pt, and 2
@@ -142,8 +142,8 @@ patches give 14.
 | The right quote `’` (U+2019) of the 필기 font advances 500/1000 em | It was measured with the substitute font's width |
 | Malgun Gothic arrows (U+2190-U+2199, U+21D2, U+21D4) advance 1946/2048 em, the width in the font's `hmtx` | They took a full em |
 | A document set to print two pages per sheet (print method 4) whose pages are all A4 portrait exports to PDF as landscape sheets with two pages side by side: scaled by 0.71, the left page at the left edge, the right page at half the sheet width, both at the top. Measured on a document without memos printed two-up by Hancom Office 2024. Links and named destinations move with their page. Other print methods and paper sizes stay one page per sheet | The PDF had one page per sheet (40 pages where Hancom Office prints 20) |
-| The 64 MiB limit on supplied (downloaded) fonts applies only when rhwp is built with Skia, whose font catalog it protects. Without Skia, as in this engine, every supplied font is kept | Host font folders were counted against the limit first, so with a large font folder downloaded fonts such as HCR Batang and HCR Dotum were dropped and text fell back to other fonts |
-| The invisible text drawn over a vector `·` is fitted to the same glyph width as visible characters | It took the substitute font's own width, so the word box read from the PDF ended about 2 pt short |
+| Supplied (downloaded) fonts are checked against the limits of rhwp's Skia font catalog (256 font files, 32 MiB a file) together with the host font folders only when rhwp is built with Skia. Without Skia, as in this engine, the supplied fonts are checked alone | Host font folders were counted against the limit first, so with a large font folder downloaded fonts such as HCR Batang and HCR Dotum were dropped and text fell back to other fonts |
+| The invisible text drawn over a vector `·` is fitted to the same glyph width as visible characters. So is the invisible text over rhwp v0.9.1's ellipse for the Wingdings bullet U+F09F, which also gets the run's `font-family` and size | It took the substitute font's own width, so the word box read from the PDF ended about 2 pt short |
 
 `patches/rhwp-layout5.patch` is applied after `rhwp-layout4.patch`. The count
 stays at 15 of 18, and two of the three documents that fail come closer. In the
@@ -188,7 +188,7 @@ this patch; the patch leaves the test as it is.
 |--------|--------|
 | The double quotes `“` and `”` (U+201C, U+201D) of the plain 한양중고딕 (Hanyang Junggothic) HFT font advance 375/1000 em, the width in the font's advance table and in the Type 3 font Hancom Office prints | They advanced half an em, so the text after each quote sat 0.125 em to the right. On two pages of the two-up document 76 word edges were more than 1 pt off |
 | The first line of a paragraph that follows an empty paragraph holding one top-and-bottom picture sits at the bottom of the picture's band, when the picture takes the empty paragraph's own line and the stored first line of the next paragraph is at that place. The paragraph's spacing before is spent inside the band | The spacing before was added below the band a second time. The lines after two such pictures of the two-up document were more than 1 pt low (50 word edges) |
-| In a PDF, glyphs of an HFT font are painted through the printer's precise device matrix until the document's first solid fill. What counts as that fill follows Hancom Office 2024 for every document: a table cell or paragraph background counts | It followed the document's layout generation, and outside the 2024 generation such backgrounds did not count. A document whose only fills are backgrounds kept the matrix, a 0.99946 x 0.99891 scale on each group of HFT glyphs of an A4 page, on every page |
+| In a PDF, glyphs of an HFT font are painted through the printer's precise device matrix until the document's first solid fill. What counts as that fill follows Hancom Office 2024 for every document: a table cell or paragraph background counts. TrueType text stays in the logical frame: rhwp v0.9.1 also projects a declared TrueType face, one the session selects as TrueType and one supplied as TrueType (commits 64f7bb449, 8ad1c5c08), which Hancom Office 2024 does not; with them footnote.hwp and footnote.hwpx were 1.40 pt off on Windows instead of 0.76 pt | It followed the document's layout generation, and outside the 2024 generation such backgrounds did not count. A document whose only fills are backgrounds kept the matrix, a 0.99946 x 0.99891 scale on each group of HFT glyphs of an A4 page, on every page |
 
 `patches/rhwp-layout7.patch` is applied after `rhwp-layout6.patch`. The count
 stays at 15 of 18. In the 40-page document printed two pages per sheet 28 word
@@ -224,20 +224,10 @@ as they are.
 | The dagger `†` (U+2020) of an HFT font advances a full em when no width is known for it, like the HFT symbols of `rhwp-layout5.patch` | It was measured as narrow punctuation, and the centred text of a table cell that ends in a dagger sat 1.1 pt to 1.2 pt to the right |
 | `․` and `‧` (U+2024, U+2027) that the document's font lacks advance 178/1024 em, the width of the font Hancom Office takes them from (Haansoft Batang), also when the document's font is not installed and another font is displayed in its place. Batang gains the same entry for `‧` | When the document's font was replaced, the two characters advanced a full em or 0.3 em. On Linux a word that holds a `․` was 11.99 pt off in the two footnote documents |
 
-`patches/rhwp-layout8.patch` is applied after `rhwp-layout7.patch` and changes
-nothing where the document's fonts are installed: the PDF, TXT and HWP or HWPX
-outputs of the 18 documents are the same byte for byte, and the count stays at
-15 of 18. On a Linux computer without those fonts, with default settings, 9 of
-18 documents pass before and after. The largest deviation of the two footnote
-documents is 2.28 pt, at a footnote number on page 2, instead of 4.61 pt. In
-the two-up document the words of one line move by 0.2 pt at most, and 152 word
-edges are more than 1 pt off before and after. The PDFs of the other 15
-documents, the HWP, HWPX and TXT outputs of all 18 and the PDFs of 12 HWP 3.0
-samples of rhwp are the same byte for byte.
-
-| Change | Before |
-|--------|--------|
-| When the width of a line is estimated for justification and alignment, the number of a footnote or endnote marker on the line is measured with the metrics the text of its run uses, those of the font the document asks for | The style made for the number kept the font displayed in place of a missing one but lost the requested font's metrics. On Linux the words on lines with a marker in the two footnote documents were up to 4.61 pt off |
+`rhwp-layout8.patch`, which measured the number of a footnote or endnote
+marker with the metrics of the font its run asks for, is gone since rhwp
+v0.9.1: rhwp lays the number out with its run's whole style itself (rhwp
+commit 050e78455).
 
 The patches also add rhwp unit tests for these changes. They are zero-context
 diffs because the surrounding rhwp lines contain em dashes, which this
@@ -257,7 +247,7 @@ same tree is built again, as `<patch>: does not apply and is not applied`.
 
 ## Change-tracking patches
 
-rhwp 7213ed1f reads the change-tracking range tags in an HWP body but keeps the
+rhwp v0.9.1 reads the change-tracking range tags in an HWP body but keeps the
 DocInfo records that describe them as raw bytes, writes no change tracking to
 HWPX and ignores the change marks of HWPX. rhwp left change tracking out of its
 1.0.0 scope (edwardkim/rhwp#8022), so why-hwp carries four patches, applied
@@ -283,10 +273,9 @@ same as of the HWPX Hancom Office saves from the same HWP.
 Office does. The memo `hp:fieldBegin` gets `zorder` (the memo number) and
 `fieldid` (the memo field code), and its `hp:fieldEnd` gets the same `fieldid`;
 Hancom Office drops a memo end without it when it saves the HWPX again.
-`hh:memoProperties` is built from the MEMO_SHAPE records and
-`secPr/@memoShapeIDRef` is read from the section definition. Hancom Office
-writes both for every HWP that has MEMO_SHAPE records, memos or not, and so
-does the patch.
+The patch also built `hh:memoProperties` from the MEMO_SHAPE records and read
+`secPr/@memoShapeIDRef` from the section definition; rhwp v0.9.1 does both
+itself (rhwp commit d7873c65b), so that part is gone.
 
 `patches/rhwp-trackchange3.patch` carries tracked changes from HWPX into HWP.
 `hh:trackChanges` and `hh:trackChangeAuthors` are read into the model, the
@@ -304,15 +293,9 @@ was edited after loading and its hidden tracked changes cannot be written".
 deleted text not joined to the text around it, and HWP to HWPX to HWP keeps the
 229 and 30.
 
-`patches/rhwp-ztrackchange4.patch` writes the memo shape a section uses
-(`secPr/@memoShapeIDRef`) into the HWP section definition, at byte 30 of the
-record, where `rhwp-trackchange2.patch` reads it. It was written as 0. The HWP
-made from the 4-change HWPX and from the HWPX Hancom Office saves from the
-229-change sample now holds 1, as Hancom Office writes. Hancom Office also drops
-memo shapes that no section uses and numbers the rest from 1; the patch keeps
-them all, so a section that uses the second of two shapes refers to 2 where
-Hancom Office refers to 1 for the same shape. Of the 18 documents only the HWP
-made from oss-result.hwpx changes.
+`rhwp-ztrackchange4.patch`, which wrote the memo shape a section uses
+(`secPr/@memoShapeIDRef`) into the HWP section definition at byte 30, is gone
+since rhwp v0.9.1, which writes it there itself (rhwp commit d7873c65b).
 
 `patches/rhwp-ztrackchange5.patch`, applied last, pairs an HWPX `fieldEnd`
 with the open `fieldBegin` whose id is its `beginIDRef`. It closed the last
@@ -399,7 +382,7 @@ found, is 1.27 pt off.
 | Change | Before |
 |--------|--------|
 | Bold Hanyang Junggothic (한양중고딕) curly quotes advance as the HFT program gives them (225/1000 em for `‘` `’`, 375/1000 for `“` `”`), as the regular face's do | The bold face used the substitute font's widths, and each quote moved the rest of its line by 0.5 pt |
-| A full-width HFT symbol (`–`, `†`, `※`) drawn by a substitute font is centred in its em cell, as Hancom Office centres the HFT glyph | It was drawn at the left of the cell |
+| A full-width HFT symbol (`–`, `†`, `※`) drawn by a substitute font is centred in its em cell, as Hancom Office centres the HFT glyph. The cell is a full em by rhwp's fallback rule or, since rhwp v0.9.1, by the HFT program's own width table | It was drawn at the left of the cell |
 
 `patches/rhwp-zlayout4.patch` raises the count on Linux from 10 to 15 of 18
 and, on Windows without the fonts Hancom Office installs, from 11 to 14. With
@@ -419,7 +402,7 @@ starts where Hancom Office puts it, and what moved was where it ended:
 | Change | Before |
 |--------|--------|
 | A character whose font is replaced for drawing is fitted with `textLength` to the advance its line was laid out with, whatever the character | Only ASCII letters, digits and some quotes were fitted; the rest took the substitute font's own width |
-| A footnote number whose font is not installed is drawn through the same substitute chain and fitted the same way | It named the missing font with no fallback, so the PDF stage drew it with its default font |
+| A footnote number whose font is not installed is fitted the same way: since rhwp v0.9.1 it is drawn as the text run it was laid out with (rhwp commit 050e78455), and the patch no longer draws it itself | It named the missing font with no fallback, so the PDF stage drew it with its default font |
 
 fdi-2025q2.hwp is still 1.34 pt off on Linux, now upright: the substitute's
 ascent and descent differ from the original font's, so the word box Hancom
@@ -548,6 +531,15 @@ falls back as before, so with `WHY_HWP_OFFLINE=1` or a failed download the
 PDF is the same as without the patch. Times New Roman installed on the computer is used as
 before, so on Windows nothing changes. On Linux english.hwp passes
 (0.39 pt) and 10 of 18 documents pass, up from 9; only its PDF changes.
+
+The same patch keeps rhwp v0.9.1 from replacing an HFT source with a
+TrueType program on a computer with Hancom Office's fonts. Hancom Office 2024
+prints an HFT source with its own HFT program, as a Type 3 font.
+
+| Change | Before |
+|--------|--------|
+| An HFT source (declared HFT, or an untyped name rhwp knows as HFT) does not take the TrueType that Hancom Office installs under another family name: rhwp v0.9.1 looks up Hanyang Junggothic (한양중고딕) as HY중고딕, the name of H2GTRM.TTF (commit 2bb86f50d) | The 한양중고딕 text of the two-up document was drawn with H2GTRM |
+| An installed font that the document declares as the substitute of an HFT source does not stop the supply of that source, as it does for other fonts since rhwp v0.9.1 | With Haansoft Batang (한컴바탕) installed, 한양중고딕 was not mapped to the supplied font, and the two-up document was 2.01 pt off on Windows instead of 0.88 pt |
 
 ## fontdb
 

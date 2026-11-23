@@ -1,5 +1,5 @@
 # rhwp change tracking for why-hwp: read it from HWPX and write it to HWP.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and
 # wasm/patches/rhwp-layout.patch to rhwp-trackchange2.patch; apply this after
 # rhwp-trackchange2.patch.
 # Zero-context diff (apply with git apply --unidiff-zero). Hunks touch no file
@@ -19,18 +19,18 @@
 #   export of an HWPX document that is still as loaded reads the file again
 #   without that projection, so deleted text stays inside its range tags.
 diff --git a/src/document_core/commands/document.rs b/src/document_core/commands/document.rs
-index 0245045..bbe0a6c 100644
+index 8eb82cb838..a3682d61f8 100644
 --- a/src/document_core/commands/document.rs
 +++ b/src/document_core/commands/document.rs
-@@ -61,0 +62,3 @@ pub struct HwpExportSnapshot {
+@@ -63,0 +64,3 @@ pub struct HwpExportSnapshot {
 +    /// why-hwp: why the HWPX source could not be read again with its hidden tracked
 +    /// changes kept. Serializing then fails instead of writing the projected IR.
 +    tracked_text_error: Option<String>,
-@@ -72,0 +76,3 @@ impl HwpExportSnapshot {
+@@ -74,0 +78,3 @@ impl HwpExportSnapshot {
 +        if let Some(error) = &self.tracked_text_error {
 +            return Err(HwpError::RenderError(format!("tracked changes: {error}")));
 +        }
-@@ -220,0 +227,58 @@ impl DocumentCore {
+@@ -222,0 +229,58 @@ impl DocumentCore {
 +    /// why-hwp: `from_bytes_inner` for HWPX. Hidden tracked changes are projected out of
 +    /// the IR (`parser/hwpx/tracked_changes.rs`), so the file is kept, as for HWP, with
 +    /// digests of the model to tell that the document is still as loaded.
@@ -89,13 +89,13 @@ index 0245045..bbe0a6c 100644
 +        )
 +    }
 +
-@@ -221,0 +286,3 @@ impl DocumentCore {
+@@ -223,0 +288,3 @@ impl DocumentCore {
 +        if crate::parser::detect_format(data) == crate::parser::FileFormat::Hwpx {
 +            return Self::from_hwpx_bytes(data, password);
 +        }
-@@ -513,0 +581 @@ impl DocumentCore {
+@@ -517,0 +585 @@ impl DocumentCore {
 +            tracked_text_digests: None,
-@@ -3011,0 +3080,10 @@ impl DocumentCore {
+@@ -3237,0 +3306,10 @@ impl DocumentCore {
 +        // why-hwp: HWP keeps deleted text inside its change range tags, as HWPX does. An
 +        // HWPX source still as loaded is written from the file read again with its hidden
 +        // changes kept, as `hwpx_document_for_export` does. An HWP source keeps the stored
@@ -106,18 +106,18 @@ index 0245045..bbe0a6c 100644
 +            Some(Err(error)) => tracked_text_error = Some(error.to_string()),
 +            None => {}
 +        }
-@@ -3024 +3102,4 @@ impl DocumentCore {
+@@ -3252 +3330,4 @@ impl DocumentCore {
 -        Ok(HwpExportSnapshot { document: snapshot })
 +        Ok(HwpExportSnapshot {
 +            document: snapshot,
 +            tracked_text_error,
 +        })
-@@ -3180,0 +3262,4 @@ impl DocumentCore {
+@@ -3406,0 +3488,4 @@ impl DocumentCore {
 +        // why-hwp: the same for an HWPX source, which has no raw streams to tell it unedited.
 +        if let Some(tracked) = self.hwpx_tracked_text_document() {
 +            return tracked?.hwpx_document_for_export(serialize);
 +        }
-@@ -4686,0 +4772,69 @@ mod set_document_tests {
+@@ -4942,0 +5028,69 @@ mod set_document_tests {
 +
 +// why-hwp: an HWPX with hidden tracked changes is exported from the file read again while
 +// it is still as loaded, and an edited one is not exported at all.
@@ -188,18 +188,18 @@ index 0245045..bbe0a6c 100644
 +    }
 +}
 diff --git a/src/document_core/mod.rs b/src/document_core/mod.rs
-index 2a4bf5d..24760bf 100644
+index 21a0eb609d..ddb09b118b 100644
 --- a/src/document_core/mod.rs
 +++ b/src/document_core/mod.rs
-@@ -353,0 +354,4 @@ pub struct DocumentCore {
+@@ -374,0 +375,4 @@ pub struct DocumentCore {
 +    /// why-hwp: for an HWPX `tracked_text_source`, digests of the model as loaded
 +    /// (`DocumentCore::tracked_text_digests`). HWPX has no raw streams whose seals
 +    /// would tell an unedited document.
 +    pub(crate) tracked_text_digests: Option<Vec<[u8; 32]>>,
-@@ -656,0 +661 @@ impl DocumentCore {
+@@ -679,0 +684 @@ impl DocumentCore {
 +            tracked_text_digests: None,
 diff --git a/src/model/document.rs b/src/model/document.rs
-index 31e45f4..af0401c 100644
+index d9d0cf021d..fbe17e0836 100644
 --- a/src/model/document.rs
 +++ b/src/model/document.rs
 @@ -212,0 +213,35 @@ impl TrackChangeAuthor {
@@ -238,7 +238,7 @@ index 31e45f4..af0401c 100644
 +    }
 +}
 +
-@@ -1240,0 +1276,37 @@ mod tests {
+@@ -1243,0 +1279,37 @@ mod tests {
 +
 +    // why-hwp: records Hancom Office wrote when it saved a public sample HWPX (t2, made by
 +    // why-hwp apply) as HWP, and records of rhwp samples/issue5169_viewtext_changetracking.hwp.
@@ -277,7 +277,7 @@ index 31e45f4..af0401c 100644
 +        }
 +    }
 diff --git a/src/model/memo_time.rs b/src/model/memo_time.rs
-index 592a494..9719dca 100644
+index 592a4941ab..9719dca6e0 100644
 --- a/src/model/memo_time.rs
 +++ b/src/model/memo_time.rs
 @@ -87,0 +88,46 @@ mod tests {
@@ -328,7 +328,7 @@ index 592a494..9719dca 100644
 +    }
 +}
 diff --git a/src/parser/hwpx/header.rs b/src/parser/hwpx/header.rs
-index 77c4682..05d1990 100644
+index 125e548e95..1d824f09f9 100644
 --- a/src/parser/hwpx/header.rs
 +++ b/src/parser/hwpx/header.rs
 @@ -202,0 +203,2 @@ pub(super) fn parse_hwpx_header_with_plain_margin_units(
@@ -421,7 +421,7 @@ index 77c4682..05d1990 100644
 +    );
 +}
 +
-@@ -2604,0 +2692,64 @@ mod tests {
+@@ -2594,0 +2682,64 @@ mod tests {
 +    // why-hwp: hh:trackChanges and hh:trackChangeAuthors as the t2 sample has them and as
 +    // Hancom Office writes shape changes (rhwp sample issue5169).
 +    #[test]
@@ -487,7 +487,7 @@ index 77c4682..05d1990 100644
 +    }
 +
 diff --git a/src/parser/hwpx/mod.rs b/src/parser/hwpx/mod.rs
-index a639575..09774bd 100644
+index 2da1258104..57ecfd87c4 100644
 --- a/src/parser/hwpx/mod.rs
 +++ b/src/parser/hwpx/mod.rs
 @@ -707 +707,6 @@ pub(crate) fn parse_hwpx_with_reservation(
@@ -499,7 +499,7 @@ index a639575..09774bd 100644
 +            tracking_visibility.project(&section_xml)?
 +        };
 diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
-index 6d56998..ce2927e 100644
+index ba81eab6e1..3caceb71c8 100644
 --- a/src/parser/hwpx/section.rs
 +++ b/src/parser/hwpx/section.rs
 @@ -30 +30 @@ use crate::model::paragraph::{
@@ -708,7 +708,7 @@ index 6d56998..ce2927e 100644
 +                    }
 @@ -2368,0 +2557 @@ fn read_text_content_with_tabs(reader: &mut Reader<&[u8]>) -> Result<ParsedTextC
 +        track_marks,
-@@ -7990,0 +8180,31 @@ mod tests {
+@@ -8004,0 +8194,31 @@ mod tests {
 +    // why-hwp: change marks become the range tags Hancom Office wrote in HWP for the same
 +    // HWPX (t2 sample, made by why-hwp apply): insertions and deletions by `Id`, then
 +    // character and paragraph shape changes; a `paraend="1"` deletion takes the break.
@@ -741,7 +741,7 @@ index 6d56998..ce2927e 100644
 +    }
 +
 diff --git a/src/serializer/doc_info.rs b/src/serializer/doc_info.rs
-index 27826cf..242f0b5 100644
+index fd35d9af85..1c6f05d9d7 100644
 --- a/src/serializer/doc_info.rs
 +++ b/src/serializer/doc_info.rs
 @@ -273 +273,15 @@ pub(crate) fn try_serialize_doc_info<S: crate::storage::Storage>(
@@ -828,7 +828,7 @@ index 27826cf..242f0b5 100644
 +    w.write_u32(track_changes)?;
 +    w.write_u32(track_change_authors)?;
 diff --git a/src/serializer/doc_info/tests.rs b/src/serializer/doc_info/tests.rs
-index 18a07ee..813d101 100644
+index a9d1f461bb..228d7e1092 100644
 --- a/src/serializer/doc_info/tests.rs
 +++ b/src/serializer/doc_info/tests.rs
 @@ -55,0 +56,101 @@ fn test_serialize_id_mappings_uses_modern_count_table_size() {

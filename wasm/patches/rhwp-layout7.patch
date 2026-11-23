@@ -1,5 +1,5 @@
 # rhwp ASCII punctuation font slot, HFT dagger and missing dot width fixes for why-hwp, measured against Hangul 2024 output.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and
 # wasm/patches/rhwp-layout.patch, rhwp-layout2.patch, rhwp-layout3.patch,
 # rhwp-layout4.patch, rhwp-layout5.patch and rhwp-layout6.patch; apply this
 # after rhwp-layout6.patch.
@@ -35,19 +35,19 @@
 #   punctuation rule for HWP5, HWPX and HWP 3.0 sources and the two dots.
 
 diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
-index ead17c705..453fbac4b 100644
+index cf1ebcc086..332726c754 100644
 --- a/src/renderer/font_metrics_data.rs
 +++ b/src/renderer/font_metrics_data.rs
-@@ -235,0 +236,4 @@ pub(crate) fn verified_missing_glyph_supplier(
+@@ -241,0 +242,4 @@ pub(crate) fn verified_missing_glyph_supplier(
 +        // batang.ttc의 Batang cmap에는 U+2027도 없다. memo-field-hwp5 한컴2024 Print 7쪽은
 +        // 굵은 바탕 사이의 `‧`를 Haansoft Batang 178/1024em 글리프로 출력한다. Batang에는
 +        // Bold 프로그램이 없어 보통·굵게가 같은 cmap이다.
 +        ("Batang", 1024, false, false, '\u{2027}') => Some("Haansoft Batang"),
 diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
-index 45c4fe6fc..dfeccddcf 100644
+index 3cdac00660..8291e917c6 100644
 --- a/src/renderer/layout/text_measurement.rs
 +++ b/src/renderer/layout/text_measurement.rs
-@@ -2393,0 +2394,53 @@ fn char_width_decision_with_hft_tracking<'a>(
+@@ -2478,0 +2479,53 @@ fn char_width_decision_with_hft_tracking<'a>(
 +        // 원 face가 없어 표시 family만 대체된 경우 위 체인은 대체 글꼴의 것이라 원 face의
 +        // 확인된 결측 공급자를 잃는다. 원 face를 그릴 때와 같은 공급자의 내장 폭으로 전진한다.
 +        // footnote.hwp 한컴2024 Print 2·3쪽: 휴먼명조 사이의 `‧`·`․`는 Haansoft Batang
@@ -101,11 +101,11 @@ index 45c4fe6fc..dfeccddcf 100644
 +                }
 +            }
 +        }
-@@ -2497,0 +2551,3 @@ fn char_width_decision_with_hft_tracking<'a>(
+@@ -2588,0 +2642,3 @@ fn char_width_decision_with_hft_tracking<'a>(
 +            // U+2020도 같다. memo-field-hwp5 한컴2024 Print 28쪽의 굵은 한양중고딕 기호
 +            // Type3 T14(※ – ≥와 같은 글꼴)에서 Widths1000이다.
 +            || (style.source_font_is_hft && c == '\u{2020}')
-@@ -4526,0 +4583,49 @@ mod tests {
+@@ -4636,0 +4693,49 @@ mod tests {
 +    /// 요청 face에 없는 `․`(U+2024)·`‧`(U+2027)는 확인된 공급자 Haansoft Batang의
 +    /// 178/1024em으로 전진한다. 표시 family가 대체 글꼴로 바뀌어도 같다.
 +    /// footnote.hwp 한컴2024 Print 2·3쪽(휴먼명조), memo-field-hwp5 7쪽(굵은 바탕).
@@ -156,10 +156,10 @@ index 45c4fe6fc..dfeccddcf 100644
 +    }
 +
 diff --git a/src/renderer/style_resolver.rs b/src/renderer/style_resolver.rs
-index 359eb83a5..701ee75a6 100644
+index 1adeae1a9e..fb86ef8749 100644
 --- a/src/renderer/style_resolver.rs
 +++ b/src/renderer/style_resolver.rs
-@@ -55,0 +56,19 @@ pub(crate) fn try_resolve_styles_for_document<S: storage::Storage>(
+@@ -74,0 +75,19 @@ pub(crate) fn try_resolve_styles_for_document<S: storage::Storage>(
 +    if !styles.source_hwp3_native {
 +        // 한컴 2024 Print는 HWP5·HWPX 문서의 ASCII 구두점을 항상 영문 슬롯 글꼴로 찍는다.
 +        // 한글·영문 face가 다르면 영문 폭 표에 한글이 있어도 영문 슬롯을 쓴다. 앞 글자,
@@ -180,7 +180,7 @@ index 359eb83a5..701ee75a6 100644
 +        }
 +    }
 diff --git a/src/renderer/style_resolver/tests.rs b/src/renderer/style_resolver/tests.rs
-index 939eba709..736860127 100644
+index 939eba7092..7368601275 100644
 --- a/src/renderer/style_resolver/tests.rs
 +++ b/src/renderer/style_resolver/tests.rs
 @@ -486,0 +487,52 @@ fn test_font_family_for_lang_fallback() {

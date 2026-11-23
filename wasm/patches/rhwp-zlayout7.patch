@@ -1,6 +1,6 @@
 # rhwp print geometry for why-hwp: place and size the glyphs of a run with a
 # character width ratio as Hancom Office's PDF print does.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and every
 # earlier wasm/patches/*.patch in name order; apply this after
 # rhwp-zlayout5.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
@@ -27,7 +27,7 @@
 #   TrueType, at that Tz; layout and the start of every word are unchanged.
 diff --git a/src/renderer/gdi_text_out.rs b/src/renderer/gdi_text_out.rs
 new file mode 100644
-index 0000000..0ea4c7a
+index 0000000000..0ea4c7a9af
 --- /dev/null
 +++ b/src/renderer/gdi_text_out.rs
 @@ -0,0 +1,967 @@
@@ -999,16 +999,16 @@ index 0000000..0ea4c7a
 +    }
 +}
 diff --git a/src/renderer/mod.rs b/src/renderer/mod.rs
-index 6731148..9375810 100644
+index 0391428c4b..e69ab230ff 100644
 --- a/src/renderer/mod.rs
 +++ b/src/renderer/mod.rs
-@@ -46,0 +47 @@ pub(crate) mod form_caption;
+@@ -48,0 +49 @@ pub(crate) mod form_caption;
 +pub(crate) mod gdi_text_out;
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
-index 4c9dfa6..d21797d 100644
+index 2a02893bd3..cdfcf5f694 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
-@@ -3548,0 +3549,8 @@ impl Renderer for SvgRenderer {
+@@ -3568,0 +3569,8 @@ impl Renderer for SvgRenderer {
 +        // why-hwp: a TrueType run with a width ratio is drawn as Hancom Office prints it.
 +        let gdi_text_out = (script_advance_scale == 1.0)
 +            .then(|| super::gdi_text_out::GdiTextOut::for_style(style))
@@ -1017,10 +1017,10 @@ index 4c9dfa6..d21797d 100644
 +            .as_ref()
 +            .and_then(|out| out.draw_ratio())
 +            .unwrap_or(ratio);
-@@ -3661 +3669 @@ impl Renderer for SvgRenderer {
+@@ -3682 +3690 @@ impl Renderer for SvgRenderer {
 -        let char_positions =
 +        let laid_positions =
-@@ -3662,0 +3671,7 @@ impl Renderer for SvgRenderer {
+@@ -3683,0 +3692,7 @@ impl Renderer for SvgRenderer {
 +        let char_positions: std::borrow::Cow<[f64]> = match gdi_text_out
 +            .as_ref()
 +            .and_then(|out| out.origins(metric_text, x, &laid_positions))
@@ -1028,7 +1028,7 @@ index 4c9dfa6..d21797d 100644
 +            Some(origins) => std::borrow::Cow::Owned(origins),
 +            None => std::borrow::Cow::Borrowed(&laid_positions[..]),
 +        };
-@@ -3718 +3733,9 @@ impl Renderer for SvgRenderer {
+@@ -3739 +3754,9 @@ impl Renderer for SvgRenderer {
 -            super::glyph_fit_positions(metric_text, style, layout_positions, &char_positions);
 +            super::glyph_fit_positions(metric_text, style, layout_positions, &laid_positions);
 +        let fit_positions: std::borrow::Cow<[f64]> =

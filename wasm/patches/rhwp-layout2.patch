@@ -1,5 +1,5 @@
 # More rhwp layout fixes for why-hwp, measured against Hangul 2024 output.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and
 # wasm/patches/rhwp-layout.patch; apply this after rhwp-layout.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
 #
@@ -16,16 +16,16 @@
 # - composer/tests.rs, layout/tests.rs, layout/text_measurement.rs,
 #   font_metrics_data.rs and svg/tests.rs cover these changes.
 diff --git a/src/renderer/composer/punctuation_slots.rs b/src/renderer/composer/punctuation_slots.rs
-index 562cf12528..5ba2d46c32 100644
+index 962949c6d5..b91b870ce2 100644
 --- a/src/renderer/composer/punctuation_slots.rs
 +++ b/src/renderer/composer/punctuation_slots.rs
-@@ -153,0 +154 @@ pub(super) fn try_resolve_run_slots<S: crate::storage::Storage>(
+@@ -172,0 +173 @@ pub(super) fn try_resolve_run_slots<S: crate::storage::Storage>(
 +                        || space_origin(ch, run.lang_index, style) != run.neutral_space_origin
 diff --git a/src/renderer/composer/tests.rs b/src/renderer/composer/tests.rs
-index 2d65ec89b7..ecef286abd 100644
+index 18cb7811ad..9c72ecfb3a 100644
 --- a/src/renderer/composer/tests.rs
 +++ b/src/renderer/composer/tests.rs
-@@ -2589,0 +2590,56 @@ fn latin_neutral_space_advances_with_hangul_slot_ratio() {
+@@ -2590,0 +2591,56 @@ fn latin_neutral_space_advances_with_hangul_slot_ratio() {
 +
 +/// 저장된 줄의 영문 run도 공백만 한글 슬롯 em·장평으로 전진하도록 나뉜다.
 +#[test]
@@ -83,10 +83,10 @@ index 2d65ec89b7..ecef286abd 100644
 +    assert!((width - 16.0 * 0.5 * 0.98).abs() < 1e-6, "공백 {width}");
 +}
 diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
-index 0f85fdc2aa..b1bec13ad1 100644
+index d180e8ae61..6d975bd15b 100644
 --- a/src/renderer/font_metrics_data.rs
 +++ b/src/renderer/font_metrics_data.rs
-@@ -704,0 +705,13 @@ mod tests {
+@@ -715,0 +716,13 @@ mod tests {
 +    #[test]
 +    fn hci_poppy_bold_middle_dot_keeps_original_program_advance() {
 +        assert_eq!(
@@ -101,15 +101,15 @@ index 0f85fdc2aa..b1bec13ad1 100644
 +    }
 +
 diff --git a/src/renderer/font_metrics_overlays.rs b/src/renderer/font_metrics_overlays.rs
-index 415dbc9cc9..7ffe00d868 100644
+index 6756cdef87..4ff206578b 100644
 --- a/src/renderer/font_metrics_overlays.rs
 +++ b/src/renderer/font_metrics_overlays.rs
-@@ -14,0 +15,4 @@ pub(crate) fn implicit_symbol_advance_em(character: char) -> Option<f64> {
+@@ -25,0 +26,4 @@ pub(crate) fn implicit_symbol_advance_em(character: char) -> Option<f64> {
 +        // 맑은 고딕 run의 U+F0FC를 한컴 2024 Print는 Wingdings로 그린다.
 +        // CIDFontType2 /W 785이고 wingding.ttf hmtx도 1609/2048이다.
 +        // 표시용 ✔의 대체 글꼴 전각 폭으로 재지 않는다.
 +        '\u{F0FC}' => Some(1609.0 / 2048.0),
-@@ -66,0 +71,12 @@ static ORIGINAL_GLYPH_METRICS: &[OriginalGlyphMetric] = &[
+@@ -82,0 +87,12 @@ static ORIGINAL_GLYPH_METRICS: &[OriginalGlyphMetric] = &[
 +    // fdi-2025q2 한컴2024 Print 9쪽 T15(Type3, 굵은 런): ToUnicode 00B7,
 +    // Widths 384, FontMatrix.001. 굵은 원본 HCI Poppy도 고유 폭은 일반과 같고
 +    // 굵기 전진은 문자 측정 walk가 따로 더한다. 대체 Palatino의 0.25em으로
@@ -123,10 +123,10 @@ index 415dbc9cc9..7ffe00d868 100644
 +        em_units: 1000,
 +    },
 diff --git a/src/renderer/layout.rs b/src/renderer/layout.rs
-index abb3f93470..94810a02c5 100644
+index aabadfc2fb..10dcc85a7d 100644
 --- a/src/renderer/layout.rs
 +++ b/src/renderer/layout.rs
-@@ -2271,0 +2272,52 @@ fn tac_paragraph_tail_stored_line_top(
+@@ -2302,0 +2303,52 @@ fn tac_paragraph_tail_stored_line_top(
 +/// 공백만 있는 host 문단의 줄을 자기 아래로 밀어낸 문단 기준 자리차지 표인가.
 +///
 +/// 한/글은 이 표를 문단 상단(+ 세로 오프셋 + 바깥 위 여백)에 두고 공백 줄은 표 아래로
@@ -179,7 +179,7 @@ index abb3f93470..94810a02c5 100644
 +    frame > 0 && i64::from(anchor.vertical_pos) - previous_end == frame
 +}
 +
-@@ -13762,0 +13815,7 @@ impl LayoutEngine {
+@@ -13978,0 +14031,7 @@ impl LayoutEngine {
 +                        } else if whitespace_host_line_pushed_below_float(
 +                            para_index.checked_sub(1).and_then(|i| paragraphs.get(i)),
 +                            para,
@@ -188,7 +188,7 @@ index abb3f93470..94810a02c5 100644
 +                        ) {
 +                            para_y_for_table
 diff --git a/src/renderer/layout/tests.rs b/src/renderer/layout/tests.rs
-index 3085036587..bd21dc9012 100644
+index 138fd7101e..178a4d9ffa 100644
 --- a/src/renderer/layout/tests.rs
 +++ b/src/renderer/layout/tests.rs
 @@ -285,0 +286,49 @@ fn issue2817_paper_anchor_behind_picture_host_keeps_no_line_advance() {
@@ -242,10 +242,10 @@ index 3085036587..bd21dc9012 100644
 +}
 +
 diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
-index 1316bdd430..77a11375f9 100644
+index 55b00f4ea7..82a77bdbc7 100644
 --- a/src/renderer/layout/text_measurement.rs
 +++ b/src/renderer/layout/text_measurement.rs
-@@ -4044,0 +4045,18 @@ mod tests {
+@@ -4154,0 +4155,18 @@ mod tests {
 +    #[test]
 +    fn wingdings_check_mark_pua_uses_wingdings_advance() {
 +        let m = EmbeddedTextMeasurer;
@@ -265,13 +265,13 @@ index 1316bdd430..77a11375f9 100644
 +    }
 +
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
-index 8e0a57be1a..2ee1210345 100644
+index 16f0500f77..87e003ef18 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
-@@ -3828 +3828 @@ impl Renderer for SvgRenderer {
+@@ -3904 +3904 @@ impl Renderer for SvgRenderer {
 -                        "<text x=\"{:.4}\" y=\"{:.4}\" font-size=\"{}\" fill=\"{}\" \
 +                        "<text x=\"{:.4}\" y=\"{:.4}\" font-family=\"{}\" font-size=\"{}\" fill=\"{}\" \
-@@ -3831,0 +3832 @@ impl Renderer for SvgRenderer {
+@@ -3907,0 +3908 @@ impl Renderer for SvgRenderer {
 +                        escape_xml(&font_family),
 diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
 index 202281c872..f0118ee11a 100644
@@ -307,7 +307,7 @@ index 202281c872..f0118ee11a 100644
 +    assert_eq!(Some(hidden), family_of("가"));
 +}
 diff --git a/src/serializer/hwpx/mod.rs b/src/serializer/hwpx/mod.rs
-index b8d128554c..2203f6a9a4 100644
+index ab47083421..7aade83508 100644
 --- a/src/serializer/hwpx/mod.rs
 +++ b/src/serializer/hwpx/mod.rs
 @@ -217,8 +217,2 @@ where
@@ -331,7 +331,7 @@ index b8d128554c..2203f6a9a4 100644
 +                .as_deref()
 +                .map(str::as_bytes)
 +                .unwrap_or(SETTINGS_XML.as_bytes())
-@@ -650,0 +644,64 @@ where
+@@ -659,0 +653,64 @@ where
 +/// HWP5 `HWPTAG_DOC_DATA` 인쇄 항목 ID 와 HWPX `settings.xml` PrintInfo 항목 (한컴 출력 순서).
 +///
 +/// ID 는 레코드의 `(u16 id, u16 type, u32 value)` 항목에서 읽는다. 0x4006·0x4010·0x401a·
@@ -396,7 +396,7 @@ index b8d128554c..2203f6a9a4 100644
 +    ))
 +}
 +
-@@ -696,0 +754,73 @@ mod tests {
+@@ -705,0 +763,73 @@ mod tests {
 +    fn settings_xml_of(doc: &Document) -> String {
 +        let bytes = serialize_hwpx(doc).expect("serialize");
 +        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");

@@ -1,5 +1,5 @@
 # rhwp HFT quote width, picture band spacing and print fill fixes for why-hwp, measured against Hangul 2024 output.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and
 # wasm/patches/rhwp-layout.patch, rhwp-layout2.patch, rhwp-layout3.patch,
 # rhwp-layout4.patch and rhwp-layout5.patch; apply this after
 # rhwp-layout5.patch.
@@ -26,31 +26,53 @@
 #   cell or paragraph background counts. It followed the document's
 #   compatibility generation, and under the older rule a document whose only
 #   fills are such backgrounds kept the scale on every later page, which
-#   Hangul 2024 does not print.
+#   Hangul 2024 does not print. TrueType text keeps the logical frame: rhwp
+#   v0.9.1 also projected a declared TrueType face, one the session selects as
+#   TrueType and one supplied as TrueType (rhwp 64f7bb449, 8ad1c5c08), which
+#   Hangul 2024 does not.
 # - layout/text_measurement.rs and float_placement.rs cover the quote width
 #   and the band spacing.
 diff --git a/src/document_core/queries/rendering.rs b/src/document_core/queries/rendering.rs
-index 824f88b84..22eebca34 100644
+index 62cb5e9c3a..7b0836c506 100644
 --- a/src/document_core/queries/rendering.rs
 +++ b/src/document_core/queries/rendering.rs
-@@ -1583,4 +1583 @@ impl DocumentCore {
+@@ -1538,4 +1538 @@ impl DocumentCore {
 -                    Ok(LayerBuilder::page_has_print_solid_fill(
 -                        tree,
 -                        hangul2024_print,
 -                    ))
 +                    Ok(LayerBuilder::page_has_print_solid_fill(tree, true))
 diff --git a/src/paint/builder.rs b/src/paint/builder.rs
-index 7dd91eae3..dbec6d43a 100644
+index 725041e61b..9892a73ef0 100644
 --- a/src/paint/builder.rs
 +++ b/src/paint/builder.rs
-@@ -262 +262 @@ impl LayerBuilder {
+@@ -264 +264 @@ impl LayerBuilder {
 -            self.hangul2024_print,
 +            true,
+diff --git a/src/paint/paper_viewport.rs b/src/paint/paper_viewport.rs
+index 7a4957e21e..4b4fbb29ec 100644
+--- a/src/paint/paper_viewport.rs
++++ b/src/paint/paper_viewport.rs
+@@ -348,10 +348,4 @@ impl PagePaintContext {
+-                            let supplied_truetype =
+-                                !run.style.preserve_glyph_ink
+-                                    && run.style.text_paint.is_none()
+-                                    && run.style.native_otf_metrics.as_ref().is_some_and(|font| {
+-                                        font.has_static_truetype_paint_programs()
+-                                    });
+-                            if run.style.print_text_device_frame
+-                                || supplied_truetype
+-                                || (run.style.hft_print_frame && !*rounded)
+-                            {
++                            // why-hwp: Hangul 2024 prints TrueType text, declared or
++                            // supplied, in the logical frame. Only HFT text before the
++                            // first fill takes the device frame.
++                            if run.style.hft_print_frame && !*rounded {
 diff --git a/src/renderer/float_placement.rs b/src/renderer/float_placement.rs
-index 20ffb3b4e..a0be77694 100644
+index 485fb98917..84184a8406 100644
 --- a/src/renderer/float_placement.rs
 +++ b/src/renderer/float_placement.rs
-@@ -4289,0 +4290,68 @@ pub(crate) fn empty_host_float_successor_absorbed_spacing_px(
+@@ -4735,0 +4736,68 @@ pub(crate) fn empty_host_float_successor_absorbed_spacing_px(
 +/// 글 없는 host 의 문단 기준 자리차지 그림 띠가 host 줄을 흡수하면(`sw=0`) 한/글은 다음 문단의
 +/// 첫 줄을 띠 바닥에 놓는다. host 의 뒤 간격과 다음 문단의 앞 간격은 띠 안에서 소비된다
 +/// (자리차지 표 띠의 #6761 과 같은 규칙: 첫 줄 top = max(흐름 + 앞 간격, 띠 바닥)).
@@ -119,7 +141,7 @@ index 20ffb3b4e..a0be77694 100644
 +    }
 +}
 +
-@@ -10396,0 +10465,75 @@ mod tests {
+@@ -11939,0 +12008,75 @@ mod tests {
 +
 +    #[test]
 +    fn empty_host_picture_band_absorbs_successor_spacing_before_at_stored_line() {
@@ -196,17 +218,17 @@ index 20ffb3b4e..a0be77694 100644
 +        );
 +    }
 diff --git a/src/renderer/font_metrics_overlays.rs b/src/renderer/font_metrics_overlays.rs
-index a6302808c..fccd2cec0 100644
+index 6bd700d5d7..4e98551e81 100644
 --- a/src/renderer/font_metrics_overlays.rs
 +++ b/src/renderer/font_metrics_overlays.rs
-@@ -201,0 +202,6 @@ static HCI_TULIP_REGULAR_ADVANCES: &[(char, u16)] = &[
+@@ -217,0 +218,6 @@ static HCI_TULIP_REGULAR_ADVANCES: &[(char, u16)] = &[
 +// 큰따옴표201C/201D는375/1000이다. memo-field-hwp5 한컴2024 Print(한 장 한 쪽)의
 +// 한양중고딕 Type3 T5: ToUnicode 201C/201D, Widths375, FontMatrix.001이고 같은 글꼴의
 +// ASCII·따옴표63자가 원본 영문 HFT의 전진폭 표와 모두 같다. 그 표의 HNC 코드
 +// 0x81/0x82(큰따옴표)는375, 0x83/0x84(작은따옴표)는225다.
 +// 원본 HFT SHA-256: 067cf9d952613a01de01290080016b1b8ffecb7c077e430d0f8c3aa2a71f0dd0.
 +// 표시 대체 글꼴의 전각을 반으로 누른0.5em으로 재면 따옴표마다 뒤 글자가0.125em 밀린다.
-@@ -251,2 +257,8 @@ pub(crate) fn declared_original_glyph_advance_em(
+@@ -284,2 +290,8 @@ pub(crate) fn declared_original_glyph_advance_em(
 -        (face == "한양중고딕" && !bold && !italic && matches!(character, '\u{2018}' | '\u{2019}'))
 -            .then_some(225.0 / 1000.0)
 +        if face != "한양중고딕" || bold || italic {
@@ -218,10 +240,10 @@ index a6302808c..fccd2cec0 100644
 +            _ => None,
 +        }
 diff --git a/src/renderer/layout.rs b/src/renderer/layout.rs
-index 94810a02c..654cae4e5 100644
+index 10dcc85a7d..26d7b7ede3 100644
 --- a/src/renderer/layout.rs
 +++ b/src/renderer/layout.rs
-@@ -10275,0 +10276,16 @@ impl LayoutEngine {
+@@ -10522,0 +10523,16 @@ impl LayoutEngine {
 +                    let absorbed = if absorbed > 0.0 {
 +                        absorbed
 +                    } else {
@@ -239,10 +261,10 @@ index 94810a02c..654cae4e5 100644
 +                        )
 +                    };
 diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
-index f7cfdb28e..45c4fe6fc 100644
+index 84a8c905cb..3cdac00660 100644
 --- a/src/renderer/layout/text_measurement.rs
 +++ b/src/renderer/layout/text_measurement.rs
-@@ -4175,0 +4176,34 @@ mod tests {
+@@ -4285,0 +4286,34 @@ mod tests {
 +    #[test]
 +    fn hanyang_junggothic_hft_curly_quotes_use_program_advance() {
 +        let m = EmbeddedTextMeasurer;

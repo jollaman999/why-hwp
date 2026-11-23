@@ -1,7 +1,7 @@
 # rhwp memo field end for why-hwp: pair an HWPX fieldEnd with its fieldBegin by beginIDRef.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
-# wasm/patches/rhwp-layout.patch to rhwp-ztrackchange4.patch; apply this after
-# rhwp-ztrackchange4.patch.
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch to rhwp-zlayout8.patch; apply this after
+# rhwp-zlayout8.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
 #
 # - The HWPX paragraph parser closed a fieldEnd on the last open fieldBegin of
@@ -14,9 +14,10 @@
 #   open fieldBegin whose id equals beginIDRef and keeps the last-open rule
 #   for beginIDRef 0 or an id that is not open in the paragraph.
 diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
+index 3caceb71c8..d7e11fbff9 100644
 --- a/src/parser/hwpx/section.rs
 +++ b/src/parser/hwpx/section.rs
-@@ -1090 +1090,12 @@
+@@ -1090 +1090,12 @@ fn parse_paragraph_body(
 -                if let Some((start_char_idx, begin_control_idx)) = field_stack.pop() {
 +                let begin_pos = field_stack.iter().rposition(|&(_, idx)| {
 +                    begin_id_ref != 0
@@ -30,7 +31,7 @@ diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
 +                    None => field_stack.pop(),
 +                };
 +                if let Some((start_char_idx, begin_control_idx)) = begin {
-@@ -9563,0 +9575,64 @@
+@@ -9577,0 +9589,64 @@ mod tests {
 +    #[test]
 +    fn test_parse_field_end_pairs_with_begin_id_ref_not_last_begin() {
 +        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>

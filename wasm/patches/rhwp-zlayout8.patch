@@ -1,18 +1,18 @@
 # rhwp vertical metrics for why-hwp: give a display substitute's glyphs the source
 # face's /Ascent and /Descent in the PDF font descriptor.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and every
 # earlier wasm/patches/*.patch in name order; apply this after
 # rhwp-zlayout7.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
 diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
-index 453fbac..babf676 100644
+index 332726c754..2b2766a52a 100644
 --- a/src/renderer/font_metrics_data.rs
 +++ b/src/renderer/font_metrics_data.rs
 @@ -13 +13 @@ mod vertical;
 -pub(crate) use vertical::win_descent_em;
 +pub(crate) use vertical::{source_typo_vertical_em, win_descent_em};
 diff --git a/src/renderer/font_metrics_vertical.rs b/src/renderer/font_metrics_vertical.rs
-index 702b0f3..e5fff7c 100644
+index 702b0f3095..e5fff7cec6 100644
 --- a/src/renderer/font_metrics_vertical.rs
 +++ b/src/renderer/font_metrics_vertical.rs
 @@ -35,0 +36,115 @@ pub(crate) fn win_descent_em(name: &str, bold: bool, italic: bool) -> Option<f64
@@ -132,12 +132,12 @@ index 702b0f3..e5fff7c 100644
 +    }
 +}
 diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
-index 2ce330d..57a3fe5 100644
+index cd8cbe1ee6..28d52219a6 100644
 --- a/src/renderer/pdf.rs
 +++ b/src/renderer/pdf.rs
-@@ -2433,0 +2434 @@ pub fn svg2pdf_to_chunk(
+@@ -2451,0 +2452 @@ pub fn svg2pdf_to_chunk(
 +    conversion.source_vertical_metrics = Some(source_vertical_metrics);
-@@ -2436,0 +2438,8 @@ pub fn svg2pdf_to_chunk(
+@@ -2454,0 +2456,8 @@ pub fn svg2pdf_to_chunk(
 +/// why-hwp: /Ascent and /Descent of a source face that SVG text names first and
 +/// is drawn with a display substitute (see `display_substitute_source_family`).
 +#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -146,7 +146,7 @@ index 2ce330d..57a3fe5 100644
 +    Some(((ascent * 1000.0) as f32, (descent * 1000.0) as f32))
 +}
 +
-@@ -3186,0 +3196,76 @@ mod tests {
+@@ -3204,0 +3214,76 @@ mod tests {
 +    #[test]
 +    fn display_substitute_glyphs_carry_source_face_vertical_metrics() {
 +        let mut options = usvg::Options::default();
@@ -224,19 +224,19 @@ index 2ce330d..57a3fe5 100644
 +    }
 +
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
-index d21797d..fc57a6f 100644
+index cdfcf5f694..ced8a0d060 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
-@@ -3544,0 +3545,2 @@ impl Renderer for SvgRenderer {
+@@ -3564,0 +3565,2 @@ impl Renderer for SvgRenderer {
 +        let source_font_family = display_substitute_source_family(style)
 +            .map(|source| format!("'{}',{}", source, font_family));
-@@ -3634 +3636,4 @@ impl Renderer for SvgRenderer {
+@@ -3654 +3656,4 @@ impl Renderer for SvgRenderer {
 -                measured_family.as_ref().unwrap_or(&font_family)
 +                measured_family
 +                    .as_ref()
 +                    .or(source_font_family.as_ref())
 +                    .unwrap_or(&font_family)
-@@ -4617,0 +4623,25 @@ fn draws_with_display_substitute(style: &TextStyle) -> bool {
+@@ -4725,0 +4731,25 @@ fn draws_with_display_substitute(style: &TextStyle) -> bool {
 +/// why-hwp: the source face of a run painted with a display substitute, when the
 +/// typographic ascender and descender of its program are known. It goes first in
 +/// the run's `font-family` list. It is not installed, so the substitute after it
@@ -263,7 +263,7 @@ index d21797d..fc57a6f 100644
 +}
 +
 diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
-index 47d229f..81bd2c8 100644
+index a2eaa285d6..1bce18cb3a 100644
 --- a/src/renderer/svg/tests.rs
 +++ b/src/renderer/svg/tests.rs
 @@ -1743,0 +1744,38 @@ fn test_svg_display_substitute_is_fitted_to_source_advance() {
@@ -305,14 +305,8 @@ index 47d229f..81bd2c8 100644
 +    assert!(family("HCR Batang", Some("HCR Dotum")).starts_with("&apos;HCR Batang&apos;,"));
 +}
 +
-@@ -1777 +1815,4 @@ fn test_svg_footnote_marker_of_display_substitute_is_fitted() {
--    assert!(fitted.contains("font-family=\"&apos;HCR Dotum&apos;"), "{fitted}");
-+    assert!(
-+        fitted.contains("font-family=\"&apos;돋움체&apos;,&apos;HCR Dotum&apos;"),
-+        "{fitted}"
-+    );
 diff --git a/vendor/svg2pdf/src/lib.rs b/vendor/svg2pdf/src/lib.rs
-index b4eb7ce..c453069 100644
+index b4eb7ceb24..c453069050 100644
 --- a/vendor/svg2pdf/src/lib.rs
 +++ b/vendor/svg2pdf/src/lib.rs
 @@ -167,0 +168,9 @@ pub struct ConversionOptions {
@@ -328,7 +322,7 @@ index b4eb7ce..c453069 100644
 @@ -176,0 +186 @@ impl Default for ConversionOptions {
 +            source_vertical_metrics: None,
 diff --git a/vendor/svg2pdf/src/render/text.rs b/vendor/svg2pdf/src/render/text.rs
-index dc157eb..a7ff10d 100644
+index dc157ebb37..a7ff10d1a7 100644
 --- a/vendor/svg2pdf/src/render/text.rs
 +++ b/vendor/svg2pdf/src/render/text.rs
 @@ -58 +58,6 @@ pub fn write_font(chunk: &mut Chunk, alloc: &mut RefAllocator, font: &mut Font)
@@ -419,7 +413,7 @@ index dc157eb..a7ff10d 100644
 @@ -552,0 +620 @@ pub fn fill_fonts(group: &Group, ctx: &mut Context, fontdb: &fontdb::Database) -
 +                                            vertical,
 diff --git a/vendor/svg2pdf/src/util/context.rs b/vendor/svg2pdf/src/util/context.rs
-index 833abd3..f9b2680 100644
+index 833abd3b73..f9b2680cca 100644
 --- a/vendor/svg2pdf/src/util/context.rs
 +++ b/vendor/svg2pdf/src/util/context.rs
 @@ -7 +7 @@ use {

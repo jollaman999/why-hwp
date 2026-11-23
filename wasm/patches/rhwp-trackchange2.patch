@@ -1,6 +1,6 @@
 # rhwp HWP memos for why-hwp: write them to HWPX as Hancom Office 2024 does.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
-# wasm/patches/rhwp-layout.patch to rhwp-layout8.patch and
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch to rhwp-layout7.patch and
 # rhwp-trackchange.patch; apply this after rhwp-trackchange.patch.
 # Zero-context diff (apply with git apply --unidiff-zero). Every hunk inserts
 # lines or changes lines of rhwp itself, away from the lines of the earlier
@@ -10,53 +10,15 @@
 #   (the memo field code %%me), and its hp:fieldEnd gets the same fieldid, also
 #   when the memo ends in a later paragraph. Hancom Office drops a memo end
 #   without fieldid when it saves the HWPX again.
-# - hh:memoProperties is built from the DocInfo MEMO_SHAPE records, and
-#   secPr/@memoShapeIDRef is read from offset 30 of the HWP section definition.
-#   Hancom Office writes both for every HWP that has them, memos or not.
-diff --git a/src/parser/body_text.rs b/src/parser/body_text.rs
-index 17489e1..8e8d165 100644
---- a/src/parser/body_text.rs
-+++ b/src/parser/body_text.rs
-@@ -1074,0 +1075,6 @@ fn parse_section_def(ctrl_data: &[u8], child_records: &[Record], ctrl_level: u16
-+    // why-hwp: the u16 at offset 30 is the section's memo shape, a 1-based index
-+    // into the DocInfo MEMO_SHAPE records (0 = none). Hancom Office 2024 writes
-+    // HWPX secPr@memoShapeIDRef there and reads it back from there.
-+    if let Some(bytes) = ctrl_data.get(30..32) {
-+        sd.memo_shape_id = u16::from_le_bytes([bytes[0], bytes[1]]);
-+    }
-diff --git a/src/parser/body_text/tests.rs b/src/parser/body_text/tests.rs
-index f65dcc1..7d53133 100644
---- a/src/parser/body_text/tests.rs
-+++ b/src/parser/body_text/tests.rs
-@@ -1558,0 +1559,18 @@ fn shallow_table_nesting_is_preserved() {
-+
-+/// why-hwp: the section definition of `testdata/sample.hwp` (CTRL_HEADER data
-+/// after `secd`). Hancom Office 2024 writes it with memoShapeIDRef="1".
-+#[test]
-+fn section_def_reads_memo_shape_id() {
-+    let mut ctrl_data = vec![0u8; 43];
-+    ctrl_data[4..6].copy_from_slice(&1134u16.to_le_bytes());
-+    ctrl_data[10..14].copy_from_slice(&8000u32.to_le_bytes());
-+    ctrl_data[14..16].copy_from_slice(&1u16.to_le_bytes());
-+    ctrl_data[30] = 1;
-+    let sd = parse_section_def(&ctrl_data, &[], 1);
-+    assert_eq!(sd.memo_shape_id, 1);
-+    assert_eq!(sd.outline_numbering_id, 1);
-+    assert_eq!(sd.raw_ctrl_extra.len(), 19);
-+    ctrl_data[30] = 0;
-+    assert_eq!(parse_section_def(&ctrl_data, &[], 1).memo_shape_id, 0);
-+    assert_eq!(parse_section_def(&ctrl_data[..30], &[], 1).memo_shape_id, 0);
-+}
+# - rhwp itself builds hh:memoProperties from the MEMO_SHAPE records and reads
+#   secPr/@memoShapeIDRef from the HWP section definition since rhwp d7873c65b.
 diff --git a/src/serializer/hwpx/field.rs b/src/serializer/hwpx/field.rs
-index 11cda4a..8dab0cd 100644
+index 11cda4a3a6..e95bfa2871 100644
 --- a/src/serializer/hwpx/field.rs
 +++ b/src/serializer/hwpx/field.rs
-@@ -11,0 +12 @@
-+use std::borrow::Cow;
-@@ -16,0 +18,2 @@ use crate::model::control::{Bookmark, Field, FieldType, Hyperlink};
-+use crate::model::document::DocInfo;
+@@ -16,0 +17 @@ use crate::model::control::{Bookmark, Field, FieldType, Hyperlink};
 +use crate::model::paragraph::{FieldRange, OrphanFieldEnd};
-@@ -41,0 +45,12 @@ pub fn field_begin_open_tag(field: &Field) -> String {
+@@ -41,0 +43,12 @@ pub fn field_begin_open_tag(field: &Field) -> String {
 +    if is_hwp_memo(field) {
 +        return format!(
 +            r#"<hp:fieldBegin id="{}" type="{}" name="{}" editable="{}" dirty="{}" zorder="{}" fieldid="{}""#,
@@ -69,7 +31,7 @@ index 11cda4a..8dab0cd 100644
 +            field.instance_id.unwrap_or(tags::FIELD_MEMO),
 +        );
 +    }
-@@ -192,0 +208,97 @@ pub fn memo_field_children_xml(field: &Field) -> Option<String> {
+@@ -192,0 +206,32 @@ pub fn memo_field_children_xml(field: &Field) -> Option<String> {
 +/// why-hwp: whether `field` is a memo read from HWP5: its identity is only the
 +/// `MEMO/` command, with no HWPX parameters (the HWPX parser always keeps those).
 +fn is_hwp_memo(field: &Field) -> bool {
@@ -102,72 +64,7 @@ index 11cda4a..8dab0cd 100644
 +    }
 +}
 +
-+/// why-hwp: `<hh:memoProperties>` for the header. An HWPX source keeps its own
-+/// block; an HWP5 source gets one `memoPr` per DocInfo MEMO_SHAPE record, with ids
-+/// from 1 in record order, as Hancom Office 2024 writes it. `None` when there is
-+/// no record or a record holds a value with no known HWPX name.
-+pub(crate) fn memo_properties_xml(doc_info: &DocInfo) -> Option<Cow<'_, str>> {
-+    if let Some(xml) = &doc_info.memo_properties_xml {
-+        return Some(Cow::Borrowed(xml));
-+    }
-+    let mut items = Vec::new();
-+    for record in &doc_info.extra_records {
-+        if record.tag_id == tags::HWPTAG_MEMO_SHAPE {
-+            items.push(memo_pr_xml(items.len() + 1, &record.data)?);
-+        }
-+    }
-+    if items.is_empty() {
-+        return None;
-+    }
-+    Some(Cow::Owned(format!(
-+        r#"<hh:memoProperties itemCnt="{}">{}</hh:memoProperties>"#,
-+        items.len(),
-+        items.concat()
-+    )))
-+}
-+
-+/// One `<hh:memoPr>` from a MEMO_SHAPE record: width (u32), line type (u8), line
-+/// width (u8), line, fill and active colors (COLORREF), memo type (u32). The
-+/// inverse of `parser::hwpx::header::parse_memo_shape`.
-+fn memo_pr_xml(id: usize, data: &[u8]) -> Option<String> {
-+    let u32_at = |at: usize| Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?));
-+    let line_type = match *data.get(4)? {
-+        1 => "SOLID",
-+        2 => "DASH_DOT",
-+        3 => "DASH",
-+        4 => "DASH_DOT_DOT",
-+        5 => "LONG_DASH",
-+        6 => "CIRCLE",
-+        7 => "DOUBLE_SLIM",
-+        8 => "SLIM_THICK",
-+        9 => "THICK_SLIM",
-+        10 => "SLIM_THICK_SLIM",
-+        11 => "WAVE",
-+        12 => "DOUBLE_WAVE",
-+        13 => "DOT",
-+        _ => return None,
-+    };
-+    let memo_type = match u32_at(18)? {
-+        0 => "NOMAL",
-+        _ => return None,
-+    };
-+    Some(format!(
-+        concat!(
-+            r#"<hh:memoPr id="{}" width="{}" lineWidth="{}" lineType="{}" "#,
-+            r#"lineColor="{}" fillColor="{}" activeColor="{}" memoType="{}"/>"#,
-+        ),
-+        id,
-+        u32_at(0)?,
-+        data.get(5)?,
-+        line_type,
-+        super::shape::color_to_hex(u32_at(6)?),
-+        super::shape::color_to_hex(u32_at(10)?),
-+        super::shape::color_to_hex(u32_at(14)?),
-+        memo_type,
-+    ))
-+}
-+
-@@ -640,0 +753,172 @@ mod tests {
+@@ -640,0 +686,118 @@ mod tests {
 +
 +    /// why-hwp: `testdata/sample.hwp` memo as rhwp reads it from HWP5.
 +    fn hwp_memo(number: u32) -> Field {
@@ -234,60 +131,6 @@ index 11cda4a..8dab0cd 100644
 +        assert_eq!(orphan_end_field_id(&end), 0);
 +    }
 +
-+    fn memo_shape_record(data: &[u8]) -> crate::model::document::RawRecord {
-+        crate::model::document::RawRecord {
-+            tag_id: tags::HWPTAG_MEMO_SHAPE,
-+            level: 1,
-+            data: data.to_vec(),
-+        }
-+    }
-+
-+    /// The MEMO_SHAPE record of `testdata/sample.hwp` and the block Hancom Office
-+    /// 2024 writes for it.
-+    const SAMPLE_MEMO_SHAPE: [u8; 22] = [
-+        0xe7, 0x3c, 0x00, 0x00, 0x01, 0x01, 0xb6, 0xd7, 0xae, 0x00, 0xf0, 0xff, 0xe9, 0x00, 0xcf,
-+        0xf1, 0xc7, 0x00, 0x00, 0x00, 0x00, 0x00,
-+    ];
-+
-+    #[test]
-+    fn hwp_memo_shapes_become_memo_properties() {
-+        let mut doc_info = DocInfo::default();
-+        assert_eq!(memo_properties_xml(&doc_info), None);
-+        doc_info.extra_records.push(memo_shape_record(&SAMPLE_MEMO_SHAPE));
-+        assert_eq!(
-+            memo_properties_xml(&doc_info).as_deref(),
-+            Some(concat!(
-+                r#"<hh:memoProperties itemCnt="1"><hh:memoPr id="1" width="15591" "#,
-+                r##"lineWidth="1" lineType="SOLID" lineColor="#B6D7AE" fillColor="#F0FFE9" "##,
-+                r##"activeColor="#CFF1C7" memoType="NOMAL"/></hh:memoProperties>"##,
-+            ))
-+        );
-+        let mut dash = SAMPLE_MEMO_SHAPE;
-+        dash[4] = 3;
-+        dash[5] = 3;
-+        doc_info.extra_records.push(memo_shape_record(&dash));
-+        let xml = memo_properties_xml(&doc_info).unwrap();
-+        assert!(xml.starts_with(r#"<hh:memoProperties itemCnt="2">"#), "{xml}");
-+        assert!(
-+            xml.contains(r#"<hh:memoPr id="2" width="15591" lineWidth="3" lineType="DASH" "#),
-+            "{xml}"
-+        );
-+    }
-+
-+    #[test]
-+    fn memo_properties_keep_hwpx_block_and_skip_unknown_values() {
-+        let mut doc_info = DocInfo::default();
-+        let mut unknown = SAMPLE_MEMO_SHAPE;
-+        unknown[4] = 0;
-+        doc_info.extra_records.push(memo_shape_record(&unknown));
-+        assert_eq!(memo_properties_xml(&doc_info), None);
-+        doc_info.memo_properties_xml = Some("<hh:memoProperties itemCnt=\"0\"/>".to_string());
-+        assert_eq!(
-+            memo_properties_xml(&doc_info).as_deref(),
-+            Some("<hh:memoProperties itemCnt=\"0\"/>")
-+        );
-+    }
-+
 +    fn hwpx_entry(bytes: &[u8], name: &str) -> String {
 +        use std::io::Read;
 +        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip");
@@ -340,29 +183,16 @@ index 11cda4a..8dab0cd 100644
 +            assert_eq!(ends, memos as usize, "{path}");
 +        }
 +    }
-diff --git a/src/serializer/hwpx/header.rs b/src/serializer/hwpx/header.rs
-index 185fdf0..54e1539 100644
---- a/src/serializer/hwpx/header.rs
-+++ b/src/serializer/hwpx/header.rs
-@@ -117,4 +117,4 @@ where
--    // parse_memo_shape가 만드는 extra_records(HWPTAG_MEMO_SHAPE, hwpx→hwp5
--    // 변환 전용)는 여기서 쓰이지 않는다. 원본 verbatim splice로 hwpx→hwpx
--    // 라운드트립 시 memoPr 소실을 막는다(#3xxx).
--    if let Some(memo_properties) = &doc.doc_info.memo_properties_xml {
-+    // 원본 verbatim splice로 hwpx→hwpx 라운드트립 시 memoPr 소실을 막는다(#3xxx).
-+    // why-hwp: an HWP5 source has no such block; memo_properties_xml builds it
-+    // from the DocInfo MEMO_SHAPE records.
-+    if let Some(memo_properties) = super::field::memo_properties_xml(&doc.doc_info) {
 diff --git a/src/serializer/hwpx/section.rs b/src/serializer/hwpx/section.rs
-index 43ae026..a5aea4b 100644
+index 8633d59612..fcf7403ef2 100644
 --- a/src/serializer/hwpx/section.rs
 +++ b/src/serializer/hwpx/section.rs
-@@ -1834 +1834 @@ where
+@@ -1843 +1843 @@ where
 -        let xml_result = if fr.end_field_id == 0 {
 +        let xml_result = if super::field::end_field_id(f, fr) == 0 {
-@@ -1842 +1842 @@ where
+@@ -1851 +1851 @@ where
 -                    |w| write_field_end_full(w, f.field_id, fr.end_field_id),
 +                    |w| write_field_end_full(w, f.field_id, super::field::end_field_id(f, fr)),
-@@ -1990 +1990 @@ where
+@@ -2005 +2005 @@ where
 -            |w| write_field_end_full(w, ofe.begin_id_ref, ofe.field_id),
 +            |w| write_field_end_full(w, ofe.begin_id_ref, super::field::orphan_end_field_id(ofe)),

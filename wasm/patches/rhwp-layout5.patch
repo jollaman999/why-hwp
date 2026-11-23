@@ -1,5 +1,5 @@
 # rhwp equation and line-end fixes for why-hwp, measured against Hangul 2024 output.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and
 # wasm/patches/rhwp-layout.patch, rhwp-layout2.patch, rhwp-layout3.patch and
 # rhwp-layout4.patch; apply this after rhwp-layout4.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
@@ -31,10 +31,10 @@
 #   svg_render.rs, pdf.rs, layout/paragraph_layout.rs and
 #   layout/text_measurement.rs cover these changes.
 diff --git a/src/document_core/queries/rendering.rs b/src/document_core/queries/rendering.rs
-index 315c46b06..824f88b84 100644
+index 0713a8f212..62cb5e9c3a 100644
 --- a/src/document_core/queries/rendering.rs
 +++ b/src/document_core/queries/rendering.rs
-@@ -1995 +1995,5 @@ impl DocumentCore {
+@@ -1949 +1949,5 @@ impl DocumentCore {
 -            svg_pages.push(self.render_layer_tree_svg(&tree)?);
 +            svg_pages.push(
 +                crate::renderer::equation::svg_render::with_structure_glyph_hints(|| {
@@ -42,7 +42,7 @@ index 315c46b06..824f88b84 100644
 +                })?,
 +            );
 diff --git a/src/renderer/equation/accent_outline.rs b/src/renderer/equation/accent_outline.rs
-index 2cc9c0878..79121f2d2 100644
+index 2cc9c08781..79121f2d29 100644
 --- a/src/renderer/equation/accent_outline.rs
 +++ b/src/renderer/equation/accent_outline.rs
 @@ -180,0 +181,11 @@ fn append_head(
@@ -58,7 +58,7 @@ index 2cc9c0878..79121f2d2 100644
 +    }
 +}
 diff --git a/src/renderer/equation/brace_stretch.rs b/src/renderer/equation/brace_stretch.rs
-index 6aa0fe3e7..3c45137a1 100644
+index 6aa0fe3e71..3c45137a17 100644
 --- a/src/renderer/equation/brace_stretch.rs
 +++ b/src/renderer/equation/brace_stretch.rs
 @@ -31,0 +32,11 @@ fn project(out: &mut Vec<Command>, glyph: Glyph, map: impl Fn((f64, f64)) -> (f6
@@ -74,7 +74,7 @@ index 6aa0fe3e7..3c45137a1 100644
 +}
 +
 diff --git a/src/renderer/equation/font_frame_metrics.rs b/src/renderer/equation/font_frame_metrics.rs
-index 87bdd4b54..a6734ca27 100644
+index 87bdd4b546..a6734ca278 100644
 --- a/src/renderer/equation/font_frame_metrics.rs
 +++ b/src/renderer/equation/font_frame_metrics.rs
 @@ -99,0 +100,17 @@ pub(super) fn for_size_at_dpi(fs: f64, dpi: f64) -> Option<FontFrameMetrics> {
@@ -121,10 +121,10 @@ index 87bdd4b54..a6734ca27 100644
 +    }
 +}
 diff --git a/src/renderer/equation/layout.rs b/src/renderer/equation/layout.rs
-index 54fa761e8..51b77c99e 100644
+index 77826d89de..f1baed37b3 100644
 --- a/src/renderer/equation/layout.rs
 +++ b/src/renderer/equation/layout.rs
-@@ -1233,0 +1234,126 @@ mod tests {
+@@ -1261,0 +1262,126 @@ mod tests {
 +
 +    fn hyhwpeq_layout(script: &str, base_unit: i32) -> LayoutBox {
 +        let dpi = crate::renderer::DEFAULT_DPI;
@@ -252,7 +252,7 @@ index 54fa761e8..51b77c99e 100644
 +        assert!(rise.abs() < 1e-9, "second row {rise}");
 +    }
 diff --git a/src/renderer/equation/layout/cases_columns.rs b/src/renderer/equation/layout/cases_columns.rs
-index 701267b57..f3bd14f6b 100644
+index 701267b578..f3bd14f6b7 100644
 --- a/src/renderer/equation/layout/cases_columns.rs
 +++ b/src/renderer/equation/layout/cases_columns.rs
 @@ -75,0 +76,14 @@ impl EqLayout {
@@ -284,7 +284,7 @@ index 701267b57..f3bd14f6b 100644
 +                    height,
 +                    baseline,
 diff --git a/src/renderer/equation/layout/limit_geometry.rs b/src/renderer/equation/layout/limit_geometry.rs
-index 4afddea2b..33aaa3647 100644
+index 4afddea2bb..33aaa36473 100644
 --- a/src/renderer/equation/layout/limit_geometry.rs
 +++ b/src/renderer/equation/layout/limit_geometry.rs
 @@ -17,0 +18 @@ impl EqLayout {
@@ -313,7 +313,7 @@ index 4afddea2b..33aaa3647 100644
 -            height: height.max(name_box.as_ref().map_or(0.0, |name| name.height)),
 +            height: height.max(name_box.as_ref().map_or(0.0, |name| name.y + name.height)),
 diff --git a/src/renderer/equation/script_fraction_frame.rs b/src/renderer/equation/script_fraction_frame.rs
-index 69310a1e3..6629ba14e 100644
+index 69310a1e39..6629ba14e7 100644
 --- a/src/renderer/equation/script_fraction_frame.rs
 +++ b/src/renderer/equation/script_fraction_frame.rs
 @@ -27,0 +28,24 @@ const REDUCED: [[u32; 5]; 7] = [
@@ -409,7 +409,7 @@ index 69310a1e3..6629ba14e 100644
 +    }
 +}
 diff --git a/src/renderer/equation/svg_render.rs b/src/renderer/equation/svg_render.rs
-index 4c4d6a94f..d6e73e28c 100644
+index 4c4d6a94f9..d6e73e28cd 100644
 --- a/src/renderer/equation/svg_render.rs
 +++ b/src/renderer/equation/svg_render.rs
 @@ -35,0 +36,368 @@ pub fn render_equation_svg(layout: &LayoutBox, color: &str, base_font_size: f64)
@@ -1009,7 +1009,7 @@ index 4c4d6a94f..d6e73e28c 100644
 +    }
 +
 diff --git a/src/renderer/equation/variable_outline.rs b/src/renderer/equation/variable_outline.rs
-index 6c44526b1..b436d7aa1 100644
+index 6c44526b1b..b436d7aa1b 100644
 --- a/src/renderer/equation/variable_outline.rs
 +++ b/src/renderer/equation/variable_outline.rs
 @@ -208,0 +209,11 @@ pub(super) fn commands(
@@ -1048,10 +1048,10 @@ index 6c44526b1..b436d7aa1 100644
 +    (reference.len() == outline.len() && (ax - bx).abs() < 1e-9).then_some(by - ay)
 +}
 diff --git a/src/renderer/layout/paragraph_layout.rs b/src/renderer/layout/paragraph_layout.rs
-index 01c9071db..a333fbda2 100755
+index adaae5f227..f8984acf01 100755
 --- a/src/renderer/layout/paragraph_layout.rs
 +++ b/src/renderer/layout/paragraph_layout.rs
-@@ -1484,0 +1485,19 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
+@@ -1505,0 +1506,19 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
 +) -> f64 {
 +    trailing_blank_width_after_last_inline_object(
 +        line,
@@ -1071,24 +1071,24 @@ index 01c9071db..a333fbda2 100755
 +    stop_on_underline: bool,
 +    _measure_width: fn(&str, &TextStyle) -> f64,
 +    ideographic_space: bool,
-@@ -1503 +1522,2 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
+@@ -1524 +1543,2 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
 -        let mut trailing_spaces = effective_text_for_metrics(run)
 +        let run_text = effective_text_for_metrics(run);
 +        let mut trailing_spaces = run_text
-@@ -1506 +1526 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
+@@ -1527 +1547 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
 -            .take_while(|c| *c == ' ')
 +            .take_while(|c| *c == ' ' || (ideographic_space && *c == '\u{3000}'))
-@@ -1521 +1541,3 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
+@@ -1542 +1562,3 @@ pub(crate) fn trailing_space_width_after_last_inline_object(
 -        width += estimate_text_width_exact(&" ".repeat(trailing_spaces), &ts);
 +        let tail_start = run_text.chars().count() - trailing_spaces;
 +        let tail: String = run_text.chars().skip(tail_start).collect();
 +        width += estimate_text_width_exact(&tail, &ts);
-@@ -7861 +7883 @@ impl LayoutEngine {
+@@ -8147 +8169 @@ impl LayoutEngine {
 -                    trailing_space_width_after_last_inline_object(
 +                    trailing_blank_width_after_last_inline_object(
-@@ -7871,0 +7894 @@ impl LayoutEngine {
+@@ -8157,0 +8180 @@ impl LayoutEngine {
 +                        right_align_excludes_trailing_ws,
-@@ -12713,0 +12737,70 @@ mod trailing_tac_width_tests {
+@@ -13038,0 +13062,70 @@ mod trailing_tac_width_tests {
 +#[cfg(test)]
 +mod trailing_ideographic_space_tests {
 +    use super::{
@@ -1160,14 +1160,14 @@ index 01c9071db..a333fbda2 100755
 +}
 +
 diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
-index 36d55697b..f7cfdb28e 100644
+index ecc5ef6982..84a8c905cb 100644
 --- a/src/renderer/layout/text_measurement.rs
 +++ b/src/renderer/layout/text_measurement.rs
-@@ -2494,0 +2495,3 @@ fn char_width_decision_with_hft_tracking<'a>(
+@@ -2585,0 +2586,3 @@ fn char_width_decision_with_hft_tracking<'a>(
 +            // 한컴 Print의 HFT 한양중고딕·한양신명조에서 U+2013·U+2265·「」도 전각으로 전진한다.
 +            || (style.source_font_is_hft
 +                && matches!(c, '\u{2013}' | '\u{2265}' | '\u{300C}' | '\u{300D}'))
-@@ -4082,0 +4086,22 @@ mod tests {
+@@ -4192,0 +4196,22 @@ mod tests {
 +    #[test]
 +    fn hft_fallback_advances_ks_symbols_fullwidth() {
 +        let m = EmbeddedTextMeasurer;
@@ -1191,10 +1191,10 @@ index 36d55697b..f7cfdb28e 100644
 +    }
 +
 diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
-index 0fd489dba..177f2e372 100644
+index 58a5a0dd92..41c95eb7e2 100644
 --- a/src/renderer/pdf.rs
 +++ b/src/renderer/pdf.rs
-@@ -1846,0 +1847,52 @@ fn decode_missing_hancom_equation_glyphs<'a>(
+@@ -1864,0 +1865,52 @@ fn decode_missing_hancom_equation_glyphs<'a>(
 +/// Equation structures that Hancom Office paints with HyhwpEQ glyphs arrive
 +/// as `<g data-hyhwpeq="...">` groups around the paths that draw them. Paint
 +/// the glyphs when the font database holds the face; otherwise drop the group
@@ -1247,14 +1247,14 @@ index 0fd489dba..177f2e372 100644
 +    std::borrow::Cow::Owned(out)
 +}
 +
-@@ -2515,0 +2568,6 @@ where
+@@ -2533,0 +2586,6 @@ where
 +        let structure_svg = apply_hancom_equation_structure_glyphs(
 +            svg,
 +            !missing_equation_families
 +                .contains(&crate::renderer::equation::hancom_glyphs::FONT_FAMILY),
 +        );
 +        let svg: &str = &structure_svg;
-@@ -2957,0 +3016,58 @@ mod tests {
+@@ -2975,0 +3034,58 @@ mod tests {
 +    #[test]
 +    fn equation_structure_glyphs_are_painted_only_with_the_hancom_face() {
 +        let path = "<line x1=\"1.00\" y1=\"2.00\" x2=\"16.00\" y2=\"2.00\" stroke=\"#102030\" stroke-width=\"0.40\"/>\n";
@@ -1314,10 +1314,10 @@ index 0fd489dba..177f2e372 100644
 +    }
 +
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
-index 1ac6e162a..920328a71 100644
+index 8f5238375c..c1f795def2 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
-@@ -1113 +1113,4 @@ impl SvgRenderer {
+@@ -1138 +1138,4 @@ impl SvgRenderer {
 -                self.output.push_str(&eq.svg_content);
 +                match super::equation::svg_render::structure_glyph_fragment(eq) {
 +                    Some(fragment) => self.output.push_str(&fragment),

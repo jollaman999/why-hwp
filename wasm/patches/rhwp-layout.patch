@@ -1,29 +1,38 @@
 # rhwp layout fixes for why-hwp, measured against Hangul 2024 output.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh.
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh.
 # Zero-context diff (apply with git apply --unidiff-zero).
 #
 # - text_measurement.rs, font_metrics_technical_symbols.rs, font_metrics_data.rs:
 #   HCR Batang box-drawing characters advance 970/1000 em; bold text measures
 #   symbols with the regular face's advance unless the glyph is known missing.
-# - picture_footnote.rs: table and picture captions draw their bullet.
 # - typeset.rs: the first line of an hwpx column keeps its stored spacing-before.
 # - rendering.rs: text output puts a space after a list bullet.
 # - pdf.rs: PDF font fallback tries the SVG font-family list before database order.
-# - font_metrics_data.rs: "한컴 윤고딕 250" uses the Haan YGodic 250 widths.
 # - glyph_fit.rs: glyphs under negative letter spacing keep their own width.
 # - list_marker_geometry.rs: an ASCII bullet takes a half-em cell.
 # - punctuation_slots.rs: a space after Latin text advances with the Hangul em and ratio.
 # - equation/: arrows use the equation font; HYhwpEQ equations keep a thin space after a function name.
 # - composer/tests.rs, layout/tests.rs and the test modules above cover these changes.
+#   Since rhwp v0.9.1 a caption draws its bullet (rhwp 050e78455) and "한컴 윤고딕 250"
+#   is measured with the Haan YGodic 250 widths (rhwp c87e50142) without this patch;
+#   the tests for both are kept.
 
 diff --git a/src/document_core/queries/rendering.rs b/src/document_core/queries/rendering.rs
-index 79a5ce23df..430795f319 100644
+index 2ffc90614f..7511f88343 100644
 --- a/src/document_core/queries/rendering.rs
 +++ b/src/document_core/queries/rendering.rs
-@@ -8735,3 +8735,23 @@ impl DocumentCore {
+@@ -8778 +8778 @@ impl DocumentCore {
+-        Ok(Self::extract_render_tree_text(&tree.root))
++        Ok(Self::extract_render_tree_text(&tree.root, &self.styles))
+@@ -8781,4 +8781,27 @@ impl DocumentCore {
+-    fn extract_render_tree_text(root: &crate::renderer::render_tree::RenderNode) -> String {
 -        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
 -
 -        fn collect_line_text(node: &RenderNode, out: &mut String, has_token: &mut bool) {
++    fn extract_render_tree_text(
++        root: &crate::renderer::render_tree::RenderNode,
++        styles: &crate::renderer::style_resolver::ResolvedStyleSet,
++    ) -> String {
 +        use crate::renderer::render_tree::{FieldMarkerType, RenderNode, RenderNodeType};
 +        use crate::renderer::style_resolver::ResolvedStyleSet;
 +
@@ -47,29 +56,32 @@ index 79a5ce23df..430795f319 100644
 +            has_token: &mut bool,
 +            styles: &ResolvedStyleSet,
 +        ) {
-@@ -8739,0 +8760 @@ impl DocumentCore {
+@@ -8786,0 +8810 @@ impl DocumentCore {
 +                    let list_head = !*has_token && is_list_head_run(tr, styles);
-@@ -8746,0 +8768,3 @@ impl DocumentCore {
+@@ -8793,0 +8818,3 @@ impl DocumentCore {
 +                    if list_head {
 +                        out.push(' ');
 +                    }
-@@ -8777 +8801 @@ impl DocumentCore {
+@@ -8824 +8851 @@ impl DocumentCore {
 -                collect_line_text(child, out, has_token);
 +                collect_line_text(child, out, has_token, styles);
-@@ -8781 +8805 @@ impl DocumentCore {
+@@ -8877 +8904 @@ impl DocumentCore {
 -        fn collect_page_lines(node: &RenderNode, lines: &mut Vec<String>) {
 +        fn collect_page_lines(node: &RenderNode, lines: &mut Vec<String>, styles: &ResolvedStyleSet) {
-@@ -8789 +8813 @@ impl DocumentCore {
+@@ -8889 +8916 @@ impl DocumentCore {
 -                collect_line_text(node, &mut line, &mut has_token);
 +                collect_line_text(node, &mut line, &mut has_token, styles);
-@@ -8798 +8822 @@ impl DocumentCore {
--                collect_page_lines(child, lines);
-+                collect_page_lines(child, lines, styles);
-@@ -8804 +8828 @@ impl DocumentCore {
--        collect_page_lines(&tree.root, &mut lines);
-+        collect_page_lines(&tree.root, &mut lines, &self.styles);
+@@ -8914 +8941 @@ impl DocumentCore {
+-                    collect_line_text(child, &mut line, &mut has_token);
++                    collect_line_text(child, &mut line, &mut has_token, styles);
+@@ -8927 +8954 @@ impl DocumentCore {
+-                    collect_page_lines(child, &mut child_lines);
++                    collect_page_lines(child, &mut child_lines, styles);
+@@ -8946 +8973 @@ impl DocumentCore {
+-        collect_page_lines(root, &mut lines);
++        collect_page_lines(root, &mut lines, styles);
 diff --git a/src/renderer/composer/punctuation_slots.rs b/src/renderer/composer/punctuation_slots.rs
-index c4ba43d938..562cf12528 100644
+index 790330c4c6..962949c6d5 100644
 --- a/src/renderer/composer/punctuation_slots.rs
 +++ b/src/renderer/composer/punctuation_slots.rs
 @@ -6 +6 @@ use crate::renderer::style_resolver::ResolvedCharStyle;
@@ -87,10 +99,10 @@ index c4ba43d938..562cf12528 100644
 +            || style.ratio_for_lang(origin) != style.ratio_for_lang(1)))
 +    .then_some(origin)
 diff --git a/src/renderer/composer/tests.rs b/src/renderer/composer/tests.rs
-index 6f24f7d2ff..2d65ec89b7 100644
+index 6f685ed405..18cb7811ad 100644
 --- a/src/renderer/composer/tests.rs
 +++ b/src/renderer/composer/tests.rs
-@@ -2559,0 +2560,30 @@ fn recalculating_vpos_keeps_the_room_of_a_paragraph_without_stored_lines() {
+@@ -2560,0 +2561,30 @@ fn recalculating_vpos_keeps_the_room_of_a_paragraph_without_stored_lines() {
 +
 +/// 영문 뒤 공백도 한글 슬롯의 em·장평으로 전진한다(한글 장평 98%·영문 100%).
 +#[test]
@@ -134,7 +146,7 @@ index 4f6b20517e..5e7de7281c 100644
 +                outline: None,
 +            },
 diff --git a/src/renderer/equation/parser.rs b/src/renderer/equation/parser.rs
-index 2c7a833788..869ef4837d 100644
+index 88abaff5b7..62a4a59e19 100644
 --- a/src/renderer/equation/parser.rs
 +++ b/src/renderer/equation/parser.rs
 @@ -74,0 +75 @@ pub struct EqParser {
@@ -144,7 +156,7 @@ index 2c7a833788..869ef4837d 100644
 @@ -137,0 +140,2 @@ impl EqParser {
 +            function_thin_space: equation.font_name.eq_ignore_ascii_case("HYhwpEQ")
 +                && !equation.uses_legacy_display(),
-@@ -995,0 +1000,25 @@ fn test_rm_p_left() {
+@@ -1000,0 +1005,25 @@ fn test_rm_p_left() {
 +#[cfg(test)]
 +#[test]
 +fn test_document_function_thin_space() {
@@ -177,19 +189,15 @@ index 63876b4614..9a6ff264a5 100644
 @@ -315,0 +316 @@ impl EqParser {
 +                && !self.function_thin_space
 diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
-index 71c4b5153e..0f85fdc2aa 100644
+index 6b85ad2384..d180e8ae61 100644
 --- a/src/renderer/font_metrics_data.rs
 +++ b/src/renderer/font_metrics_data.rs
-@@ -293,0 +294 @@ fn resolve_projected_metric_alias(name: &str) -> (&str, Option<&'static str>) {
-+        None if name == "한컴 윤고딕 250" => ("Haan YGodic 250", None),
-@@ -438,0 +440 @@ fn static_metric_alias(name: &str) -> Option<&'static str> {
-+        None if name == "한컴 윤고딕 250" => Some("Haan YGodic 250"),
-@@ -481,0 +484 @@ pub(crate) fn find_metric_decision<'a>(
+@@ -487,0 +488 @@ pub(crate) fn find_metric_decision<'a>(
 +/// Bold 표가 수집하지 않았을 뿐 결측으로 확인되지 않은 글자는 이 표의 폭으로 잰다.
-@@ -719,0 +723 @@ mod tests {
+@@ -732,0 +734 @@ mod tests {
 +            ("한컴 윤고딕 250", "Haan YGodic 250"),
 diff --git a/src/renderer/font_metrics_technical_symbols.rs b/src/renderer/font_metrics_technical_symbols.rs
-index dc2e15ded8..1da6c59c23 100644
+index c8b8116190..f239dadde4 100644
 --- a/src/renderer/font_metrics_technical_symbols.rs
 +++ b/src/renderer/font_metrics_technical_symbols.rs
 @@ -84,0 +85,8 @@ fn verified_technical_symbol_entry(metric: &FontMetric, ch: char) -> Option<(boo
@@ -202,7 +210,7 @@ index dc2e15ded8..1da6c59c23 100644
 +        return Some((true, 970));
 +    }
 diff --git a/src/renderer/glyph_fit.rs b/src/renderer/glyph_fit.rs
-index 9c48d91cb5..c9cfd47f19 100644
+index 4857d94772..41dc12e3b2 100644
 --- a/src/renderer/glyph_fit.rs
 +++ b/src/renderer/glyph_fit.rs
 @@ -13,0 +14,8 @@ fn has_positive_source_tracking(style: &TextStyle) -> bool {
@@ -239,7 +247,7 @@ index 9c48d91cb5..c9cfd47f19 100644
 @@ -70 +74 @@ pub(crate) fn glyph_fit_positions<'a>(
 -        || positive_source_tracking
 +        || source_tracking
-@@ -121,0 +126,26 @@ pub(crate) fn terminal_underline_positions(
+@@ -269,0 +274,26 @@ pub(crate) fn canvas_cluster_fit(
 +
 +#[cfg(test)]
 +mod tests {
@@ -267,7 +275,7 @@ index 9c48d91cb5..c9cfd47f19 100644
 +    }
 +}
 diff --git a/src/renderer/layout/paragraph_layout/list_marker_geometry.rs b/src/renderer/layout/paragraph_layout/list_marker_geometry.rs
-index 567933e357..14820fa6dc 100644
+index 460256d90b..c0ee0e9c74 100644
 --- a/src/renderer/layout/paragraph_layout/list_marker_geometry.rs
 +++ b/src/renderer/layout/paragraph_layout/list_marker_geometry.rs
 @@ -152,3 +152,4 @@ pub(super) fn list_marker_geometry_for(
@@ -303,27 +311,11 @@ index 567933e357..14820fa6dc 100644
 +        assert!((bullet_area("\u{274d}") - 30.0).abs() < 1e-9, "{}", bullet_area("\u{274d}"));
 +    }
 +}
-diff --git a/src/renderer/layout/picture_footnote.rs b/src/renderer/layout/picture_footnote.rs
-index 9e73b8f56f..6b77af6bd4 100644
---- a/src/renderer/layout/picture_footnote.rs
-+++ b/src/renderer/layout/picture_footnote.rs
-@@ -1052,0 +1053,11 @@ impl LayoutEngine {
-+            let bullet_head = styles
-+                .para_styles
-+                .get(para.para_shape_id as usize)
-+                .is_some_and(|style| style.head_type == crate::model::style::HeadType::Bullet);
-+            if bullet_head {
-+                if let Some(bulleted) =
-+                    self.apply_paragraph_numbering(Some(&composed), para, styles, 0)
-+                {
-+                    composed = bulleted;
-+                }
-+            }
 diff --git a/src/renderer/layout/tests.rs b/src/renderer/layout/tests.rs
-index 90955e945f..3085036587 100644
+index 0061c86e5a..138fd7101e 100644
 --- a/src/renderer/layout/tests.rs
 +++ b/src/renderer/layout/tests.rs
-@@ -3475,0 +3476,96 @@ fn source_fragment_tab_record_boundaries_preserve_dynamic_stop() {
+@@ -3487,0 +3488,95 @@ fn source_fragment_tab_record_boundaries_preserve_dynamic_stop() {
 +
 +#[test]
 +fn caption_bullet_paragraph_draws_marker_before_body() {
@@ -396,7 +388,6 @@ index 90955e945f..3085036587 100644
 +        area.x,
 +        area.width,
 +        area.y,
-+        &mut crate::renderer::AutoNumberCounter::default(),
 +        &[],
 +        None,
 +        None,
@@ -421,10 +412,10 @@ index 90955e945f..3085036587 100644
 +    );
 +}
 diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
-index ce0578e58b..1316bdd430 100644
+index 538bfdd1ea..55b00f4ea7 100644
 --- a/src/renderer/layout/text_measurement.rs
 +++ b/src/renderer/layout/text_measurement.rs
-@@ -1803 +1803,12 @@ fn measure_char_width_embedded_decision_for_font<'a>(
+@@ -1885 +1885,12 @@ fn measure_char_width_embedded_decision_for_font<'a>(
 -        let Some(glyph_w) = mm.metric.get_width(c) else {
 +        // [#8079] 굵은 글자는 Bold 면으로 그리되 전진폭은 같은 family 보통 면의 값이다.
 +        // 보통 표에 없는 글자는 Bold 폭을 그대로 쓴다(결측을 0 폭으로 만들지 않는다).
@@ -438,7 +429,7 @@ index ce0578e58b..1316bdd430 100644
 +                font_metrics_data::verified_metric_has_glyph(mm.metric, c) != Some(false)
 +            })
 +        }) else {
-@@ -1812,7 +1823 @@ fn measure_char_width_embedded_decision_for_font<'a>(
+@@ -1894,7 +1905 @@ fn measure_char_width_embedded_decision_for_font<'a>(
 -        // [#8079] 굵은 글자는 Bold 면으로 그리되 전진폭은 같은 family 보통 면의 값이다.
 -        // 보통 표에 없는 글자는 Bold 폭을 그대로 쓴다(결측을 0 폭으로 만들지 않는다).
 -        let glyph_w = regular_bold_advance
@@ -447,12 +438,12 @@ index ce0578e58b..1316bdd430 100644
 -            .and_then(|regular| regular.get_width(c))
 -            .unwrap_or(glyph_w);
 +        let glyph_w = regular_w.unwrap_or(glyph_w);
-@@ -2148,0 +2154,4 @@ fn char_width_decision_with_hft_tracking<'a>(
+@@ -2230,0 +2236,4 @@ fn char_width_decision_with_hft_tracking<'a>(
 +        } else if chars[i] != c && ('\u{2500}'..='\u{257F}').contains(&c) {
 +            // 원본 HNC 괘선 PUA는 표시용 Unicode 괘선과 다른 프로그램이다.
 +            // 표시 기호의 hmtx로 원본 반각 전진을 덮어쓰지 않는다.
 +            chars[i]
-@@ -4323,0 +4333,29 @@ mod tests {
+@@ -4433,0 +4443,29 @@ mod tests {
 +    #[test]
 +    fn hcr_batang_symbol_slot_uses_font_hmtx() {
 +        let m = EmbeddedTextMeasurer;
@@ -483,10 +474,10 @@ index ce0578e58b..1316bdd430 100644
 +    }
 +
 diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
-index 2719bef245..b3c812649f 100644
+index 83f3817a64..af6bb3e3d1 100644
 --- a/src/renderer/pdf.rs
 +++ b/src/renderer/pdf.rs
-@@ -1659,0 +1660,73 @@ pub fn pdf_font_fallback_selector_with_limits(
+@@ -1677,0 +1678,73 @@ pub fn pdf_font_fallback_selector_with_limits(
 +#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 +#[derive(Debug, Default)]
 +struct PdfFontFamilyChains {
@@ -560,10 +551,10 @@ index 2719bef245..b3c812649f 100644
 +    }
 +}
 +
-@@ -2204 +2277 @@ where
+@@ -2222 +2295 @@ where
 -    options.font_resolver.select_fallback = pdf_font_fallback_selector_with_limits(
 +    options.font_resolver = pdf_font_resolver_with_limits(
-@@ -2564,0 +2638,53 @@ mod tests {
+@@ -2582,0 +2656,53 @@ mod tests {
 +    #[test]
 +    fn font_fallback_follows_svg_family_list_before_database_order() {
 +        use usvg::fontdb::{Database, FaceInfo, Language, Source, Stretch, Style, Weight, ID};
@@ -618,10 +609,10 @@ index 2719bef245..b3c812649f 100644
 +    }
 +
 diff --git a/src/renderer/typeset.rs b/src/renderer/typeset.rs
-index 52ebe112e2..07c28c4567 100755
+index a22d4d64da..eebedc1ab8 100755
 --- a/src/renderer/typeset.rs
 +++ b/src/renderer/typeset.rs
-@@ -5249,0 +5250,10 @@ impl TypesetEngine {
+@@ -5350,0 +5351,10 @@ impl TypesetEngine {
 +        let column_top_stored_spacing_before = st.profile.hwpx_stored_layout()
 +            && st.col_count == 1
 +            && st.current_items.is_empty()
@@ -632,15 +623,15 @@ index 52ebe112e2..07c28c4567 100755
 +                    && (hwpunit_to_px(s0.vertical_pos, self.dpi) - fmt.spacing_before).abs()
 +                        <= self.dpi / 7200.0
 +            });
-@@ -5262,0 +5273,6 @@ impl TypesetEngine {
+@@ -5363,0 +5374,6 @@ impl TypesetEngine {
 +                    let source_origin = if column_top_stored_spacing_before {
 +                        s0.vertical_pos
 +                            - crate::renderer::px_to_hwpunit(fmt.spacing_before, self.dpi)
 +                    } else {
 +                        s0.vertical_pos
 +                    };
-@@ -5264 +5280 @@ impl TypesetEngine {
+@@ -5365 +5381 @@ impl TypesetEngine {
 -                    st.record_vpos_page_origin(Some(s0.vertical_pos));
 +                    st.record_vpos_page_origin(Some(source_origin));
-@@ -5693,0 +5710 @@ impl TypesetEngine {
+@@ -5863,0 +5880 @@ impl TypesetEngine {
 +            && !column_top_stored_spacing_before

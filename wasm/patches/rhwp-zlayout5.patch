@@ -1,7 +1,8 @@
 diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
+index 8bf3f8b29a..cd8cbe1ee6 100644
 --- a/src/renderer/pdf.rs
 +++ b/src/renderer/pdf.rs
-@@ -3996,0 +3997,55 @@ endbfchar <DB80DEB1>";
+@@ -4014,0 +4015,55 @@ endbfchar <DB80DEB1>";
 +
 +    #[test]
 +    fn outline_marked_text_is_drawn_as_outlines_once() {
@@ -58,17 +59,18 @@ diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
 +        assert_eq!(shows, 3);
 +    }
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index 4ae05cdb5b..2a02893bd3 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
 @@ -133,0 +134,2 @@ pub struct SvgRenderer {
 +    /// why-hwp: counter of the ids that mark a glyph drawn as outlines (see `OUTLINE_TEXT_ID_PREFIX`)
 +    outline_text_counter: u32,
-@@ -281,0 +284 @@ impl SvgRenderer {
+@@ -284,0 +287 @@ impl SvgRenderer {
 +            outline_text_counter: 0,
-@@ -3933 +3936 @@ impl Renderer for SvgRenderer {
+@@ -4017 +4020 @@ impl Renderer for SvgRenderer {
 -                let length_attrs = svg_cluster_text_length_attrs(
 +                let mut length_attrs = svg_cluster_text_length_attrs(
-@@ -3945,0 +3949,24 @@ impl Renderer for SvgRenderer {
+@@ -4029,0 +4033,24 @@ impl Renderer for SvgRenderer {
 +                    if outline_attrs.is_none() && style.text_paint.is_none() {
 +                        if let Some(cell) = style
 +                            .glyph_fit_advance(glyph_advance(*char_idx, cluster_str))
@@ -93,7 +95,7 @@ diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
 +                            length_attrs.clear();
 +                        }
 +                    }
-@@ -4417,0 +4445,10 @@ fn color_to_svg(color: u32) -> String {
+@@ -4518,0 +4546,10 @@ fn color_to_svg(color: u32) -> String {
 +/// why-hwp: id prefix of a `<text>` whose glyph the PDF stage draws as outlines.
 +///
 +/// A full-width HFT symbol drawn by a substitute face is centred in its cell
@@ -105,6 +107,7 @@ diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
 +pub(crate) const OUTLINE_TEXT_ID_PREFIX: &str = "rhwp-outline-text-";
 +
 diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+index 236f946ece..a2eaa285d6 100644
 --- a/src/renderer/svg/tests.rs
 +++ b/src/renderer/svg/tests.rs
 @@ -1600,0 +1601 @@ fn test_svg_hidden_middle_dot_text_is_fitted_to_glyph_advance() {
@@ -166,6 +169,7 @@ diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
 @@ -1639 +1669,0 @@ fn hft_fullwidth_symbol_is_centred_in_its_cell() {
 -}
 diff --git a/vendor/svg2pdf/src/lib.rs b/vendor/svg2pdf/src/lib.rs
+index b6c2cecf22..b4eb7ceb24 100644
 --- a/vendor/svg2pdf/src/lib.rs
 +++ b/vendor/svg2pdf/src/lib.rs
 @@ -62,0 +63,5 @@ pub use usvg;
@@ -175,6 +179,7 @@ diff --git a/vendor/svg2pdf/src/lib.rs b/vendor/svg2pdf/src/lib.rs
 +pub const OUTLINE_TEXT_ID_PREFIX: &str = "rhwp-outline-text-";
 +
 diff --git a/vendor/svg2pdf/src/render/mod.rs b/vendor/svg2pdf/src/render/mod.rs
+index 133a30a972..3f0d7917ef 100644
 --- a/vendor/svg2pdf/src/render/mod.rs
 +++ b/vendor/svg2pdf/src/render/mod.rs
 @@ -126 +126,3 @@ impl Render for Node {

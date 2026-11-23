@@ -1,5 +1,5 @@
 # rhwp glyph fit for why-hwp: draw a display substitute at the source face's widths.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and every
 # earlier wasm/patches/*.patch in name order; apply this after
 # rhwp-zlayout3.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
@@ -15,89 +15,19 @@
 # - svg.rs: a cluster of a TrueType slot whose drawn face is not its metric face
 #   is fitted to its layout advance with textLength, as ASCII letters and digits
 #   already are. Installed faces have no metric face and are drawn as before.
-# - render_tree.rs: FootnoteMarkerNode carries the metric face of its run
-#   (not serialized when absent); layout fills it, other constructors pass None.
-# - svg.rs: a footnote marker whose face is such a substitute is drawn through
-#   draw_text, so each character gets the substitute's family chain and is
-#   fitted to the metric face's advance. It was one <text> naming the missing
-#   face, which fell back to the default font at its natural widths.
-# - svg/tests.rs covers both.
-diff --git a/src/paint/builder/tests.rs b/src/paint/builder/tests.rs
---- a/src/paint/builder/tests.rs
-+++ b/src/paint/builder/tests.rs
-@@ -297,0 +298 @@ fn lowers_all_leaf_variants_to_explicit_paint_ops() {
-+                metric_font_family: None,
-diff --git a/src/render_backend/scenes.rs b/src/render_backend/scenes.rs
---- a/src/render_backend/scenes.rs
-+++ b/src/render_backend/scenes.rs
-@@ -299,0 +300 @@ fn footnote_marker_node() -> FootnoteMarkerNode {
-+        metric_font_family: None,
-diff --git a/src/renderer/canvaskit_m07_pack_contract.rs b/src/renderer/canvaskit_m07_pack_contract.rs
---- a/src/renderer/canvaskit_m07_pack_contract.rs
-+++ b/src/renderer/canvaskit_m07_pack_contract.rs
-@@ -170,0 +171 @@ fn op_from_matrix_row(row: &serde_json::Value) -> PaintOp {
-+                metric_font_family: None,
-@@ -402,0 +404 @@ fn m07_pack_footnote_marker_stays_direct_with_declared_detail() {
-+            metric_font_family: None,
-diff --git a/src/renderer/canvaskit_policy.rs b/src/renderer/canvaskit_policy.rs
---- a/src/renderer/canvaskit_policy.rs
-+++ b/src/renderer/canvaskit_policy.rs
-@@ -3514,0 +3515 @@ mod tests {
-+                metric_font_family: None,
-diff --git a/src/renderer/layout/note_reference.rs b/src/renderer/layout/note_reference.rs
---- a/src/renderer/layout/note_reference.rs
-+++ b/src/renderer/layout/note_reference.rs
-@@ -94,0 +95 @@ pub(super) fn append(
-+                metric_font_family: style.metric_font_family.clone(),
-diff --git a/src/renderer/layout/paragraph_layout.rs b/src/renderer/layout/paragraph_layout.rs
---- a/src/renderer/layout/paragraph_layout.rs
-+++ b/src/renderer/layout/paragraph_layout.rs
-@@ -4274,0 +4275 @@ impl LayoutEngine {
-+                                    metric_font_family: base_ts.metric_font_family.clone(),
-@@ -8075,0 +8077 @@ impl LayoutEngine {
-+                            metric_font_family: style.metric_font_family.clone(),
-diff --git a/src/renderer/render_tree.rs b/src/renderer/render_tree.rs
---- a/src/renderer/render_tree.rs
-+++ b/src/renderer/render_tree.rs
-@@ -728,0 +729,4 @@ pub struct FootnoteMarkerNode {
-+    /// why-hwp: the face whose widths placed the marker when `font_family` is a
-+    /// display substitute for a missing face (`TextStyle::metric_font_family`).
-+    #[serde(skip_serializing_if = "Option::is_none")]
-+    pub metric_font_family: Option<String>,
-diff --git a/src/renderer/skia/renderer.rs b/src/renderer/skia/renderer.rs
---- a/src/renderer/skia/renderer.rs
-+++ b/src/renderer/skia/renderer.rs
-@@ -4224,0 +4225 @@ mod tests {
-+            metric_font_family: None,
+#   Footnote markers are drawn as their source run since rhwp 050e78455, so
+#   they are fitted the same way.
+# - svg/tests.rs covers it.
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index c7a529c570..4ae05cdb5b 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
-@@ -1028,4 +1028,15 @@ impl SvgRenderer {
--                self.output.push_str(&format!(
--                    "<text x=\"{}\" y=\"{}\" font-family=\"{}\" font-size=\"{}\" fill=\"{}\">{}</text>\n",
--                    node.bbox.x, y, escape_xml(font_family), sup_size, color, escape_xml(&marker.text),
--                ));
-+                let style = TextStyle {
-+                    font_family: marker.font_family.clone(),
-+                    metric_font_family: marker.metric_font_family.clone(),
-+                    font_size: sup_size,
-+                    color: marker.color,
-+                    ..Default::default()
-+                };
-+                if draws_with_display_substitute(&style) {
-+                    self.draw_text(&marker.text, node.bbox.x, y, &style);
-+                } else {
-+                    self.output.push_str(&format!(
-+                        "<text x=\"{}\" y=\"{}\" font-family=\"{}\" font-size=\"{}\" fill=\"{}\">{}</text>\n",
-+                        node.bbox.x, y, escape_xml(font_family), sup_size, color, escape_xml(&marker.text),
-+                    ));
-+                }
-@@ -4521 +4532,3 @@ fn svg_cluster_text_length_attrs(
+@@ -4640 +4640,3 @@ fn svg_cluster_text_length_attrs(
 -        fit_narrow_hangul || is_original_program_glyph(cluster_str, style),
 +        fit_narrow_hangul
 +            || is_original_program_glyph(cluster_str, style)
 +            || draws_with_display_substitute(style),
-@@ -4524,0 +4538,20 @@ fn svg_cluster_text_length_attrs(
+@@ -4643,0 +4646,20 @@ fn svg_cluster_text_length_attrs(
 +/// why-hwp: a TrueType slot whose face is not installed and is painted with a
 +/// display substitute, while its layout keeps the source face's widths.
 +///
@@ -119,9 +49,10 @@ diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
 +}
 +
 diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+index 31ad89f082..236f946ece 100644
 --- a/src/renderer/svg/tests.rs
 +++ b/src/renderer/svg/tests.rs
-@@ -1677,0 +1678,77 @@ fn test_svg_original_program_glyph_is_fitted_to_its_advance() {
+@@ -1677,0 +1678,36 @@ fn test_svg_original_program_glyph_is_fitted_to_its_advance() {
 +#[test]
 +fn test_svg_display_substitute_is_fitted_to_source_advance() {
 +    // A missing 돋움체 slot painted with a display substitute keeps 돋움체's widths.
@@ -156,46 +87,5 @@ diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
 +    // The face that placed the glyphs also draws them: its own widths stay.
 +    assert_eq!(text_length(&style("돋움체", Some("돋움체")), '.'), None);
 +    assert_eq!(text_length(&style("돋움체", None), '.'), None);
-+}
-+
-+#[test]
-+fn test_svg_footnote_marker_of_display_substitute_is_fitted() {
-+    let marker = |drawn: &str, metric: Option<&str>| {
-+        let mut renderer = SvgRenderer::new();
-+        renderer.begin_page(800.0, 600.0);
-+        renderer.render_node(&RenderNode::new(
-+            0,
-+            RenderNodeType::FootnoteMarker(super::super::render_tree::FootnoteMarkerNode {
-+                number: 3,
-+                text: "3)".to_string(),
-+                base_font_size: 1000.0 / 75.0,
-+                baseline: 10.0,
-+                font_family: drawn.to_string(),
-+                metric_font_family: metric.map(str::to_string),
-+                color: 0,
-+                section_index: 0,
-+                para_index: 0,
-+                control_index: 0,
-+            }),
-+            BoundingBox::new(10.0, 20.0, 10.0, 15.0),
-+        ));
-+        renderer.output().to_string()
-+    };
-+
-+    // Each character is drawn at 돋움체's 0.5 em of the 3/4-size marker.
-+    let fitted = marker("HCR Dotum", Some("돋움체"));
-+    let lengths: Vec<f64> = fitted
-+        .split(" textLength=\"")
-+        .skip(1)
-+        .map(|rest| rest[..rest.find('"').unwrap()].parse().unwrap())
-+        .collect();
-+    assert_eq!(lengths.len(), 2, "{fitted}");
-+    assert!(lengths.iter().all(|w| (w - 5.0).abs() < 0.05), "{lengths:?}");
-+    assert!(fitted.contains("font-family=\"&apos;HCR Dotum&apos;"), "{fitted}");
-+
-+    // An installed face keeps the single natural-width marker text.
-+    let natural = marker("돋움체", None);
-+    assert!(!natural.contains("textLength"), "{natural}");
-+    assert!(natural.contains("font-family=\"돋움체\""), "{natural}");
 +}
 +

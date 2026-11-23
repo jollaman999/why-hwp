@@ -1,5 +1,5 @@
 # rhwp script, width and PDF sheet fixes for why-hwp, measured against Hangul 2024 output.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and
 # wasm/patches/rhwp-layout.patch, rhwp-layout2.patch and rhwp-layout3.patch;
 # apply this after rhwp-layout3.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
@@ -19,26 +19,29 @@
 #   portrait exports to PDF with two pages side by side on a landscape sheet,
 #   scaled by 0.71, the left page at x 0, the right one at half the sheet width,
 #   both at the top. Links and named destinations move with their page.
-# - font_paths.rs, native_webfonts.rs: the 64 MiB font supply budget is kept
-#   only when the Skia catalog it is for is built; without Skia every supplied
-#   font is kept and host font folders do not use up the budget.
+# - font_paths.rs, native_webfonts.rs: the supply check counts host font
+#   folders against the Skia catalog's file limits only when that catalog is
+#   built; without Skia it checks the supplied fonts alone, so a large host
+#   font folder does not push them out.
 # - svg.rs: the invisible text over a vector U+00B7 is fitted to the glyph-fit
 #   advance, as other characters are, instead of the substitute font's width.
+#   So is the invisible text over rhwp's ellipse for the Wingdings bullet
+#   U+F09F, which also gets the run's font-family and size.
 # - font_metrics_data.rs, layout/text_measurement.rs, script_metrics.rs,
 #   font_paths.rs, pdf.rs, document_core/queries/rendering.rs and svg/tests.rs
 #   cover these changes.
 diff --git a/src/document_core/queries/rendering.rs b/src/document_core/queries/rendering.rs
-index 430795f31..315c46b06 100644
+index 7511f88343..0713a8f212 100644
 --- a/src/document_core/queries/rendering.rs
 +++ b/src/document_core/queries/rendering.rs
-@@ -2004 +2004 @@ impl DocumentCore {
+@@ -1958 +1958 @@ impl DocumentCore {
 -        crate::renderer::pdf::svgs_to_pdf_with_annotations(
 +        crate::renderer::pdf::svgs_to_pdf_with_annotations_and_layout(
-@@ -2008,0 +2009,3 @@ impl DocumentCore {
+@@ -1962,0 +1963,3 @@ impl DocumentCore {
 +            crate::renderer::pdf::PdfSheetLayout::from_print_method(
 +                self.document.doc_info.print_method,
 +            ),
-@@ -10741,0 +10745,41 @@ mod tests {
+@@ -10943,0 +10947,41 @@ mod tests {
 +
 +    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 +    #[test]
@@ -81,20 +84,20 @@ index 430795f31..315c46b06 100644
 +        assert_eq!(sheet_sizes(&core), vec![(height, width); 2]);
 +    }
 diff --git a/src/model/document.rs b/src/model/document.rs
-index 78a327edd..270cb107f 100644
+index c770fec1e1..7b22664148 100644
 --- a/src/model/document.rs
 +++ b/src/model/document.rs
-@@ -239,0 +240,2 @@ pub struct DocInfo {
+@@ -242,0 +243,2 @@ pub struct DocInfo {
 +    /// 예외: PDF 내보내기는 값 4(2쪽 모아 찍기)이고 모든 쪽이 A4 세로이면 한 장에 두 쪽을
 +    /// 놓는다(`renderer::pdf::PdfSheetLayout`). SVG·PNG 출력과 그 밖의 값은 위와 같다.
-@@ -312 +314 @@ pub const HWP5_DOC_DATA_KEY_PRINT_METHOD: u32 = 0x0006_4006;
+@@ -315 +317 @@ pub const HWP5_DOC_DATA_KEY_PRINT_METHOD: u32 = 0x0006_4006;
 -/// | **4** | **2쪽 841×595 가로** | 4쪽 세로 |
 +/// | **4** | **2쪽 841×595 가로** | 4쪽 세로 (PDF 는 A4 세로 문서면 2쪽 가로) |
 diff --git a/src/renderer/font_metrics_data.rs b/src/renderer/font_metrics_data.rs
-index b1bec13ad..ead17c705 100644
+index 6d975bd15b..cf1ebcc086 100644
 --- a/src/renderer/font_metrics_data.rs
 +++ b/src/renderer/font_metrics_data.rs
-@@ -717,0 +718,30 @@ mod tests {
+@@ -728,0 +729,30 @@ mod tests {
 +    #[test]
 +    fn pilgi_hft_right_quote_keeps_original_program_advance() {
 +        assert_eq!(
@@ -126,10 +129,10 @@ index b1bec13ad..ead17c705 100644
 +    }
 +
 diff --git a/src/renderer/font_metrics_overlays.rs b/src/renderer/font_metrics_overlays.rs
-index 7ffe00d86..a6302808c 100644
+index 4ff206578b..6bd700d5d7 100644
 --- a/src/renderer/font_metrics_overlays.rs
 +++ b/src/renderer/font_metrics_overlays.rs
-@@ -82,0 +83,12 @@ static ORIGINAL_GLYPH_METRICS: &[OriginalGlyphMetric] = &[
+@@ -98,0 +99,12 @@ static ORIGINAL_GLYPH_METRICS: &[OriginalGlyphMetric] = &[
 +    // fdi-2025q2 한컴2024 Print 3쪽 T9(Type3): ToUnicode 2019, Widths 500,
 +    // FontMatrix.001. 16pt·장평 80%·자간 -8%에서 다음 원점이 49단위(600dpi)
 +    // 뒤이고 0.5em × 0.8 × 0.92와 같다. 같은 런의 숫자는 대체 TrueType으로
@@ -143,7 +146,7 @@ index 7ffe00d86..a6302808c 100644
 +        em_units: 1000,
 +    },
 diff --git a/src/renderer/font_metrics_technical_symbols.rs b/src/renderer/font_metrics_technical_symbols.rs
-index 1da6c59c2..06d563710 100644
+index f239dadde4..a6256cc9dd 100644
 --- a/src/renderer/font_metrics_technical_symbols.rs
 +++ b/src/renderer/font_metrics_technical_symbols.rs
 @@ -84,0 +85,10 @@ fn verified_technical_symbol_entry(metric: &FontMetric, ch: char) -> Option<(boo
@@ -158,10 +161,10 @@ index 1da6c59c2..06d563710 100644
 +        return Some((true, 1946));
 +    }
 diff --git a/src/renderer/font_paths.rs b/src/renderer/font_paths.rs
-index 4cc65bfa2..78fafaa0a 100644
+index a0f066751e..984d2b6307 100644
 --- a/src/renderer/font_paths.rs
 +++ b/src/renderer/font_paths.rs
-@@ -34,0 +35,22 @@ pub(crate) const MAX_NATIVE_CUSTOM_FONT_BYTES: u64 = 64 * 1024 * 1024;
+@@ -123,0 +124,7 @@ pub(crate) fn scan_native_custom_font_files(sources: &[PathBuf]) -> NativeCustom
 +/// Skia custom typeface 카탈로그가 메모리에 올리는 글꼴 바이트의 예산.
 +///
 +/// Skia 없이 빌드한 출력(SVG·PDF)은 이 카탈로그를 만들지 않으므로 예산이 없다.
@@ -169,66 +172,21 @@ index 4cc65bfa2..78fafaa0a 100644
 +    cfg!(feature = "native-skia").then_some(MAX_NATIVE_CUSTOM_FONT_BYTES)
 +}
 +
-+/// 공급 글꼴 프로그램 하나가 남은 예산에 드는지 본다. 예산이 없으면 든다.
-+pub(crate) fn fits_native_custom_font_budget(
-+    budget: Option<u64>,
-+    length: u64,
-+    used: u64,
-+    retained: u64,
-+    files: usize,
-+) -> bool {
-+    budget.is_none_or(|limit| {
-+        files < 256
-+            && used.saturating_add(length) <= limit
-+            && retained.saturating_add(length) <= limit
-+    })
-+}
+@@ -449,0 +457,9 @@ mod tests {
 +
-@@ -320,0 +343,39 @@ mod tests {
-+
-+    /// Skia 카탈로그 예산은 호출자 글꼴과 공급 글꼴이 나눠 쓴다. 카탈로그가
-+    /// 없으면 큰 본문 글꼴이나 호출자 글꼴 폴더 때문에 공급 글꼴을 빼지 않는다.
++    /// Skia 카탈로그가 없으면 공급 글꼴을 호출자 글꼴과 함께 세는 예산도 없다.
 +    #[test]
 +    fn supply_budget_applies_only_with_skia_catalog() {
-+        const MB: u64 = 1024 * 1024;
 +        assert_eq!(
 +            native_custom_font_budget(),
-+            cfg!(feature = "native-skia").then_some(64 * MB)
++            cfg!(feature = "native-skia").then_some(MAX_NATIVE_CUSTOM_FONT_BYTES)
 +        );
-+
-+        let retained = |budget: Option<u64>, host: u64, host_files: usize, supply: &[u64]| {
-+            let (mut used, mut files) = (host, host_files);
-+            supply
-+                .iter()
-+                .map(|&length| {
-+                    let fits = fits_native_custom_font_budget(budget, length, used, used, files);
-+                    if fits {
-+                        used += length;
-+                        files += 1;
-+                    }
-+                    fits
-+                })
-+                .collect::<Vec<_>>()
-+        };
-+        // 대체 글꼴 셋, 함초롬돋움, 함초롬바탕 순서의 공급 크기.
-+        let supply = [8_434_876, 8_439_348, 2_538_340, 22_244_940, 28_413_328];
-+        assert_eq!(
-+            retained(Some(64 * MB), 0, 0, &supply),
-+            [true, true, true, true, false]
-+        );
-+        assert_eq!(retained(None, 0, 0, &supply), [true; 5]);
-+        assert_eq!(
-+            retained(Some(64 * MB), 60 * MB, 40, &supply),
-+            [false, false, true, false, false]
-+        );
-+        assert_eq!(retained(Some(64 * MB), 0, 256, &supply), [false; 5]);
-+        assert_eq!(retained(None, 60 * MB, 256, &supply), [true; 5]);
 +    }
 diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
-index 77a11375f..36d55697b 100644
+index 82a77bdbc7..ecc5ef6982 100644
 --- a/src/renderer/layout/text_measurement.rs
 +++ b/src/renderer/layout/text_measurement.rs
-@@ -2656,0 +2657,20 @@ fn char_width_decision_with_hft_tracking<'a>(
+@@ -2765,0 +2766,20 @@ fn char_width_decision_with_hft_tracking<'a>(
 +                // 부분 표로 확인한 원본 HFT 글리프도 같은 굵기 전진을 쓴다.
 +                // fdi-2025q2 한컴2024 Print 9쪽: 굵은 HCI Poppy U+00B7(T15,
 +                // Widths 384, 글꼴 125단위)의 다음 원점은 48이 아니라 54단위 뒤다.
@@ -249,7 +207,7 @@ index 77a11375f..36d55697b 100644
 +                            })
 +                            .map(String::as_str),
 +                    ) == 0.0)
-@@ -4062,0 +4083,68 @@ mod tests {
+@@ -4172,0 +4193,68 @@ mod tests {
 +    #[test]
 +    fn bold_hft_original_glyph_takes_hft_bold_tracking() {
 +        let m = EmbeddedTextMeasurer;
@@ -319,40 +277,25 @@ index 77a11375f..36d55697b 100644
 +    }
 +
 diff --git a/src/renderer/native_webfonts.rs b/src/renderer/native_webfonts.rs
-index 53320b313..f3de33b3e 100644
+index 9d7b03efe5..6a17dcf09a 100644
 --- a/src/renderer/native_webfonts.rs
 +++ b/src/renderer/native_webfonts.rs
-@@ -548 +548,2 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
--    let limit = super::font_paths::MAX_NATIVE_CUSTOM_FONT_BYTES;
-+    let budget = super::font_paths::native_custom_font_budget();
-+    let limit = budget.unwrap_or(0);
-@@ -553 +554,6 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
--    for source in super::font_paths::custom_font_dirs(paths) {
-+    let custom_dirs = if budget.is_some() {
-+        super::font_paths::custom_font_dirs(paths)
+@@ -629 +629,7 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
+-    let loader_paths: Vec<PathBuf> = paths.iter().chain(&result.paths).cloned().collect();
++    // Skia 없이 빌드한 출력(SVG·PDF)은 그 카탈로그를 만들지 않으므로 호출자
++    // 글꼴 폴더의 파일 수가 공급 글꼴을 밀어내지 않게 공급 경로만 판정한다.
++    let loader_paths: Vec<PathBuf> = if super::font_paths::native_custom_font_budget().is_some() {
++        paths.iter().chain(&result.paths).cloned().collect()
 +    } else {
-+        Vec::new()
++        result.paths.clone()
 +    };
-+    for source in custom_dirs {
-@@ -604,3 +610,8 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
--        if file_count < 256
--            && used.saturating_add(length) <= limit
--            && retained_bytes.saturating_add(length) <= limit
-+        if length <= MAX_FONT_BYTES as u64
-+            && super::font_paths::fits_native_custom_font_budget(
-+                budget,
-+                length,
-+                used,
-+                retained_bytes,
-+                file_count,
-+            )
 diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
-index 2e7c351bd..0fd489dba 100644
+index 5d727b63fe..58a5a0dd92 100644
 --- a/src/renderer/pdf.rs
 +++ b/src/renderer/pdf.rs
-@@ -2313,0 +2314 @@ where
+@@ -2331,0 +2332 @@ where
 +        PdfSheetLayout::OnePage,
-@@ -2324 +2325,139 @@ pub fn svgs_to_pdf_with_annotations(
+@@ -2342 +2343,139 @@ pub fn svgs_to_pdf_with_annotations(
 -    svgs_to_pdf_annotations_impl(svg_pages, links, options, svg2pdf_to_chunk, destinations)
 +    svgs_to_pdf_with_annotations_and_layout(
 +        svg_pages,
@@ -493,9 +436,9 @@ index 2e7c351bd..0fd489dba 100644
 +        }
 +    }
 +    sheets.into_iter().map(|(_, sheet)| sheet).collect()
-@@ -2333,0 +2473 @@ fn svgs_to_pdf_annotations_impl<F>(
+@@ -2351,0 +2491 @@ fn svgs_to_pdf_annotations_impl<F>(
 +    layout: PdfSheetLayout,
-@@ -2419 +2559,9 @@ where
+@@ -2437 +2577,9 @@ where
 -    // 각 chunk를 재번호화하고 페이지 참조 수집
 +    let sheets = plan_pdf_sheets(
 +        &page_datas
@@ -506,10 +449,10 @@ index 2e7c351bd..0fd489dba 100644
 +    );
 +
 +    // 각 chunk를 재번호화하고 장 참조 수집
-@@ -2424 +2572 @@ where
+@@ -2442 +2590 @@ where
 -    for pd in &page_datas {
 +    for sheet in &sheets {
-@@ -2429,5 +2577,7 @@ where
+@@ -2447,5 +2595,7 @@ where
 -        // chunk 재번호화
 -        let mut map = HashMap::new();
 -        let renumbered = pd
@@ -522,7 +465,7 @@ index 2e7c351bd..0fd489dba 100644
 +            let renumbered = pd
 +                .chunk
 +                .renumber(|old| *map.entry(old).or_insert_with(|| alloc.bump()));
-@@ -2435,3 +2585,4 @@ where
+@@ -2453,3 +2603,4 @@ where
 -        let remapped_svg_ref = map.get(&pd.svg_ref).copied().unwrap_or(pd.svg_ref);
 -        svg_refs_remapped.push(remapped_svg_ref);
 -        renumbered_chunks.push(renumbered);
@@ -530,7 +473,7 @@ index 2e7c351bd..0fd489dba 100644
 +            svg_refs_remapped.push(remapped_svg_ref);
 +            renumbered_chunks.push(renumbered);
 +        }
-@@ -2449,16 +2600,20 @@ where
+@@ -2467,16 +2618,20 @@ where
 -        for (index, page) in page_datas.iter().enumerate() {
 -            for destination in destinations.get(page.source_index).into_iter().flatten() {
 -                if destination.x.is_finite()
@@ -567,18 +510,18 @@ index 2e7c351bd..0fd489dba 100644
 +                                None,
 +                            );
 +                    }
-@@ -2474,2 +2629,2 @@ where
+@@ -2492,2 +2647,2 @@ where
 -    // 각 페이지 생성
 -    let svg_name = pdf_writer::Name(b"S1");
 +    // 각 장 생성
 +    let mut svg_refs = svg_refs_remapped.iter().copied();
-@@ -2477 +2632 @@ where
+@@ -2495 +2650 @@ where
 -    for (i, pd) in page_datas.iter().enumerate() {
 +    for (i, sheet) in sheets.iter().enumerate() {
-@@ -2480 +2635 @@ where
+@@ -2498 +2653 @@ where
 -        let svg_ref = svg_refs_remapped[i];
 +        let svg_names: Vec<String> = (1..=sheet.slots.len()).map(|n| format!("S{n}")).collect();
-@@ -2482,6 +2637,15 @@ where
+@@ -2500,6 +2655,15 @@ where
 -        let page_links = super::hyperlinks::page_links(
 -            &links[pd.source_index],
 -            f64::from(pd.width) / 0.75,
@@ -600,10 +543,10 @@ index 2e7c351bd..0fd489dba 100644
 +            })
 +            .collect();
 +        let annotation_refs: Vec<_> = sheet_links.iter().map(|_| alloc.bump()).collect();
-@@ -2489 +2653 @@ where
+@@ -2507 +2671 @@ where
 -        page.media_box(pdf_writer::Rect::new(0.0, 0.0, pd.width, pd.height));
 +        page.media_box(pdf_writer::Rect::new(0.0, 0.0, sheet.width, sheet.height));
-@@ -2497 +2661,9 @@ where
+@@ -2515 +2679,9 @@ where
 -        resources.x_objects().pair(svg_name, svg_ref);
 +        {
 +            let mut x_objects = resources.x_objects();
@@ -614,10 +557,10 @@ index 2e7c351bd..0fd489dba 100644
 +                x_objects.pair(pdf_writer::Name(name.as_bytes()), svg_ref);
 +            }
 +        }
-@@ -2500 +2672 @@ where
+@@ -2518 +2690 @@ where
 -        for (link, annotation_ref) in page_links.iter().zip(annotation_refs) {
 +        for ((slot, page_height, link), annotation_ref) in sheet_links.iter().zip(annotation_refs) {
-@@ -2506,4 +2678,4 @@ where
+@@ -2524,4 +2696,4 @@ where
 -                    (r.x * 0.75) as f32,
 -                    pd.height - ((r.y + r.height) * 0.75) as f32,
 -                    ((r.x + r.width) * 0.75) as f32,
@@ -626,10 +569,10 @@ index 2e7c351bd..0fd489dba 100644
 +                    slot.y + slot.scale * (page_height - ((r.y + r.height) * 0.75) as f32),
 +                    slot.x + slot.scale * ((r.x + r.width) * 0.75) as f32,
 +                    slot.y + slot.scale * (page_height - (r.y * 0.75) as f32),
-@@ -2545 +2717 @@ where
+@@ -2563 +2735 @@ where
 -        // 컨텐츠 스트림: SVG XObject를 페이지 크기에 맞게 배치
 +        // 컨텐츠 스트림: SVG XObject를 장 안의 제자리에 배치
-@@ -2547,2 +2719,19 @@ where
+@@ -2565,2 +2737,19 @@ where
 -        content.transform([pd.width, 0.0, 0.0, pd.height, 0.0, 0.0]);
 -        content.x_object(svg_name);
 +        for (slot, name) in sheet.slots.iter().zip(&svg_names) {
@@ -651,7 +594,7 @@ index 2e7c351bd..0fd489dba 100644
 +                content.restore_state();
 +            }
 +        }
-@@ -2888,0 +3078,176 @@ endbfchar <DB80DEB1>";
+@@ -2906,0 +3096,176 @@ endbfchar <DB80DEB1>";
 +    #[test]
 +    fn only_print_method_four_selects_two_up() {
 +        assert_eq!(
@@ -829,7 +772,7 @@ index 2e7c351bd..0fd489dba 100644
 +    }
 +
 diff --git a/src/renderer/script_metrics.rs b/src/renderer/script_metrics.rs
-index 201a37908..049b57d5a 100644
+index 201a379081..049b57d5ad 100644
 --- a/src/renderer/script_metrics.rs
 +++ b/src/renderer/script_metrics.rs
 @@ -22,3 +22 @@ impl ScriptMetricsContract {
@@ -877,16 +820,33 @@ index 201a37908..049b57d5a 100644
 +    }
 +}
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
-index 17a5db419..1ac6e162a 100644
+index 9e86b623f9..8f5238375c 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
-@@ -3889 +3889 @@ impl Renderer for SvgRenderer {
+@@ -3917,0 +3918,3 @@ impl Renderer for SvgRenderer {
++                    // why-hwp: the hidden text keeps the run's family and size and is
++                    // fitted to the symbol's advance, as the hidden U+00B7 below is, so
++                    // its PDF word box is the symbol's cell, not a default font's glyph.
+@@ -3919 +3922,11 @@ impl Renderer for SvgRenderer {
+-                        "<text x=\"{char_x:.4}\" y=\"{y:.4}\" fill-opacity=\"0\">{}</text>\n",
++                        "<text x=\"{char_x:.4}\" y=\"{y:.4}\" font-family=\"{}\" font-size=\"{}\" \
++                         fill-opacity=\"0\"{}>{}</text>\n",
++                        escape_xml(&font_family),
++                        font_size,
++                        svg_hidden_middle_dot_length_attrs(
++                            cluster_str,
++                            glyph_advance(*char_idx, cluster_str),
++                            style,
++                            script_advance_scale,
++                            ratio,
++                        ),
+@@ -3971 +3984 @@ impl Renderer for SvgRenderer {
 -                        svg_cluster_text_length_attrs(
 +                        svg_hidden_middle_dot_length_attrs(
-@@ -3891 +3891 @@ impl Renderer for SvgRenderer {
+@@ -3973 +3986 @@ impl Renderer for SvgRenderer {
 -                            adv,
 +                            glyph_advance(*char_idx, cluster_str),
-@@ -4463,0 +4464,22 @@ fn svg_cluster_text_length_attrs(
+@@ -4562,0 +4576,22 @@ fn svg_cluster_text_length_attrs(
 +/// 벡터로 그린 `·` 위에 겹치는 보이지 않는 글자를 다른 글자처럼 글리프 맞춤 폭에 맞춘다.
 +///
 +/// 이 글자는 대체 글꼴의 제 폭으로 놓이므로, 맞추지 않으면 PDF 에서 뽑은 낱말 상자의
@@ -910,7 +870,7 @@ index 17a5db419..1ac6e162a 100644
 +}
 +
 diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
-index 1126265dc..bc731ec40 100644
+index 1126265dcb..bc731ec40c 100644
 --- a/src/renderer/svg/tests.rs
 +++ b/src/renderer/svg/tests.rs
 @@ -1498,0 +1499,65 @@ fn test_svg_hidden_middle_dot_text_uses_run_font_family() {

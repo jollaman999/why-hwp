@@ -1,5 +1,5 @@
 # rhwp font supply for why-hwp: Times New Roman falls back to Tinos.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and every
 # earlier wasm/patches/*.patch in name order; apply this after
 # rhwp-trackchange3.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
@@ -13,17 +13,66 @@
 #   what the PDF stage looks fonts up by (the ledger path maps onto PostScript
 #   names). When a style is neither installed nor cached, every missing file
 #   is reported to the host and the font falls back as before.
+# - font_environment.rs, native_webfonts.rs: an HFT source (declared, or an
+#   untyped name rhwp knows as HFT) does not take the TrueType Hancom Office
+#   installs under another family name (rhwp 2bb86f50d: 한양중고딕 -> H2GTRM.TTF,
+#   HY중고딕), and an installed declared substitute does not stop its supply
+#   (the local-substitute precedence rhwp v0.9.1 added). Hangul 2024 prints
+#   such a source with its own HFT program as a Type 3 font.
+diff --git a/src/renderer/font_environment.rs b/src/renderer/font_environment.rs
+index 2d5ccbfb46..3a37e2e0fa 100644
+--- a/src/renderer/font_environment.rs
++++ b/src/renderer/font_environment.rs
+@@ -181,0 +182,17 @@ pub(crate) fn program_names(name: &str) -> Vec<String> {
++/// why-hwp: the document's font names whose source is an HFT program.
++pub(crate) fn hft_source_names(
++    doc_info: &crate::model::document::DocInfo,
++) -> std::collections::BTreeSet<String> {
++    doc_info
++        .font_faces
++        .iter()
++        .enumerate()
++        .flat_map(|(language, fonts)| {
++            fonts
++                .iter()
++                .filter(move |font| may_select_hft_program(font, language))
++                .map(|font| font.name.clone())
++        })
++        .collect()
++}
++
+@@ -300,2 +317,15 @@ impl FontEnvironment {
+-                let mut primary_names = program_names(&font.name);
+-                for name in program_names(primary) {
++                // why-hwp: Hangul 2024 prints an HFT source with its own HFT
++                // program (Type 3), not with the TrueType Hancom Office installs
++                // under another family name (한양중고딕: H2GTRM.TTF, HY중고딕), so an
++                // HFT source does not take those installed aliases.
++                let hft_source = may_select_hft_program(font, language);
++                let source_names = |name: &str| {
++                    let mut names = program_names(name);
++                    if hft_source {
++                        let aliases = super::installed_font_program_aliases(name);
++                        names.retain(|name| !aliases.contains(&name.as_str()));
++                    }
++                    names
++                };
++                let mut primary_names = source_names(&font.name);
++                for name in source_names(primary) {
 diff --git a/src/renderer/native_webfonts.rs b/src/renderer/native_webfonts.rs
+index 6a17dcf09a..cf23380e3a 100644
 --- a/src/renderer/native_webfonts.rs
 +++ b/src/renderer/native_webfonts.rs
-@@ -174 +174,5 @@
+@@ -248 +248,5 @@ fn expected_kopub_hash(url: &str) -> Option<&'static str> {
 -        _ => None,
 +        _ => WHY_HWP_TINOS
 +            .files
 +            .iter()
 +            .find(|(file, _)| *file == url)
 +            .map(|(_, sha256)| *sha256),
-@@ -380,0 +385,18 @@
+@@ -427,0 +432 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
++    let hft_sources = super::font_environment::hft_source_names(doc_info);
+@@ -455,0 +461,18 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
 +        if rule.is_none() {
 +            let twin = [source.as_str()]
 +                .into_iter()
@@ -42,9 +91,14 @@ diff --git a/src/renderer/native_webfonts.rs b/src/renderer/native_webfonts.rs
 +                }
 +            }
 +        }
-@@ -719,0 +742 @@
+@@ -459 +482,3 @@ pub fn prepare(doc_info: &DocInfo, paths: &[PathBuf]) -> Result<NativeWebfontSup
+-        if substitute.iter().any(|face| present(face)) {
++        // why-hwp: Hangul 2024 prints an HFT source with its own program, not
++        // with the declared substitute, so an HFT source keeps this supply.
++        if !hft_sources.contains(&source) && substitute.iter().any(|face| present(face)) {
+@@ -747,0 +773 @@ pub fn why_hwp_known_url(url: &str) -> bool {
 +    sources.extend(WHY_HWP_TINOS.files.iter().map(|(url, _)| (*url).to_owned()));
-@@ -777,0 +801,86 @@
+@@ -805,0 +832,86 @@ fn why_hwp_write(path: &Path, data: &[u8]) -> Result<(), String> {
 +
 +/// A free font family with the advance widths of a font that is not free to
 +/// redistribute, so that text keeps its line breaks and positions.

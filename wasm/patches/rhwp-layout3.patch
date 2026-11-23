@@ -1,5 +1,5 @@
 # rhwp fallback-glyph fixes for why-hwp, measured against Hangul 2024 output.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh,
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh,
 # wasm/patches/rhwp-layout.patch and wasm/patches/rhwp-layout2.patch; apply this
 # after rhwp-layout2.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
@@ -10,7 +10,8 @@
 # - pua_glyph.rs, svg.rs, svg/pua_glyph.rs: a Wingdings private-use character
 #   (U+F020-U+F0FF) that the run's face lacks is drawn as itself in Wingdings
 #   when a Wingdings font is found and its cmap has the glyph; otherwise the
-#   Unicode display substitute is kept.
+#   Unicode display substitute is kept. rhwp's own drawing of the implicit
+#   Wingdings bullet U+F09F as an ellipse (rhwp ce3629235) gives way to it.
 # - pdf.rs, pua_glyph.rs and svg/tests.rs cover these changes.
 diff --git a/src/renderer/equation/hancom_glyphs.rs b/src/renderer/equation/hancom_glyphs.rs
 index a7ddd9eeec..7b4be7edd3 100644
@@ -23,10 +24,10 @@ index a7ddd9eeec..7b4be7edd3 100644
 +    not(all(target_arch = "wasm32", target_os = "unknown"))
 +))]
 diff --git a/src/renderer/pdf.rs b/src/renderer/pdf.rs
-index b3c812649f..2e7c351bd0 100644
+index af6bb3e3d1..5d727b63fe 100644
 --- a/src/renderer/pdf.rs
 +++ b/src/renderer/pdf.rs
-@@ -1770,0 +1771,76 @@ fn add_font_fallbacks(svg: &str, options: &PdfExportOptions) -> String {
+@@ -1788,0 +1789,76 @@ fn add_font_fallbacks(svg: &str, options: &PdfExportOptions) -> String {
 +/// Hancom equation faces that the PDF font database does not hold.
 +#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 +fn missing_hancom_equation_families(fontdb: &usvg::fontdb::Database) -> Vec<&'static str> {
@@ -103,13 +104,13 @@ index b3c812649f..2e7c351bd0 100644
 +    std::borrow::Cow::Owned(out)
 +}
 +
-@@ -2274,0 +2351 @@ where
+@@ -2292,0 +2369 @@ where
 +    let missing_equation_families = missing_hancom_equation_families(&fontdb);
-@@ -2299 +2376,2 @@ where
+@@ -2317 +2394,2 @@ where
 -        let svg_with_fallback = apply_pdf_font_options(svg, export_options);
 +        let svg = decode_missing_hancom_equation_glyphs(svg, &missing_equation_families);
 +        let svg_with_fallback = apply_pdf_font_options(&svg, export_options);
-@@ -2690,0 +2769,67 @@ mod tests {
+@@ -2708,0 +2787,67 @@ mod tests {
 +    #[test]
 +    fn missing_hancom_equation_face_glyphs_are_drawn_as_their_characters() {
 +        use usvg::fontdb::{Database, FaceInfo, Language, Source, Stretch, Style, Weight, ID};
@@ -301,7 +302,7 @@ index 66c2703259..2b6ac7dc85 100644
 +    }
 +}
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
-index 2ee1210345..17a5db4193 100644
+index 87e003ef18..9e86b623f9 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
 @@ -35,0 +36,29 @@ mod stroke_pattern;
@@ -334,7 +335,7 @@ index 2ee1210345..17a5db4193 100644
 +    out
 +}
 +
-@@ -3441,4 +3470,26 @@ impl Renderer for SvgRenderer {
+@@ -3472,4 +3501,26 @@ impl Renderer for SvgRenderer {
 -        let text = &expand_pua_render_text_in_style(&text, style);
 -        // [Task #528] Hanyang-PUA 옛한글 → KS X 1026-1:2007 자모 시퀀스.
 -        // 한/글 2010 이전 옛한글 PUA 인코딩을 표준 자모로 변환 (KTUG 매핑).
@@ -365,15 +366,23 @@ index 2ee1210345..17a5db4193 100644
 +            // 한/글 2010 이전 옛한글 PUA 인코딩을 표준 자모로 변환 (KTUG 매핑).
 +            expand_pua_old_hangul(&text)
 +        };
-@@ -3527 +3578 @@ impl Renderer for SvgRenderer {
+@@ -3558 +3609 @@ impl Renderer for SvgRenderer {
 -            if !style.italic {
 +            if !style.italic || symbol_cluster(cluster_str).is_some() {
-@@ -3548 +3599,4 @@ impl Renderer for SvgRenderer {
+@@ -3579 +3630,4 @@ impl Renderer for SvgRenderer {
 -            let cluster_font_family = if source_coverage
 +            let symbol_family = symbol_cluster(cluster_str).map(|family| format!("'{family}'"));
 +            let cluster_font_family = if let Some(family) = symbol_family.as_ref() {
 +                family
 +            } else if source_coverage
+@@ -3716,0 +3771,3 @@ impl Renderer for SvgRenderer {
++                            // why-hwp: a supplied Wingdings draws the character itself, as
++                            // Hancom Office 2024 prints it.
++                            .filter(|_| symbol_cluster(cluster_str).is_none())
+@@ -3830,0 +3888,3 @@ impl Renderer for SvgRenderer {
++                        // why-hwp: a supplied Wingdings draws the character itself, as
++                        // Hancom Office 2024 prints it.
++                        .filter(|_| symbol_cluster(cluster_str).is_none())
 diff --git a/src/renderer/svg/pua_glyph.rs b/src/renderer/svg/pua_glyph.rs
 index 108d587fc2..8d5db57b4d 100644
 --- a/src/renderer/svg/pua_glyph.rs

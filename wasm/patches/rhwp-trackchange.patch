@@ -1,7 +1,7 @@
 # rhwp change tracking for why-hwp: read it from HWP and write it to HWPX.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and
-# wasm/patches/rhwp-layout.patch to rhwp-layout8.patch; apply this after
-# rhwp-layout8.patch.
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and
+# wasm/patches/rhwp-layout.patch to rhwp-layout7.patch; apply this after
+# rhwp-layout7.patch.
 # Zero-context diff (apply with git apply --unidiff-zero). Every hunk inserts
 # lines or changes lines of rhwp itself, away from the lines of the earlier
 # patches.
@@ -20,10 +20,10 @@
 # - Character (0x12) and paragraph (0x13) shape change range tags become
 #   hp:run/@charTcId and hp:p/@paraTcId, as Hancom Office writes them.
 diff --git a/src/document_core/commands/document.rs b/src/document_core/commands/document.rs
-index 7d56b39..0245045 100644
+index 1afaf53255..8eb82cb838 100644
 --- a/src/document_core/commands/document.rs
 +++ b/src/document_core/commands/document.rs
-@@ -221,0 +222,21 @@ impl DocumentCore {
+@@ -223,0 +224,21 @@ impl DocumentCore {
 +        let mut core = Self::open_bytes(data, password)?;
 +        // why-hwp: hidden tracked changes are projected out of the IR (`tracked_viewtext`).
 +        // Keep the file so that an HWPX export can read the sections as stored.
@@ -45,9 +45,9 @@ index 7d56b39..0245045 100644
 +    }
 +
 +    fn open_bytes(data: &[u8], password: Option<&[u8]>) -> Result<DocumentCore, HwpError> {
-@@ -492,0 +514 @@ impl DocumentCore {
+@@ -496,0 +518 @@ impl DocumentCore {
 +            tracked_text_source: None,
-@@ -3158,0 +3181,21 @@ impl DocumentCore {
+@@ -3384,0 +3407,21 @@ impl DocumentCore {
 +        // why-hwp: HWPX keeps deleted text inside its change marks. While the document is
 +        // as loaded, export it from the file read again with the hidden changes kept.
 +        // An edited document has only its projected IR and is exported from that.
@@ -70,10 +70,10 @@ index 7d56b39..0245045 100644
 +            }
 +        }
 diff --git a/src/document_core/mod.rs b/src/document_core/mod.rs
-index 8e8aab4..2a4bf5d 100644
+index 72a2713233..21a0eb609d 100644
 --- a/src/document_core/mod.rs
 +++ b/src/document_core/mod.rs
-@@ -353,0 +354,9 @@ pub struct DocumentCore {
+@@ -374,0 +375,9 @@ pub struct DocumentCore {
 +    /// why-hwp: the HWP file, kept when its hidden tracked changes were projected
 +    /// out of the IR. An HWPX export of the unedited document reads it again.
 +    pub(crate) tracked_text_source: Option<TrackedTextSource>,
@@ -83,10 +83,10 @@ index 8e8aab4..2a4bf5d 100644
 +pub(crate) struct TrackedTextSource {
 +    pub(crate) data: Vec<u8>,
 +    pub(crate) password: Option<Vec<u8>>,
-@@ -647,0 +657 @@ impl DocumentCore {
+@@ -670,0 +680 @@ impl DocumentCore {
 +            tracked_text_source: None,
 diff --git a/src/model/document.rs b/src/model/document.rs
-index 270cb10..31e45f4 100644
+index 7b22664148..d9d0cf021d 100644
 --- a/src/model/document.rs
 +++ b/src/model/document.rs
 @@ -83,0 +84,129 @@ pub struct RawRecord {
@@ -219,7 +219,7 @@ index 270cb10..31e45f4 100644
 +    }
 +}
 +
-@@ -244,0 +374,8 @@ pub struct DocInfo {
+@@ -247,0 +377,8 @@ pub struct DocInfo {
 +    /// why-hwp: the change-tracking table (`HWPTAG_TRACK_CHANGE`, in record order).
 +    /// A range tag of kind 0x10..=0x13 names its entry by one-based index, so a record
 +    /// this cannot read stays as `None` to keep the indices. HWP5 keeps the original
@@ -228,7 +228,7 @@ index 270cb10..31e45f4 100644
 +    /// why-hwp: change-tracking authors (`HWPTAG_TRACK_CHANGE_AUTHOR`, in record
 +    /// order). `TrackChange::author_id` is a one-based index into this list.
 +    pub track_change_authors: Vec<Option<TrackChangeAuthor>>,
-@@ -1055,0 +1193,48 @@ mod tests {
+@@ -1058,0 +1196,48 @@ mod tests {
 +
 +    // Records from a public sample (rhwp samples/issue5169_viewtext_changetracking.hwp)
 +    // and what Hancom Office wrote for them in HWPX.
@@ -278,7 +278,7 @@ index 270cb10..31e45f4 100644
 +        assert_eq!(TrackChangeAuthor::from_record(&hex("0500000041004200")), None);
 +    }
 diff --git a/src/model/memo_time.rs b/src/model/memo_time.rs
-index b6d36b8..592a494 100644
+index b6d36b8d49..592a4941ab 100644
 --- a/src/model/memo_time.rs
 +++ b/src/model/memo_time.rs
 @@ -49,0 +50,38 @@ fn memo_zone() -> chrono::FixedOffset {
@@ -321,7 +321,7 @@ index b6d36b8..592a494 100644
 +    }
 +}
 diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
-index 743cfd6..b9f3c16 100644
+index 65d4ed2921..0d8b6df42b 100644
 --- a/src/model/paragraph.rs
 +++ b/src/model/paragraph.rs
 @@ -522,0 +523,20 @@ pub struct MarkpenMark {
@@ -418,12 +418,12 @@ index 743cfd6..b9f3c16 100644
 +            .map(|r| r.tag & 0x00ff_ffff)
 +    }
 +
-@@ -2196,0 +2288 @@ impl Paragraph {
+@@ -2246,0 +2338 @@ impl Paragraph {
 +                track: m.track,
-@@ -2599,0 +2692 @@ impl Paragraph {
+@@ -2649,0 +2742 @@ impl Paragraph {
 +                track: m.track,
 diff --git a/src/model/paragraph/tests.rs b/src/model/paragraph/tests.rs
-index d61deaa..d78e207 100644
+index d61deaa2c7..d78e2077f3 100644
 --- a/src/model/paragraph/tests.rs
 +++ b/src/model/paragraph/tests.rs
 @@ -1683,0 +1684,148 @@ fn shift_for_inline_control_insert_leaves_earlier_lines_alone() {
@@ -576,7 +576,7 @@ index d61deaa..d78e207 100644
 +    assert_eq!(tab.para_shape_change_tc_id(), None);
 +}
 diff --git a/src/model/raw_provenance.rs b/src/model/raw_provenance.rs
-index 7892c22..f78f3a6 100644
+index 7892c22d26..f78f3a6660 100644
 --- a/src/model/raw_provenance.rs
 +++ b/src/model/raw_provenance.rs
 @@ -143,0 +144,3 @@ pub fn doc_info_model_digest(doc_info: &DocInfo, doc_props: &DocProperties) -> [
@@ -584,7 +584,7 @@ index 7892c22..f78f3a6 100644
 +        track_changes: _,
 +        track_change_authors: _,
 diff --git a/src/parser/doc_info.rs b/src/parser/doc_info.rs
-index d793703..6274c83 100644
+index 97ee722c57..7eb1ce429c 100644
 --- a/src/parser/doc_info.rs
 +++ b/src/parser/doc_info.rs
 @@ -147,0 +148,11 @@ pub fn parse_doc_info(data: &[u8]) -> Result<(DocInfo, DocProperties), DocInfoEr
@@ -600,16 +600,16 @@ index d793703..6274c83 100644
 +                    );
 +                }
 diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
-index 7220096..6d56998 100644
+index 2f953c2c8a..ba81eab6e1 100644
 --- a/src/parser/hwpx/section.rs
 +++ b/src/parser/hwpx/section.rs
 @@ -1145,0 +1146 @@ fn parse_paragraph_body(
 +                        track: None,
 diff --git a/src/parser/mod.rs b/src/parser/mod.rs
-index 598f1de..f13441e 100644
+index de8faea458..c7e01e06a1 100644
 --- a/src/parser/mod.rs
 +++ b/src/parser/mod.rs
-@@ -810,0 +811,19 @@ fn decode_viewtext_paragraph_stream(
+@@ -842,0 +843,19 @@ fn decode_viewtext_paragraph_stream(
 +thread_local! {
 +    /// why-hwp: parse HWP5 sections as stored, hidden tracked changes included.
 +    static KEEP_TRACKED_TEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -629,12 +629,12 @@ index 598f1de..f13441e 100644
 +    f()
 +}
 +
-@@ -815,0 +835,3 @@ fn parse_visible_section(
+@@ -847,0 +867,3 @@ fn parse_visible_section(
 +    if KEEP_TRACKED_TEXT.with(|keep| keep.get()) {
 +        return body_text::parse_section_with_previous(data, previous);
 +    }
 diff --git a/src/parser/pdf/allocation.rs b/src/parser/pdf/allocation.rs
-index 6f3b35f..5e8968d 100644
+index 7ff5d4bc5f..3ee53d1177 100644
 --- a/src/parser/pdf/allocation.rs
 +++ b/src/parser/pdf/allocation.rs
 @@ -318,0 +319,2 @@ impl Allocation<'_> {
@@ -644,14 +644,14 @@ index 6f3b35f..5e8968d 100644
 +            track_changes,
 +            track_change_authors,
 diff --git a/src/parser/tags.rs b/src/parser/tags.rs
-index bde1747..29ae221 100644
+index bde17472a7..29ae2216dd 100644
 --- a/src/parser/tags.rs
 +++ b/src/parser/tags.rs
 @@ -46,0 +47,2 @@ pub const HWPTAG_TRACK_CHANGE: u16 = HWPTAG_BEGIN + 80;
 +/// 변경 추적 작성자 (DocInfo의 순번이 TRACK_CHANGE 작성자의 1-based ID)
 +pub const HWPTAG_TRACK_CHANGE_AUTHOR: u16 = HWPTAG_BEGIN + 81;
 diff --git a/src/serializer/hwpx/context.rs b/src/serializer/hwpx/context.rs
-index 035e142..6fa67d2 100644
+index 035e142524..6fa67d2bc1 100644
 --- a/src/serializer/hwpx/context.rs
 +++ b/src/serializer/hwpx/context.rs
 @@ -184,0 +185,2 @@ pub struct SerializeContext {
@@ -660,12 +660,12 @@ index 035e142..6fa67d2 100644
 @@ -208,0 +211 @@ impl Default for SerializeContext {
 +            track_mark_id: 0,
 diff --git a/src/serializer/hwpx/header.rs b/src/serializer/hwpx/header.rs
-index 24701e5..185fdf0 100644
+index 0b4d625c0c..f0249b8ce8 100644
 --- a/src/serializer/hwpx/header.rs
 +++ b/src/serializer/hwpx/header.rs
-@@ -124,0 +125 @@ where
+@@ -133,0 +134 @@ where
 +    write_track_changes(&mut w, &doc.doc_info, storage)?;
-@@ -1670,0 +1672,76 @@ where
+@@ -1662,0 +1664,76 @@ where
 +/// why-hwp: `hh:trackChanges` and `hh:trackChangeAuthors`, the last children of
 +/// `hh:refList` in HWPX that Hancom Office writes. `id` is the one-based record
 +/// index that `TcId` and `authorID` refer to; a record that could not be read is
@@ -742,7 +742,7 @@ index 24701e5..185fdf0 100644
 +    Ok(())
 +}
 +
-@@ -1728,0 +1806,55 @@ mod tests {
+@@ -1720,0 +1798,55 @@ mod tests {
 +    // why-hwp: element and attribute order as in HWPX that Hancom Office wrote.
 +    #[test]
 +    fn track_changes_are_written_like_hancom() {
@@ -799,7 +799,7 @@ index 24701e5..185fdf0 100644
 +    }
 +
 diff --git a/src/serializer/hwpx/section.rs b/src/serializer/hwpx/section.rs
-index 73b9c9b..43ae026 100644
+index 99d5224cf0..8633d59612 100644
 --- a/src/serializer/hwpx/section.rs
 +++ b/src/serializer/hwpx/section.rs
 @@ -961,0 +962,12 @@ where
@@ -864,19 +864,19 @@ index 73b9c9b..43ae026 100644
 -                    .map_err(xml_error)?,
 -            }
 +            push_inline_mark_with_storage(t_xml, m, storage)?;
-@@ -1659,0 +1646,2 @@ struct RunSplitter {
+@@ -1662,0 +1649,2 @@ struct RunSplitter {
 +    /// why-hwp: `charTcId` of each run in `segs` (character shape change tracking).
 +    tc_ids: Vec<Option<u32>>,
-@@ -1684,0 +1673,6 @@ impl RunSplitter {
+@@ -1692,0 +1681,6 @@ impl RunSplitter {
 +        let tc_ids = storage
 +            .collect((0..segs.len()).map(|i| {
 +                let end = segs.get(i + 1).map_or(para.char_count, |seg| seg.0);
 +                para.char_shape_change_tc_id(segs[i].0, end)
 +            }))
 +            .map_err(xml_error)?;
-@@ -1689,0 +1684 @@ impl RunSplitter {
+@@ -1698,0 +1693 @@ impl RunSplitter {
 +            tc_ids,
-@@ -1761,0 +1757,14 @@ impl RunSplitter {
+@@ -1770,0 +1766,14 @@ impl RunSplitter {
 +        let open = match self.tc_ids[self.next - 1] {
 +            Some(tc_id) => xml_value(
 +                storage,
@@ -891,7 +891,7 @@ index 73b9c9b..43ae026 100644
 +                format_args!(r#"<hp:run charPrIDRef="{}">"#, self.segs[self.next - 1].1),
 +            )?,
 +        };
-@@ -1763,7 +1772 @@ impl RunSplitter {
+@@ -1772,7 +1781 @@ impl RunSplitter {
 -            .push_str(
 -                &mut self.runs,
 -                &xml_value(
@@ -900,7 +900,7 @@ index 73b9c9b..43ae026 100644
 -                )?,
 -            )
 +            .push_str(&mut self.runs, &open)
-@@ -2118,0 +2122,47 @@ where
+@@ -2133,0 +2137,47 @@ where
 +/// [#6956] 형광펜 표지 한 개를 낸다.
 +/// why-hwp: a change-tracking mark rides the same channel and is written here too.
 +fn push_inline_mark_with_storage<S: crate::storage::Storage>(
@@ -948,7 +948,7 @@ index 73b9c9b..43ae026 100644
 +    storage.push_str(out, &xml).map_err(xml_error)
 +}
 +
-@@ -2188,17 +2238 @@ impl PositionedMarkpens<'_> {
+@@ -2203,17 +2253 @@ impl PositionedMarkpens<'_> {
 -            match &mark.color {
 -                Some(color) => storage
 -                    .push_str(
@@ -967,7 +967,7 @@ index 73b9c9b..43ae026 100644
 -                    .map_err(xml_error)?,
 -            }
 +            push_inline_mark_with_storage(&mut splitter.content, mark, storage)?;
-@@ -2258,0 +2293,12 @@ where
+@@ -2273,0 +2308,12 @@ where
 +    // why-hwp: change-tracking marks travel with the highlighter marks.
 +    let track_marks = para.track_change_marks(&mut ctx.track_mark_id);
 +    let inline_marks: std::borrow::Cow<'_, [crate::model::paragraph::MarkpenMark]> =
@@ -980,13 +980,13 @@ index 73b9c9b..43ae026 100644
 +            std::borrow::Cow::Owned(marks)
 +        };
 +
-@@ -2270 +2316 @@ where
+@@ -2285 +2331 @@ where
 -        && para.markpen_marks.is_empty()
 +        && inline_marks.is_empty()
-@@ -2389 +2435 @@ where
+@@ -2404 +2450 @@ where
 -        markpen_marks: &para.markpen_marks,
 +        markpen_marks: &inline_marks,
-@@ -2482,5 +2528 @@ where
+@@ -2497,5 +2543 @@ where
 -            .collect(
 -                para.markpen_marks
 -                    .iter()

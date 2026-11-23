@@ -1,13 +1,26 @@
+# rhwp HFT symbol fixes for why-hwp, measured against Hangul 2024 output.
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and every
+# earlier wasm/patches/*.patch in name order.
+# Zero-context diff (apply with git apply --unidiff-zero).
+#
+# - svg.rs: an HFT `–`, `†` or `※` whose cell is a full em is drawn centred in
+#   that cell. The cell is a full em by the fallback rule or, since rhwp v0.9.1,
+#   by the HFT program's own width table.
+# - font_metrics_overlays.rs: bold 한양중고딕 curly quotes keep their program advance.
+# - layout/text_measurement.rs and svg/tests.rs cover these changes.
 diff --git a/src/renderer/font_metrics_overlays.rs b/src/renderer/font_metrics_overlays.rs
+index 4e98551e81..ea96bee3d6 100644
 --- a/src/renderer/font_metrics_overlays.rs
 +++ b/src/renderer/font_metrics_overlays.rs
-@@ -257 +257 @@
+@@ -290 +290 @@ pub(crate) fn declared_original_glyph_advance_em(
 -        if face != "한양중고딕" || bold || italic {
 +        if face != "한양중고딕" || italic {
 diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_measurement.rs
+index 8291e917c6..8b22e3817c 100644
 --- a/src/renderer/layout/text_measurement.rs
 +++ b/src/renderer/layout/text_measurement.rs
-@@ -4266,0 +4267,31 @@
+@@ -4375,0 +4376,31 @@ mod tests {
++    #[test]
 +    fn hanyang_junggothic_hft_bold_curly_quotes_use_program_advance() {
 +        let m = EmbeddedTextMeasurer;
 +        let advance = |c: char| {
@@ -38,11 +51,11 @@ diff --git a/src/renderer/layout/text_measurement.rs b/src/renderer/layout/text_
 +        }
 +    }
 +
-+    #[test]
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index ada3ef61fd..c7a529c570 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
-@@ -3750 +3750,9 @@
+@@ -3794 +3794,9 @@ impl Renderer for SvgRenderer {
 -                    let char_x = x + cluster_x(*char_idx, cluster_str) + dx;
 +                    let centered = centers_in_fullwidth_cell(cluster_str, style);
 +                    let char_x = x
@@ -53,13 +66,13 @@ diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
 +                        } else {
 +                            0.0
 +                        };
-@@ -3759 +3767,4 @@
+@@ -3803 +3811,4 @@ impl Renderer for SvgRenderer {
 -                    let shadow_attrs = attrs_for_cluster(cluster_str, &shadow_color);
 +                    let mut shadow_attrs = attrs_for_cluster(cluster_str, &shadow_color);
 +                    if centered {
 +                        shadow_attrs.push_str(" text-anchor=\"middle\"");
 +                    }
-@@ -3903 +3914,8 @@
+@@ -3998 +4009,8 @@ impl Renderer for SvgRenderer {
 -                let char_x = x + cluster_x(*char_idx, cluster_str);
 +                let centered = centers_in_fullwidth_cell(cluster_str, style);
 +                let char_x = x
@@ -69,29 +82,37 @@ diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
 +                    } else {
 +                        0.0
 +                    };
-@@ -3911 +3929 @@
+@@ -4006 +4024 @@ impl Renderer for SvgRenderer {
 -                let common_attrs = match &outline_attrs {
 +                let mut common_attrs = match &outline_attrs {
-@@ -3914,0 +3933,3 @@
+@@ -4009,0 +4028,3 @@ impl Renderer for SvgRenderer {
 +                if centered {
 +                    common_attrs.push_str(" text-anchor=\"middle\"");
 +                }
-@@ -4383,0 +4405,11 @@
-+}
-+
+@@ -4497,0 +4519,18 @@ fn color_to_svg(color: u32) -> String {
 +fn centers_in_fullwidth_cell(cluster: &str, style: &TextStyle) -> bool {
 +    let mut chars = cluster.chars();
 +    let (Some(c), None) = (chars.next(), chars.next()) else {
 +        return false;
 +    };
-+    style.source_font_is_hft
-+        && matches!(c, '\u{2013}' | '\u{2020}' | '\u{203B}')
-+        && super::layout::char_width_decision(&[c], &[1], 0, style, true).width_source
-+            == "heuristicFullwidth"
++    if !style.source_font_is_hft || !matches!(c, '\u{2013}' | '\u{2020}' | '\u{203B}') {
++        return false;
++    }
++    // The cell is a full em whether it comes from the fallback rule or from the
++    // HFT program's own width table (rhwp 0.9.1 lists 한양중고딕's ※ at 1000/1000).
++    let decision = super::layout::char_width_decision(&[c], &[1], 0, style, true);
++    match decision.width_source {
++        "heuristicFullwidth" => true,
++        "embeddedMetric" => (decision.base_width_px - style.font_size).abs() < 1e-6,
++        _ => false,
++    }
++}
++
 diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+index 7203ab46d4..31ad89f082 100644
 --- a/src/renderer/svg/tests.rs
 +++ b/src/renderer/svg/tests.rs
-@@ -1600,0 +1601,38 @@
+@@ -1600,0 +1601,38 @@ fn test_svg_hidden_middle_dot_text_is_fitted_to_glyph_advance() {
 +
 +#[test]
 +fn hft_fullwidth_symbol_is_centred_in_its_cell() {

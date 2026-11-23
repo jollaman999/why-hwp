@@ -1,5 +1,5 @@
 # rhwp glyph width fix for why-hwp, measured against Hangul 2024 output.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and every
 # earlier wasm/patches/*.patch in name order; apply this after
 # rhwp-trackchange3.patch.
 # Zero-context diff (apply with git apply --unidiff-zero).
@@ -12,13 +12,13 @@
 #   draws it 0.23 em wide.
 # - svg/tests.rs covers it.
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
-index 920328a..65e6ef1 100644
+index c1f795def2..e1cbd5401e 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
-@@ -4463 +4463 @@ fn svg_cluster_text_length_attrs(
+@@ -4575 +4575 @@ fn svg_cluster_text_length_attrs(
 -        fit_narrow_hangul,
 +        fit_narrow_hangul || is_original_program_glyph(cluster_str, style),
-@@ -4466,0 +4467,32 @@ fn svg_cluster_text_length_attrs(
+@@ -4578,0 +4579,32 @@ fn svg_cluster_text_length_attrs(
 +/// 원본 HFT 프로그램의 글리프 폭(한컴 Print Type3 /Widths)으로 잰 낱글자인가.
 +///
 +/// 이 글자는 대체 글꼴로 그려지므로, 맞추지 않으면 PDF 글리프 상자가 원본 폭이 아니라
@@ -52,7 +52,7 @@ index 920328a..65e6ef1 100644
 +}
 +
 diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
-index bc731ec..9933d3d 100644
+index bc731ec40c..9933d3d40c 100644
 --- a/src/renderer/svg/tests.rs
 +++ b/src/renderer/svg/tests.rs
 @@ -1563,0 +1564,37 @@ fn test_svg_hidden_middle_dot_text_is_fitted_to_glyph_advance() {

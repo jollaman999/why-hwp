@@ -1,5 +1,5 @@
 # rhwp punctuation width fix for why-hwp, measured against Hangul 2024 output.
-# Base: rhwp 7213ed1f9 after the source edits in wasm/patch-rhwp.sh and every
+# Base: rhwp 981ce66b4 (v0.9.1) after the source edits in wasm/patch-rhwp.sh and every
 # earlier wasm/patches/*.patch in name order. The hunks only insert lines, above
 # the lines rhwp-zlayout1.patch changes, so this applies with or without it.
 # Zero-context diff (apply with git apply --unidiff-zero).
@@ -13,9 +13,10 @@
 #   Malgun Gothic draws it 0.305 em wide.
 # - svg/tests.rs covers it.
 diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
+index e1cbd5401e..ada3ef61fd 100644
 --- a/src/renderer/svg.rs
 +++ b/src/renderer/svg.rs
-@@ -4417,0 +4418,18 @@
+@@ -4529,0 +4530,18 @@ fn svg_text_length_attrs(
 +/// why-hwp: an ASCII punctuation mark of a slot whose face is an HFT program.
 +///
 +/// rhwp lays it out with the HFT program's widths (the /Widths of Hangul's Type 3
@@ -34,7 +35,7 @@ diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
 +    ch.is_ascii_punctuation() && source_font_is_hft && !style.preserve_glyph_ink
 +}
 +
-@@ -4427,0 +4446,8 @@
+@@ -4539,0 +4558,8 @@ fn svg_cluster_text_length_attrs(
 +    if is_hft_ascii_punctuation(cluster_str, style) {
 +        return svg_text_length_attrs(
 +            cluster_str,
@@ -44,9 +45,11 @@ diff --git a/src/renderer/svg.rs b/src/renderer/svg.rs
 +        );
 +    }
 diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
+index 9933d3d40c..7203ab46d4 100644
 --- a/src/renderer/svg/tests.rs
 +++ b/src/renderer/svg/tests.rs
-@@ -1499,0 +1500,39 @@
+@@ -1498,0 +1499,39 @@ fn test_svg_hidden_middle_dot_text_uses_run_font_family() {
++#[test]
 +fn test_svg_hft_ascii_punctuation_is_fitted_to_its_advance() {
 +    // math.hwpx: 한양신명조 11.5pt, 장평 95%, 자간 -5%.
 +    let font_size = 1150.0 / 75.0;
@@ -85,4 +88,3 @@ diff --git a/src/renderer/svg/tests.rs b/src/renderer/svg/tests.rs
 +    assert_eq!(text_length(&style(true, true), '('), None);
 +}
 +
-+#[test]
